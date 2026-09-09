@@ -1,0 +1,331 @@
+\documentclass[11pt]{article}
+
+\usepackage{color,hyperref,amsmath}
+\usepackage[sc,osf]{mathpazo} % Palatino font, w/ smallcaps & old-style figures
+\usepackage[a4paper, total={5in, 8.25in}]{geometry}
+
+\usepackage[utf8]{inputenc}
+\usepackage{graphicx}
+\usepackage{longtable}
+\usepackage{enumitem}
+\usepackage{tikz}
+\usetikzlibrary{shadows.blur, positioning}
+
+\newcommand{\code}[1]{\texttt{#1}}
+\newcommand{\cmd}[1]{\texttt{#1}}
+
+% The 5in measure is narrow for unbreakable \code identifiers; let TeX
+% stretch interword space rather than overrun the margin.
+\setlength{\emergencystretch}{1.5em}
+
+% Default \tabcolsep (6pt each side of every column) adds up fast in
+% this narrow 5in measure -- e.g. a 4-column table pays 48pt (0.67in)
+% of padding alone. Trim it once, globally, rather than fighting
+% column-width arithmetic per table.
+\setlength{\tabcolsep}{4pt}
+
+% Simple boxed CAUTION callout, styled plainly (no tcolorbox dependency).
+\newcommand{\caution}[1]{%
+  \par\noindent
+  \fbox{\parbox{4.7in}{\textbf{CAUTION:} #1}}
+  \par\smallskip
+}
+
+\title{WHAM-XREX-PFMG474\\ \large Firmware Build, Flash, and Verification \\ Standard Operating Procedure}
+\author{}
+\date{August 2026}
+
+\begin{document}
+\maketitle
+
+\begin{center}
+\begin{tabular}{p{0.45in} p{0.75in} p{0.5in} p{2.7in}}
+  \hline
+  \textbf{Rev} & \textbf{Date} & \textbf{Author} & \textbf{Description} \\
+  \hline
+  A & 2026-08-31 & -- & Initial issue: build, bootstrap flash, serial
+    reflash. No power-stage procedures yet (Section~\ref{sec:scope}). \\
+  B & 2026-09-04 & -- & Added Section~\ref{sec:table-fire}: uploading a
+    PFM table and firing it -- this firmware now drives real HRTIM PWM
+    output (Section~\ref{sec:scope} updated accordingly). Serial baud
+    raised 9600~$\to$~115200 throughout (Section~\ref{sec:verify} and
+    elsewhere). \\
+  \hline
+\end{tabular}
+\end{center}
+
+\section{Purpose}
+
+This document specifies the procedure for building, flashing, and
+verifying WHAM-XREX-PFMG474 firmware, and for confirming a board is
+running the expected firmware version before it is put into service or
+handed off.
+
+\section{Scope}
+\label{sec:scope}
+
+Covers firmware build and flashing (Sections~\ref{sec:build}--\ref{sec:verify})
+and, as of Rev~B, uploading a PWM shot profile and firing it
+(Section~\ref{sec:table-fire}) -- this firmware \textbf{now drives real
+HRTIM PWM output} on six pins (three complementary phase pairs) the
+moment \code{FIRE} is sent. \textbf{This firmware still has no ARM
+precondition, no state machine, and no fault interlock} -- \code{FIRE}
+takes effect immediately and unconditionally whenever it is sent, by
+design (see \code{docs/command\_reference.md}). Treat any gate driver or
+power stage wired to these pins as live for the duration of
+Section~\ref{sec:table-fire}, per your lab's normal HV/gate-driver
+procedure, exactly as if driven by any other PWM source -- this SOP
+provides no closed-loop protection behind it. This document still does
+not cover power-stage bring-up, calibration, or safety-interlock
+procedures beyond that caution; a companion procedure remains needed
+once a state machine/interlock exists in firmware.
+
+\section{Prerequisites}
+
+\subsection{Equipment}
+
+\begin{center}
+\begin{tabular}{p{1.5in} p{3.2in}}
+  \hline
+  \textbf{Item} & \textbf{Notes} \\
+  \hline
+  WHAM-XREX-PFMG474 board & Powered per its own hardware documentation
+    (not covered here). \\
+  ST-Link (or equivalent SWD debug probe) & Required for the bootstrap
+    flash (Section~\ref{sec:bootstrap}) and for recovery if a board
+    stops responding over serial entirely. \\
+  USB-to-serial adapter & Wired to USART2: adapter TX~$\to$~PA3
+    (USART2\_RX), adapter RX~$\to$~PA2 (USART2\_TX), GND~$\leftrightarrow$~GND. \\
+  \hline
+\end{tabular}
+\end{center}
+
+\noindent\textit{(TX\slash RX wiring above is crossed: adapter TX goes
+to the MCU's RX pin and vice versa, as usual for a point-to-point serial
+link.)}
+
+\subsection{Software}
+
+\begin{center}
+\begin{tabular}{p{1.5in} p{3.2in}}
+  \hline
+  \textbf{Tool} & \textbf{Notes} \\
+  \hline
+  STM32CubeIDE & Project build and the bootstrap SWD flash. \\
+  \code{stm32flash} & AN3155 USART bootloader client. macOS:
+    \code{brew install stm32flash}. \\
+  Python 3 + \code{pyserial} & Runs \code{python/wham\_serial\_flash.py}.
+    \code{pip install pyserial}. \\
+  \hline
+\end{tabular}
+\end{center}
+
+\caution{This firmware has not yet been through an ESD-controlled
+production process. Use standard ESD precautions (grounding strap,
+static-safe surface) when handling the bare board.}
+
+\section{Procedure: Build the Firmware}
+\label{sec:build}
+
+\begin{enumerate}[label=\arabic*.]
+  \item Open the project in STM32CubeIDE and press \textbf{Refresh}
+    (\code{F5}) on the project if any files were added outside the IDE
+    since it was last opened.
+  \item Build the \textbf{Debug} configuration (\code{Project~$\to$~Build
+    Project}, or from the command line: \code{cd Debug \&\& make all -j4}).
+  \item Confirm the build produced no warnings. A clean build produces
+    \code{WHAM-XREX-PFMG474.elf} in \code{Debug/}.
+  \item \textbf{Generate the \code{.bin}.} This project's build
+    configuration does not have the ``Convert to binary file'' post-build
+    step enabled, so it must be generated by hand:
+\begin{quote}\ttfamily\small\raggedright
+arm-none-eabi-objcopy -O binary \textbackslash\\
+\hspace*{1em}Debug/WHAM-XREX-PFMG474.elf \textbackslash\\
+\hspace*{1em}Debug/WHAM-XREX-PFMG474.bin
+\end{quote}
+\end{enumerate}
+
+\section{Procedure: Bootstrap Flash (SWD)}
+\label{sec:bootstrap}
+
+Required the \emph{first} time a board receives firmware with the
+serial-bootloader feature (\code{BOOT} command), since that feature is
+what the serial reflash path in Section~\ref{sec:serial-flash} depends
+on -- a board cannot use it to receive the very first firmware that adds
+it. Also use this procedure to recover a board that no longer responds
+to \code{BOOT} over serial at all.
+
+\begin{enumerate}[label=\arabic*.]
+  \item Connect the ST-Link to the board's SWD header and to the host
+    computer.
+  \item In STM32CubeIDE, press \textbf{Run} (or \textbf{Debug}) to build
+    and flash via the ST-Link, as normal for this IDE.
+  \item Proceed to Section~\ref{sec:verify} to confirm the board is
+    running the expected firmware.
+\end{enumerate}
+
+\section{Procedure: Serial Reflash}
+\label{sec:serial-flash}
+
+Use this for all firmware updates \emph{after} the bootstrap flash in
+Section~\ref{sec:bootstrap} has been done once. This is the
+remote-friendly path: no physical BOOT0\slash NRST\slash SWD access is
+required, only the USART2 serial link.
+
+\begin{enumerate}[label=\arabic*.]
+  \item With the board powered and running its current firmware, and the
+    USB-serial adapter connected, run:
+\begin{quote}\ttfamily\small\raggedright
+python3 python/wham\_serial\_flash.py \textbackslash\\
+\hspace*{1em}--port /dev/cu.usbserial-XXXXX
+\end{quote}
+    substituting the actual serial device path. (On macOS, a single
+    USB-serial adapter shows up as both a \code{cu.*} and \code{tty.*}
+    device node; the script sees this as two candidates and will not
+    auto-detect -- \code{--port} must be passed explicitly. Prefer the
+    \code{cu.*} node.)
+  \item The script will: send \code{BOOT} and wait for the
+    acknowledgement; run \code{stm32flash} to write and verify
+    \code{Debug/WHAM-XREX-PFMG474.bin}; then start the new firmware
+    automatically (no manual reset needed -- see
+    Section~\ref{sec:reset-note}).
+  \item Confirm the script reports \texttt{[done]} with firmware
+    written and verified before proceeding.
+  \item Proceed to Section~\ref{sec:verify}.
+\end{enumerate}
+
+\subsection{Note on automatic restart after flashing}
+\label{sec:reset-note}
+
+Early testing of this procedure found that the newly-flashed firmware
+could come up unresponsive over serial until the board was manually
+power-cycled, because the STM32 ROM bootloader's \emph{Go} command (used
+to start the new firmware without a physical reset) does not perform a
+true chip reset, and left the processor's vector table pointer aimed at
+the bootloader's own vector table rather than the application's. This
+has been fixed in firmware (\code{boot\_jump.c}) -- a manual reset should
+not be necessary. If a board flashed under this SOP does not respond to
+the verification step below without a manual reset, that is a
+regression and should be reported, not treated as expected behavior.
+
+\section{Procedure: Verification}
+\label{sec:verify}
+
+\begin{enumerate}[label=\arabic*.]
+  \item Open a serial connection to the board at \textbf{115200 8N1}
+    (raised from 9600 as of Rev~B -- see \code{docs/changelog.txt}).
+  \item Send \code{*IDN?} followed by a line ending (\code{\textbackslash
+    r}, \code{\textbackslash n}, or both).
+  \item Confirm a reply of the form:
+    \begin{quote}
+      \code{OK <board name> <hardware rev> <firmware version>}
+    \end{quote}
+    e.g.\ \code{OK WHAM-XREX-PFMG474 REVA v0.1}.
+  \item Confirm the reported firmware version matches the version that
+    was just built\slash flashed.
+\end{enumerate}
+
+Acceptance criterion for this SOP: Step 3 above returns a well-formed
+reply with the expected version, on the first query, with no manual
+reset performed since the flash in Section~\ref{sec:build} or
+\ref{sec:serial-flash}.
+
+\section{Procedure: Upload and Fire a PFM Table}
+\label{sec:table-fire}
+
+New in Rev~B. Uploads a complete PWM shot profile (a sequence of
+period/duty entries, one per switching cycle) and plays it back on
+demand. Full protocol detail: \code{docs/command\_reference.md}'s
+\code{TABle:*} and \code{FIRE} entries.
+
+\caution{\code{FIRE} drives real HRTIM PWM output on six pins (three
+complementary phase pairs, $\sim$100\,ns hardware dead time between
+each pair) the instant it is sent. There is no ARM step, no state
+machine, and no fault interlock in this firmware -- \code{FIRE} always
+takes effect immediately, whether the board was idle or a previous shot
+was still running. Treat any gate driver or power stage wired to these
+pins as live before proceeding, per your lab's normal HV/gate-driver
+procedure.}
+
+\begin{enumerate}[label=\arabic*.]
+  \item Complete Sections~\ref{sec:build}--\ref{sec:verify} first --
+    a board must already be running current, verified firmware.
+  \item Table \emph{construction} (what shot profile to build) lives
+    entirely on the host, not in firmware -- see \code{pfm.h}'s own
+    header note for why. \code{python/pfm\_table\_upload.py} is the
+    reference builder: edit its \code{PROFILE} constant (1--5; see the
+    script's own header comment for what each one is) before running:
+\begin{quote}\ttfamily\small\raggedright
+python3 python/pfm\_table\_upload.py \textbackslash\\
+\hspace*{1em}--port /dev/cu.usbserial-XXXXX
+\end{quote}
+  \item Confirm the script reports \code{[done] table uploaded and
+    confirmed} with the expected entry count (\code{TABLE:END -> OK
+    <count>}).
+  \item Optionally confirm independently at any time with \code{TABLE?}
+    over a serial terminal (e.g.\ \code{python/scpi.py}) -- replies
+    \code{OK <count>}, matching the upload.
+  \item With the CAUTION above acknowledged and anything downstream of
+    these six pins confirmed safe to drive, send \code{FIRE}. A prompt
+    \code{OK} confirms the shot started; output stops on its own, at a
+    coherent period boundary, once the table is exhausted -- there is
+    no separate \code{STOP} command and no completion notification.
+  \item Sending \code{FIRE} against an empty table (nothing uploaded
+    yet) is rejected with \code{ERR 5} and drives nothing -- this is
+    the one built-in safeguard, not a substitute for the interlock
+    discussed above.
+\end{enumerate}
+
+Acceptance criterion for this SOP: \code{TABLE:END} reports the exact
+entry count the host script intended to send, and \code{FIRE} returns
+\code{OK} with no \code{ERR}. Confirming the actual output waveform
+(dead time, phase spacing, duty accuracy) is a bench/instrumentation
+task outside this SOP's scope -- see \code{docs/test\_protocol.md}'s T4
+group if that level of verification is needed.
+
+\section{Troubleshooting}
+
+\begin{center}
+\begin{tabular}{p{1.7in} p{3in}}
+  \hline
+  \textbf{Symptom} & \textbf{Cause / action} \\
+  \hline
+  \code{stm32flash} reports \code{Failed to init device, timeout.}
+    before any write occurs &
+    Not a firmware issue -- this probe doesn't depend on what's running
+    on the chip. Check board power, serial wiring (TX\slash RX not
+    crossed, common GND), and that no other program has the port
+    open. \\
+  \code{BOOT} gets no reply, but power/wiring check out &
+    The firmware currently on the board may predate the \code{BOOT}
+    command (run the bootstrap flash, Section~\ref{sec:bootstrap}) or
+    may be a board affected by the \code{Go}-jump issue in
+    Section~\ref{sec:reset-note} -- power-cycle once, then retry. \\
+  Verification (Section~\ref{sec:verify}) fails after a serial reflash &
+    Power-cycle the board once and repeat verification. If it then
+    succeeds, this is the regression described in
+    Section~\ref{sec:reset-note} -- report it. If it still fails, treat
+    as a failed flash and repeat Section~\ref{sec:serial-flash} from the
+    start. \\
+  \hline
+\end{tabular}
+\end{center}
+
+\section{References}
+
+\begin{itemize}
+  \item \code{AGENTS.md} -- project orientation and current functionality.
+  \item \code{docs/command\_reference.md} -- full serial command protocol,
+    including \code{TABle:*} and \code{FIRE} (Section~\ref{sec:table-fire}).
+  \item \code{docs/serial\_reflash\_guide.md} -- detailed reflash
+    mechanism, including the \code{Go}-jump bug referenced in
+    Section~\ref{sec:reset-note}.
+  \item \code{docs/test\_protocol.md} -- bench-level verification,
+    including waveform checks beyond this SOP's acceptance criteria.
+  \item \code{python/pfm\_table\_upload.py} -- reference table builder
+    used in Section~\ref{sec:table-fire}; see its own header comment
+    for what each \code{PROFILE} value builds.
+  \item \code{docs/changelog.txt} -- dated development history.
+\end{itemize}
+
+\end{document}

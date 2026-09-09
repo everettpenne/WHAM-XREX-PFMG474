@@ -1,0 +1,2115 @@
+WHAM-XREX-PFMG474 Firmware Changelog
+=====================================
+
+2026-09-09  —  Project start: reseeded from WHAM-PFMG474-V4, closed-loop
+               PID architecture for 4 independent Transrex channels
+               designed (no code yet)
+-----------------------------------------------------------------------
+  Change:  New project. Two documents (docs/Transrex/) define the goal:
+        Transrex_Controls_Upgrade (1).pdf specifies the Transrex ISR-2126
+        magnet-supply upgrade this controller serves -- in particular its
+        Control Unit I/O table (Sec. 7.1), a 4-independent-unit interface
+        each with its own PFM DEMAND output (0-100 kHz, V-to-F encoded
+        firing-angle command) and PFM UNIT_CURRENT feedback input (same
+        encoding, from a V/F current sense). hrtim_divergent_period_timing.pdf
+        works out how HRTIM behaves when independent channels need
+        arbitrary, unrelated frequencies -- its "Possibility 3" (per-timer
+        ResetUpdate=TIMUPDATEONRESET_ENABLED, ResetTrigger=NONE,
+        UpdateTrigger=NONE, so each channel's shadow->active transfer
+        happens on ITS OWN roll-over, never mid-cycle, with no
+        relationship required between channels) is the architecture this
+        project is built around.
+
+        Scope, per direct confirmation: closed-loop PID control only, on
+        THIS EXACT HARDWARE (same STM32G474QET6, same pin mapping this
+        project's base already uses, same board already on the bench) --
+        every other requirement in the Transrex spec (fiber-optic I/O,
+        FDM fault decode, the LabVIEW Ethernet COMMS link, digitizers,
+        E-stop hardware-independence, the other 3 non-controller
+        subsystems) is explicitly OUT of scope for now.
+
+        Reseeded (not a GitHub fork -- see AGENTS.md's "Provenance") from
+        WHAM-PFMG474-V4 at commit de83324, full working snapshot, fresh
+        git history. Board/firmware identity (HW_BOARD_NAME,
+        FW_VERSION_STRING, the .cproject/.project/.ioc/.launch project
+        name, the Debug/ build artifact name) renamed throughout;
+        HW_BOARD_REV left alone (same physical PCB). Historical entries
+        below this one predate the fork and describe WHAM-PFMG474-V4's
+        own development -- kept verbatim, since the code they explain
+        (hrtim.c's NVIC priority scheme, pfm_input.c's DMA capture
+        design, etc.) is still sitting in this repo unchanged so far.
+        docs/memory_history.csv / docs/memory_report.html were NOT
+        carried over (they reference WHAM-PFMG474-V4's own commit SHAs,
+        meaningless here) -- python/memory_report.py itself was kept and
+        will build fresh history from this repo's own commits.
+
+        Architecture, as designed in conversation (not yet implemented):
+
+          - NO shared PFM_Step_t table for this mode. Each of the 4
+            channels is an independent {setpoint, PID state (Kp/Ki/Kd,
+            integral accumulator), feedback source, output timer} tuple
+            -- there is no pre-computed trajectory to walk, every output
+            value is computed live.
+
+          - Master-repetition interrupt (HRTIM1_Master_IRQn) is KEPT,
+            deliberately, as a FIXED-RATE heartbeat -- this was
+            explicitly reconsidered mid-design and is worth not
+            re-litigating without rereading this entry. The first-draft
+            idea (each channel's own roll-over triggers ITS OWN PID
+            recompute, fully self-clocked, no Master involvement) was
+            rejected: it ties each channel's control-loop sample
+            interval to that channel's own instantaneous carrier
+            frequency, which is itself what the PID is adjusting --
+            variable sample-time PID is materially harder to tune/
+            guarantee-stable than fixed sample-time PID, and conflates
+            "how fast the V-to-F encoding happens to cycle" with "how
+            fast the control loop should run" (the latter should track
+            the Transrex/magnet's own electrical time constant, which
+            has nothing to do with the demand signal's encoding rate).
+            Master's role in Possibility 3 was never really "step a
+            shared table" (that's just what the reference document's
+            own example was doing with it) -- its real, general role is
+            "a fixed-cadence, always-safe moment to WRITE shadow
+            registers," which is exactly what a fixed-rate PID heartbeat
+            needs, and keeping it doesn't reintroduce any of the mid-
+            cycle hazard Possibilities 1/2 had, because the actual
+            hardware APPLY still happens at each channel's own
+            roll-over, per Possibility 3, regardless of what wrote the
+            shadow or when.
+
+          - Per Master tick, loop over the 4 channels: read PFM_Input's
+            LATEST captured period for that channel's feedback (a new,
+            simpler capture mode than today's PFMIN:CAPTURE <M>/STATus?/
+            DATA? -- free-running, no target count, "give me whatever
+            you last measured" rather than "capture exactly M periods,
+            then stop"), convert period -> frequency (a real division,
+            not optional -- PID error must be linear in frequency, since
+            that's what's linear in the V-to-F encoding; period is not
+            linear in the encoded value), run that channel's PID with a
+            FIXED, known Delta-t (= the Master period), clamp, write the
+            new PER into that channel's shadow register. CMP is very
+            likely fixed/constant per channel (single-ended V/F tone,
+            not a variable-duty PWM leg) -- simplifies away most of the
+            PER/CMP-coherency hazard the reference document flags for
+            the general case.
+
+          - Master's own rate is a free, deliberately-chosen parameter
+            now representing CONTROL BANDWIDTH, not carrier rate --
+            expected to land far below the ~100 kHz carrier ceiling
+            (tens of Hz to low kHz, matching real magnet-supply loop
+            dynamics), which is what makes it safe to run 4x PID compute
+            inside one interrupt without threatening PFM_Input's DMA
+            margins (same headroom analysis as the priority-inversion
+            fix below, ~8 periods/~80-160us before circular-buffer
+            wraparound) -- should be validated empirically with
+            PFM_GetDiagGapLog() (pfm.c, PFM:GAPLOG?) once implemented,
+            not just assumed safe from the arithmetic alone.
+
+        Explicitly NOT yet resolved (real open items, not implementation
+        detail):
+
+          - Exact HRTIM per-timer IRQn lines are NOT needed for this
+            design (Master-driven, not per-channel-IRQ-driven, per the
+            correction above) -- this removes what was originally
+            flagged as an open risk.
+          - HRTIM_NUM_CHANNELS is currently 3 (ctrlr_config.h); this mode
+            needs 4 independent channels with NO phase/interleave
+            relationship between them, which is a structurally different
+            use of HRTIM_NUM_CHANNELS / PFM_PhaseForChannel() than
+            today's phase-locked-bridge meaning -- needs its own
+            abstraction, not a bigger N on the existing one.
+          - Setpoint/gain wire interface (new serial commands) not yet
+            designed.
+          - Real magnet-supply operating frequency range, for sizing the
+            worst-case Master-heartbeat-rate/ISR-load budget with actual
+            numbers instead of the "~100 kHz ceiling" spec value (which
+            is the Transrex document's encoding range, not necessarily
+            this system's typical operating point).
+
+  Files:  none yet -- design only, this entry documents the decision
+        record before implementation starts.
+
+2026-09-09  —  Memory footprint tracking: python/memory_report.py, tracked
+               per commit since project start
+-----------------------------------------------------------------------
+  Change:  Requested: visualize flash/RAM usage, what it's for, and what
+        remains, tracked over the project's lifetime and kept current in
+        future commits. New python/memory_report.py, two pieces:
+
+          1. `history` -- reads a built .elf with arm-none-eabi-size (total
+             flash/RAM) and arm-none-eabi-nm --print-size -l (per-symbol,
+             with DWARF file:line from this project's -g3 builds) and
+             appends one row to docs/memory_history.csv: totals plus a
+             byte count per source-file "module" bucket (PFM table engine,
+             PFM_Input capture, HRTIM driver, ST HAL library, etc.), split
+             into flash and RAM. `--backfill` rebuilds the whole CSV in one
+             pass from every past commit that has a Debug/WHAM-PFMG474-V4.elf
+             checked in (this project tracks Debug/ build output in git,
+             confirmed useful here beyond its original purpose) -- no
+             rebuilding needed, `git show <rev>:Debug/WHAM-PFMG474-V4.elf`
+             pulls each historical binary directly. Backfilled all 5
+             commits with a tracked elf, back to the initial commit
+             (2026-09-04).
+
+          2. `report` -- renders docs/memory_report.html from that CSV: a
+             self-contained dashboard (Google Fonts is the only external
+             request; everything else inline, no build step) with a
+             utilization-over-lifetime trend chart (Flash % / RAM % per
+             commit, hand-rolled SVG with a crosshair tooltip), two stat
+             tiles (used/remaining + sparkline), and two current-breakdown
+             bar charts (Flash by module, RAM by module, hover tooltips).
+             Both light and dark themes defined as CSS custom properties
+             (verified via computed-style, not just eyeballed, since a
+             local-file preview forces light rendering regardless of CSS).
+
+        Design decision, the one non-obvious part: per-module attribution
+        reads the LINKED elf's own retained symbol table, not a per-.o
+        `size` sum. This project's Makefile builds with
+        -ffunction-sections/-fdata-sections and links with --gc-sections;
+        a raw .o's size includes every function the compiler emitted for
+        that translation unit, even ones the linker later discards as
+        unreachable -- checked directly: summing every HAL driver .o in
+        this build totals ~94 KB of .text for HAL alone, while the FINAL
+        linked .text is only ~48.5 KB for the ENTIRE firmware. Reading
+        attribution off the linked elf's nm output avoids this: every
+        symbol counted is genuinely in the binary. One real wrinkle
+        handled explicitly: ~84 unimplemented IRQ vector names are weak
+        aliases of one shared Default_Handler (same address) -- deduped by
+        (address, size, type) before summing, or that alone would have
+        been counted ~84 times over. The nm-vs-`size` gap that remains
+        (alignment padding, the raw .isr_vector table, a few anonymous/
+        mergeable symbols -- ~1.7 KB flash, ~1.6 KB RAM at the current
+        commit) is rolled into an explicit "Padding / unattributed" bucket
+        rather than silently dropped, so a breakdown chart's total always
+        equals `size`'s own authoritative number.
+
+        Current snapshot (a764a01, this commit): flash 51,312 / 524,288 B
+        (9.8%), RAM 55,368 / 131,072 B (42.2%) -- RAM dominated by
+        g_pfmTable (PFM table engine, ~39.9 KB, PFM_TABLE_SIZE=5000 *
+        (2+2*HRTIM_NUM_CHANNELS) bytes/entry) and PFM_Input's per-channel
+        capture buffers (~6.4 KB); flash dominated by the ST HAL library
+        (~27.4 KB, mostly stm32g4xx_hal_tim.c/_uart.c/_hrtim.c).
+
+        Standing instruction added (AGENTS.md, and this session's own
+        memory) to regenerate both files after any commit that changes
+        flash/RAM usage -- same "proactive, not just when asked"
+        convention as this changelog itself.
+
+  Files:  python/memory_report.py (new), python/memory_report_template.html
+        (new), docs/memory_history.csv (new), docs/memory_report.html (new,
+        generated -- do not hand-edit), AGENTS.md
+
+2026-09-09  —  Real PFM output falls ~77 periods behind on a long table
+               hold: root-caused to a stale NVIC priority inversion,
+               FIXED and CONFIRMED on real hardware
+-----------------------------------------------------------------------
+  Change:  Found while stress-testing the DMA-based PFM_Input capture
+        below with progressively less trivial waveforms (an extreme
+        zigzag, then a slower ramp/hold(100 periods)/ramp profile). The
+        ramp/hold/ramp shot's real HRTIM output was confirmed, via a
+        DSLogic ground-truth capture (all 6 channels agreeing, U vs UN
+        median error 0.0), to genuinely stall on the wire: it holds one
+        frequency for ~187 real periods instead of the table's
+        programmed 100, then cleanly resumes the correct sequence ~77
+        periods late. PFM:DIAG?'s existing single max-gap diagnostic
+        (added the same day for a different, now-closed dead end) could
+        not distinguish "one big stall" from "many small repeated
+        delays," so a new diagnostic was added: PFM_GetDiagGapLog()
+        (pfm.c/pfm.h) logs the raw DWT-cycle gap between every single
+        PFM_CycleBoundaryHandler() call for the current shot (up to
+        PFM_INPUT_MAX_PERIODS of them), exposed over serial as
+        PFM:GAPLOG? (commands.c/commands.h/cmd_parser.c) -- TEMPORARY,
+        same debug-command convention as PFMIN:DMASTAT?, meant to be
+        removed once this investigation closed.
+
+        The raw gap log immediately showed the real mechanism: not one
+        stall, but a spike of ~15000-18500 cycles (~88-109 us) recurring
+        roughly every 8-10 table entries, each followed by an
+        anomalously short next gap (the classic signature of a single
+        delayed ISR entry, not an accumulating one). The recurrence
+        interval (~8 periods) matches PFM_Input's DMA capture design
+        exactly: a 32-entry circular buffer with a half/full-transfer
+        interrupt every 16 captured edges, i.e. every 8 periods at 2
+        edges/period.
+
+        Root cause: PFM_Input's DMA1_ChannelN_IRQn (the interrupt whose
+        callback batch-processes those 16 edges, pfm_input.c) was left
+        at NVIC priority 1 -- a decision inherited from the OLD, now-
+        superseded per-edge interrupt-driven capture design, where
+        TIMx capture interrupts genuinely needed to preempt
+        HRTIM1_Master_IRQn (demoted to priority 2 on 2026-09-08) to
+        avoid a real overcapture race. That reasoning stopped applying
+        the moment capture became DMA-driven (2026-09-09, entry below):
+        the DMA controller grabs each CCRx value in hardware with zero
+        CPU/IRQ involvement, so nothing about capture fidelity depends
+        on IRQ priority anymore -- only the periodic 16-edge batch-
+        processing ISR still runs on the CPU, and leaving IT above
+        HRTIM1_Master let its own real (non-trivial) processing time
+        repeatedly steal cycles from the table-advance ISR, which is
+        what a long run of identical hold entries made visible as a
+        large, compounding real-time lag.
+
+        Fix: HRTIM1_Master_IRQn restored to priority 1 (hrtim.c,
+        HRTIM1_EnableMasterInterrupt()); PFM_Input's DMA1_ChannelN_IRQn
+        demoted to priority 3 (pfm_input.c, PfmInput_Init()), below
+        both HRTIM1_Master and the GateDriverStatus EXTI/TIMx_IRQn tier
+        (priority 2). Safe because the ~8-period window before the
+        circular buffer would actually wrap and lose data is orders of
+        magnitude larger than HRTIM1_Master's own ISR execution time.
+
+        CONFIRMED on real hardware, same ramp/hold/ramp shot, before/
+        after:
+          PFM:DIAG? max gap    18547 cycles (109 us)  ->  5152 cycles
+                                                            (30 us -- this
+                                                            IS the table's
+                                                            own longest
+                                                            programmed
+                                                            period, not a
+                                                            stall)
+          PFM:GAPLOG? (full)   repeating ~15-18k-cycle spikes every
+                                8-10 entries  ->  every single one of
+                                200 entries within normal jitter of its
+                                own programmed period, zero anomalies
+          PFMIN:DATA? (all 3   198-199/200 captured, OVERCAP=0 -- capture
+          active channels)     fidelity unaffected by the IRQ demotion
+
+        Also explains the "max gap grows roughly linearly with channel
+        count" note in the DMA capture entry below (1 ch ~17-30 us ...
+        6 ch ~100 us) -- that WAS this same priority inversion the whole
+        time, just below the threshold to visibly stall output until a
+        long-enough run of identical table entries made the accumulated
+        effect obvious.
+
+  Files:  Core/Src/hrtim.c, Core/Src/pfm_input.c, Core/Src/pfm.c,
+        Core/Inc/pfm.h, Core/Src/commands.c, Core/Inc/commands.h,
+        Core/Src/cmd_parser.c, python/pfm_table_upload.py (added
+        PROFILE 9 "extreme zigzag" and PROFILE 10 "ramp/hold/ramp" test
+        profiles used to find this)
+
+2026-09-09  —  DMA-based PFM_Input capture: implemented, two real bugs
+               found and fixed, CONFIRMED on real hardware at all 6
+               channels simultaneously (the exact config that hard-
+               locked the board under the old design)
+-----------------------------------------------------------------------
+  Change:  Implemented the DMA-based capture redesign planned in the
+        entry below. Each active channel's TIMx now DMAs its captured
+        CCRx value directly into a small RAM ring buffer (g_dmaBuf[],
+        32 entries/channel) with NO per-edge ISR at all -- the CPU only
+        wakes on a DMA half/full-transfer interrupt
+        (HAL_TIM_IC_CaptureHalfCpltCallback()/HAL_TIM_IC_CaptureCallback(),
+        pfm_input.c), once per 16 edges instead of once per edge.
+        Everything downstream (period computation, the 16-bit
+        wraparound mask, target-count stopping) moved into
+        ProcessDmaChunk(), called once per batch. Wire protocol
+        (PFMIN:CAPTURE/STATus?/DATA?) unchanged -- purely an internal
+        capture-mechanism swap. One DMA channel per PFM_Input channel
+        (DMA1_Channel1..6, DMAMUX request IDs from stm32g4xx_hal_dma.h
+        -- DMA_REQUEST_TIM2_CH1/CH2, _TIM3_CH1, _TIM4_CH1,
+        _TIM5_CH1/CH2), all newly used -- nothing else in this project
+        used any DMA channel before this (confirmed via grep before
+        choosing them).
+
+        Two real bugs found and fixed during real-hardware bring-up,
+        neither existing before this redesign:
+          1. DMAMUX1's own peripheral clock was never enabled (only
+             DMA1's was) -- HAL_TIM_IC_Start_DMA() reported HAL_OK
+             (confirmed via a temporary PFMIN:DMASTAT? debug command)
+             but no request ever actually reached the DMA controller,
+             so capture silently reported 0 periods with no error
+             anywhere. Fixed: __HAL_RCC_DMAMUX1_CLK_ENABLE() added
+             alongside the existing DMA1 clock enable.
+          2. A shot ending mid-chunk (before the next half/full DMA
+             interrupt) silently lost up to 15 real edges already
+             sitting in the buffer but never processed -- confirmed on
+             real hardware, a 200-period capture reaching only 191.
+             Fixed: PfmInput_OnShotEnd() now reads the DMA channel's
+             CNDTR register to compute exactly how much unprocessed
+             data is sitting in the buffer and flushes it via
+             ProcessDmaChunk() before actually stopping DMA.
+
+        CONFIRMED on real hardware, incremental channel-count test
+        (same philosophy as the interrupt-driven design's own
+        incremental re-test, but this time scaling all the way up):
+        1, 2, 3, 4, 5, then all 6 channels, each with a full 100->60
+        kHz decreasing sweep, checked for lockup/fault/PFM:DIAG? max
+        gap at every step:
+
+          channels   max gap (PFM:DIAG?)   result
+          1          ~17-30 us              clean, 197-200/200
+          2          ~42 us                 clean, 200/200 both
+          3          ~57 us                 clean, 200/200 all 3
+          4          ~74 us                 clean, 200/200 all 4
+          5          ~91 us                 clean, 200/200 all 5
+          6 (all)    ~100 us                clean, 200/200 all 6
+
+        Max gap grows gently and roughly linearly with channel count,
+        nowhere near the ~734 us starvation threshold the old
+        interrupt-driven design hit at just 2 channels -- and the final
+        6-channel run is the EXACT configuration that caused a real
+        board lockup requiring a power cycle under that old design.
+        No lockup, no fault, board fully responsive throughout and
+        after, at every step. This appears to be a complete, real fix
+        for the interrupt-starvation root cause, not another
+        mitigation.
+
+        PFM_INPUT_ACTIVE_CHANNEL_MASK left at 0x3F (all 6) as of this
+        entry, reflecting the confirmed-working end state.
+
+        Added python/pfm_input_plot.py usage throughout this test
+        (--channel 1,2,3,4,5,6 / all) to visually confirm each step,
+        not just trust the numeric OK/count replies.
+
+  Files:   Core/Src/pfm_input.c, Core/Inc/pfm_input.h,
+        Core/Src/commands.c, Core/Inc/commands.h, Core/Src/cmd_parser.c,
+        Core/Src/stm32g4xx_it.c
+
+2026-09-09  —  PFM:DIAG? diagnostic CONFIRMS interrupt starvation as
+               the table-advance stall's root cause (734us max gap,
+               ~67x a normal period, with just 2 capture channels
+               active) -- DMA-based capture redesign now planned
+-----------------------------------------------------------------------
+  Change:  Added PFM:DIAG? (commands.c's cmd_pfm_diag(), pfm.c's
+        PFM_GetDiagCounters()) to test the interrupt-starvation theory
+        for the table-advance stall found in the entries just below --
+        NOT a plain call counter (a completed shot's call count is
+        always exactly the table's entry count regardless of whether
+        stalling happened along the way, since PFM_CycleBoundaryHandler()
+        only stops once g_pfmIndex reaches it -- that number alone
+        can't distinguish "ran on schedule" from "was starved, then
+        caught up"). Instead tracks the largest REAL TIME gap between
+        two consecutive calls, using the Cortex-M4 DWT free-running
+        cycle counter (170 MHz, confirmed same clock as
+        HRTIM_TIMER_CLK_HZ) -- reset at every PFM_Restart(), read back
+        as "OK <callCount> <maxGapCycles> <maxGapUs>".
+
+        Result, same 100->60kHz decreasing sweep, only PFM_Input_01+02
+        active (2 real channels, both genuinely wired): PFM:DIAG? ->
+        "OK 200 124818 734" -- 200 calls (as expected either way), but
+        a MAXIMUM GAP of 734 us between two consecutive calls. Normal
+        gap at ~91-95 kHz should be ~11 us (one real period) -- 734 us
+        is ~67x that. This is direct, quantitative proof that
+        HRTIM1_Master_IRQHandler() (which runs PFM_CycleBoundaryHandler(),
+        priority 2 -- deliberately BELOW every TIM2-5 capture channel's
+        priority 1, so real edges are never missed) was starved for
+        roughly 67 real periods straight, with just 2 real capture
+        channels active -- not a logic bug in the table-advance code,
+        and not something that requires many/floating channels to
+        trigger.
+
+        DECISION: since capture-channel interrupt load is confirmed as
+        the actual mechanism, the planned fix is a DMA-based capture
+        redesign -- configure each TIMx to auto-transfer its captured
+        CCRx value into a RAM ring buffer via DMA on every edge, with
+        ZERO CPU/ISR involvement per edge (versus one full ISR entry/
+        exit + HAL dispatch + capture logic per edge today). The CPU
+        would only wake up occasionally (a DMA half/full-buffer
+        interrupt) to process a BATCH of already-timestamped edges,
+        removing capture-channel interrupt PRIORITY/LOAD from
+        competing with HRTIM1_Master almost entirely. Not yet
+        implemented -- this entry documents the confirmed root cause
+        and the planned direction, not a landed fix.
+
+  Files:   Core/Src/pfm.c, Core/Inc/pfm.h, Core/Src/commands.c,
+        Core/Inc/commands.h, Core/Src/cmd_parser.c
+
+2026-09-09  —  Added python/pfm_input_plot.py; all-6-channel test finds
+               a NEW real issue: floating capture channels can starve
+               the PFM table-advance ISR itself (output side, not just
+               capture)
+-----------------------------------------------------------------------
+  Change:  Added python/pfm_input_plot.py -- pulls PFMIN:DATA? for one
+        or more channels (--channel 1 / 1,3,5 / all) and plots period
+        (raw ticks) + derived frequency (kHz) on one figure per
+        request, multiple channels overlaid with a shared, OUTLIER-
+        ROBUST y-axis (90th-percentile-based, not plain autoscale) so
+        one noisy channel's spikes don't flatten a real channel's data
+        out of view -- see the script's own header comment. Also
+        --csv and --save (headless) options.
+
+        Used it for a real-hardware "full test" requested directly:
+        temporarily re-enabled ALL 6 PFM_Input channels
+        (PFM_INPUT_ACTIVE_CHANNEL_MASK = 0x3F, pfm_input.h) and
+        repeated the 100->60 kHz decreasing sweep. Only PFM_Input_01
+        (phase U) is physically wired to anything on this bench; the
+        other 5 are floating. Result revealed something NEW and real,
+        not just "floating pins read garbage" (expected) but a
+        genuine OUTPUT-side side effect:
+
+        Channel 1's own captured sequence got stuck: 1699x12, 1736x13,
+        1774x11, then 1814 repeated for 160+ consecutive periods
+        straight through to the end of its 200-period capture (should
+        have been ~10 periods/step, cleanly advancing through all 20
+        steps to 2832). This is NOT a pfm_input.c capture bug -- it
+        faithfully reported a REAL signal that itself got stuck.
+        Mechanism: HRTIM1_Master_IRQHandler() (calls
+        PFM_CycleBoundaryHandler(), which advances the table and
+        writes the next per/cmp registers) runs at NVIC priority 2,
+        deliberately BELOW all 4 TIM2-5 capture-channel IRQs' priority
+        1 (that's what makes capture always preempt it and never miss
+        a real edge -- see hrtim.c's HRTIM1_EnableMasterInterrupt()).
+        With 5 channels now floating and picking up electrical noise
+        as spurious rising edges at a high, UNCONTROLLED rate
+        (PFM_Input_06 alone logged OVERCAP=66 out of 200 -- edges
+        arriving faster than even ITS OWN ISR could keep up), those
+        higher-priority capture ISRs can consume enough CPU time to
+        genuinely starve the lower-priority table-advance ISR --
+        stalling the REAL PWM output's progression through the table,
+        not just corrupting capture data for the floating channels.
+
+        No fault, no hang, no crash -- board stayed fully responsive
+        (FAULT? OK 0, *IDN? normal) throughout; this is a live timing
+        degradation, not a stability failure.
+
+        Reverted PFM_INPUT_ACTIVE_CHANNEL_MASK back to 0x01 (channel 1
+        only) -- this real risk (an unconnected/floating capture
+        channel can degrade PFM OUTPUT timing, not just its own
+        capture data) is worth keeping in mind for any future work
+        that wires up and enables channels 2-6: a genuinely floating
+        pin should stay disabled in this mask until it's actually
+        connected to something, not just left enabled "in case."
+
+  Files:   python/pfm_input_plot.py, Core/Inc/pfm_input.h
+
+2026-09-09  —  Decreasing-frequency sweep + PFM_Input re-verification --
+               both confirmed clean, no code changes needed
+-----------------------------------------------------------------------
+  Change:  Two real-hardware checks requested after the HRTIM SET/RESET
+        fix landed, neither of which had been tested yet:
+
+        1. Added PROFILE 8 to python/pfm_table_upload.py: the exact
+           reverse of PROFILE 6 -- 100 kHz -> 60 kHz (per INCREASING
+           step to step, the opposite direction of every ramp tested
+           so far). Fired, DSLogic-captured all 6 channels
+           (/Users/everettpenne/DSLogic U3Pro32-la-260909-102352.dsl):
+           U/UN/V/VN/W/WN all show ZERO anomalies. The CMP3 SET/RESET
+           fix is confirmed direction-agnostic, not just verified on
+           the shrinking-per case it was found and fixed on.
+
+        2. Re-verified pfm_input.c's on-board capture (PFM_Input_01,
+           the only active channel) against this same decreasing
+           sweep -- new territory for it too (never fed an
+           increasing-per signal before). Initial look at PFMIN:DATA?
+           appeared to show drift/anomalies (run lengths of 11-13
+           instead of 10, occasional out-of-sequence single values) --
+           traced to comparing against the wrong assumed index offset
+           (every prior test happened to line up at firmware
+           period[i] == DSLogic rise[i+1]; this shot's real alignment
+           was rise[i+2], a harmless which-edge-is-"first" labeling
+           difference between the two independent instruments, not a
+           capture defect). Once compared at the correct offset: all
+           200 captured periods matched DSLogic ground truth within
+           5.6 ticks -- same quality as every previous successful
+           test. PFM_Input capture confirmed still correct.
+
+  Files:   python/pfm_table_upload.py (no firmware changes this entry)
+
+2026-09-09  —  HRTIM SET/RESET collision fix EXTENDED to channel 0 (U)
+               after real-hardware re-test showed it wasn't actually
+               immune -- cold-start settling logic updated to match
+-----------------------------------------------------------------------
+  Change:  The V/W-only version of the CMP3 SET fix (entry just below)
+        was reflashed and re-tested with a full 6-channel (U/UN/V/VN/
+        W/WN) DSLogic capture of the same 60-100 kHz ramp. Result:
+        V/VN/W/WN -- 0 anomalies, fix fully confirmed. But U/UN newly
+        showed 6 anomalies each, same exact "measured = old + new"
+        merged-period signature V/W had -- and at almost the identical
+        per-value transitions (steps 12-16, ~1993-1814 ticks, plus the
+        final 100 kHz step) V/W used to fail at before their fix. This
+        means channel 0 was never actually immune to whatever the
+        underlying HRTIM hazard is -- it was just rarer/narrower than
+        V/W's own additional SET/RESET-crossbar vulnerability, and
+        probably got statistically masked by V/W's much-more-frequent
+        failures in every earlier test.
+
+        Extended fix: apply the same CMP3-based SET (see the entry
+        below for the full ST-community-sourced mechanism) to channel
+        0 too, not just channels 1..N-1. Its ResetTrigger stays
+        MASTER_PER (counter still resets exactly on the Master
+        boundary); only the output's SET SOURCE moves off TIMPER onto
+        CMP3, same 16-tick fixed offset as V/W.
+
+        Caught before testing, not after: this broke an existing
+        assumption in HRTIM1_WaitForPhaseAndConnect()'s cold-start
+        settling logic (HRTIM1_PWM_Start()), which explicitly skipped
+        the "reforceActive" output re-assert for channel 0 specifically
+        BECAUSE its SET source used to BE its own reset event (TIMPER
+        = MASTER_PER, the same instant). With SET now on a separate
+        CMP3 event, channel 0 needs the same reforceActive=1 treatment
+        channels 1..N-1 already get, or the very first pulse of every
+        shot risks the same garbled-cold-start failure mode this
+        function was built to prevent back on 2026-09-04. Fixed by
+        passing reforceActive=1 for channel 0's call too, with both
+        call sites' comments updated to match.
+
+        CONFIRMED FIXED, real hardware, same day: reflashed, repeated
+        the 60-100 kHz ramp with a full 6-channel DSLogic capture
+        (/Users/everettpenne/DSLogic U3Pro32-la-260909-101706.dsl).
+        Result: U/UN/V/VN/W/WN -- ALL SIX channels, 0 anomalies. Cold
+        start (each channel's very first pulse) also checked directly
+        and reads a normal-length period, not garbled -- the
+        reforceActive=1 fix for channel 0 holds. This appears to be the
+        actual root-cause fix for the frequency-ramp glitch investigated
+        across this whole 2026-09-09 session, not another mitigation.
+
+        Generalization check (requested directly, not assumed):
+        confirmed every place this fix lives -- the CMP3 compare-
+        register config loop, the per-channel output SetSource
+        selector, and HRTIM1_PWM_Start()'s cold-start reforceActive
+        handling -- is keyed off HRTIM_NUM_CHANNELS (ctrlr_config.h),
+        not a hardcoded channel count, so raising N in the future
+        automatically brings any newly-active channel under this fix
+        with no further code changes. Also confirmed no register
+        conflict: each channel's own local CMP3 (used here) is a
+        separate hardware resource from the Master's MCMP3R/MCMP4R
+        (already used for channels 3/4's phase offsets) -- same name,
+        different registers. Documented directly on
+        HRTIM_NUM_CHANNELS's own comment in ctrlr_config.h so this is
+        discoverable, not just implicit.
+
+  Files:   Core/Src/hrtim.c, Core/Inc/ctrlr_config.h
+
+2026-09-09  —  HRTIM SET/RESET collision fix for phase-shifted channels
+               (V/W) -- root cause found, real fix applied, pending
+               hardware re-verification
+-----------------------------------------------------------------------
+  Change:  Root-caused the frequency-ramp glitch from the entries just
+        below: a real-hardware sweep with PFM_Input_01 restricted to
+        phase U (clean, 0 anomalies) alongside a full 6-channel DSLogic
+        capture (U/UN/V/VN/W/WN) found V and W BOTH glitching --
+        starting as low as ~68-69 kHz, well inside the range U alone
+        had suggested was safe -- while U/UN stayed perfectly clean.
+        Every glitch's measured duration matched (old period + new
+        period) almost exactly (ratio 0.988-1.005 across all 16
+        glitches checked), on BOTH V and W -- i.e. one complete real
+        SET/rising-edge event is being silently dropped, not a garbled
+        or partial one.
+
+        Found the exact documented mechanism via ST's own community
+        engineering forum (search "HRTIM PWM transients greater than a
+        period"): when a timer's output SET and RESET events fall
+        within ~3 HRTIM clock cycles of each other, RESET always wins
+        and SET is silently dropped, leaving the output low for one
+        extra full cycle. U's output SET is tied to TIMPER = MASTER_PER
+        (its ResetTrigger), always far from its own mid-cycle CMP1
+        (duty, its ResetSource) -- no collision possible. V/W's SET is
+        ALSO tied to TIMPER, but for them TIMPER = MASTER_CMP1/CMP2
+        (their own ResetTrigger) -- a point that itself shifts every
+        table entry as per changes (phase = k*(per+1)/N), and during a
+        fast ramp can land within a few clocks of the PREVIOUS cycle's
+        own CMP1 (duty) event, exactly the documented collision.
+
+        FIX (the same one documented in that thread): V/W's output SET
+        moved off the un-prioritized TIMPER event onto a dedicated
+        CMP3 compare (HRTIM's collision rule favors the higher-numbered
+        compare register, so SET now wins ties against RESET's CMP1
+        instead of losing). CMP3xR set once at init to a small fixed
+        16-tick offset (not duty-dependent, no per-cycle updates
+        needed) -- negligible against real period lengths (1200+
+        ticks). Deliberately narrow: only channels 1..HRTIM_NUM_
+        CHANNELS-1 change; channel 0 and the unused channels beyond
+        HRTIM_NUM_CHANNELS (free-running, no MASTER_CMPk race possible)
+        keep SetSource = TIMPER.
+
+        Rebuilt clean (zero warnings, text 47140 -> 47252 bytes).
+        NOT YET RE-VERIFIED ON REAL HARDWARE as of this entry -- next
+        step is reflashing and repeating the 6-channel DSLogic capture
+        to confirm V/W actually stop glitching. Be prepared to revert
+        this specific change (the SetSource/CMP3 edit in
+        HRTIM1_FullInit(), hrtim.c) if it doesn't hold up or causes any
+        new real-hardware issue -- everything else in this session
+        stays regardless of this fix's outcome.
+
+  Files:   Core/Src/hrtim.c
+
+2026-09-09  —  100 kHz hard carrier-frequency limit; PFM_Input reduced
+               to the one wired channel; HRTIM shadow/preload
+               architecture reviewed (correct, root cause still open)
+-----------------------------------------------------------------------
+  Change:  Direct response to the frequency-ramp findings just above/
+        below this entry (real, intermittent missing-pulse glitches on
+        the wire above ~85 kHz on a frequency-CHANGING table):
+
+        1. ctrlr_config.h: new PFM_MAX_CARRIER_FREQ_HZ (100000) --
+           hard compile-time ceiling. Enforced in commands.c's
+           cmd_table_step() (new TABLE_STEP_MIN_PER bound, same
+           per_from_freq() formula as python/pfm_table_upload.py) --
+           any TABLE:STEP whose `per` implies a faster carrier is
+           rejected with new ERR 10, not silently accepted. 100 kHz is
+           the documented, tested-clean boundary, not a guess -- every
+           constant-100kHz test this project has run has been clean,
+           and the ramp's own first ~5 steps (all below 85 kHz) never
+           glitched either. python/pfm_table_upload.py's PROFILE 6
+           FREQ_RAMP_END_HZ lowered from 140_000 to 100_000 to match
+           (would otherwise immediately hit ERR 10 on re-upload).
+
+        2. pfm_input.h: new PFM_INPUT_ACTIVE_CHANNEL_MASK (0x01 --
+           PFM_Input_01 only), the one channel actually wired to a
+           real signal (phase U) on this bench. pfm_input.c reworked
+           so a timer with no active channel is left COMPLETELY
+           untouched by PfmInput_Init() -- no HAL_TIM_IC_Init(), no
+           clock enable, no NVIC IRQ enable, no GPIO AF config -- not
+           merely armed with M=0. TIM3/TIM4/TIM5 and TIM2_CH2 are now
+           fully idle. Motivation: cut CPU/interrupt load while the
+           frequency-transition timing investigation is open (load is
+           exactly what's under suspicion), and shrink the variables
+           in play. Re-enable a channel by setting its bit in the
+           mask; nothing else needs to change.
+
+        3. Investigated hrtim.c's HRTIM shadow/preload register
+           architecture (HRTIM1_FullInit(), HRTIM1_ApplyPfmStep(),
+           HRTIM1_SoftwareUpdate(), PFM_ApplyCurrentStep()) end to end
+           looking for a misconfiguration that could explain the
+           glitch. Found it CORRECTLY implements ST's own reference
+           multiphase design (STM32CubeF3 HRTIM_Multiphase): PreloadEnable
+           = ENABLED on both the Master and every active timer;
+           UpdateTrigger = MASTER for every phase-locked channel (ties
+           every channel's shadow->active promotion to one single,
+           coherent Master update event, not per-timer independent
+           events); RepetitionCounter = 0 (updates apply every single
+           period, not gated to every Nth); PFM_ApplyCurrentStep()
+           writes next-period values into shadow registers during the
+           CURRENT period (a full period's worth of margin, not a
+           last-instant race), relying on the natural hardware update
+           event to promote them -- NOT an explicit software-forced
+           update mid-period (that WOULD be capable of glitching; this
+           design correctly avoids it, using HRTIM1_SoftwareUpdate()
+           only once, for the very first period of a shot in
+           PFM_Restart(), before the counters are even running).
+           CONCLUSION: this is not a "forgot to use preload" bug --
+           the architecture is sound on paper. Root cause remains
+           OPEN. Refined clue, not yet confirmed: the glitched value
+           each time measures almost exactly 2x the NEW (post-
+           transition) period, not old+new -- i.e. the counter really
+           is running at the new, faster rate by the time of the
+           glitch, but ONE real toggle/edge at the exact transition
+           instant is being suppressed for one cycle. This may be
+           specific to channel 0 (phase U / PFM_Input_01), which
+           resets on MASTER_PER directly (the same event that also
+           promotes the Master's own shadow PER) rather than a
+           phase-shifted MASTER_CMPk trigger the other channels use --
+           unconfirmed. Resolving this further needs either STM32G4
+           reference-manual-level detail on Master PER shadow-register
+           promotion relative to its own counter-reset event, or live
+           timing instrumentation -- deliberately NOT attempted this
+           session given this project's history of real board hangs
+           chasing this exact flavor of timing bug aggressively.
+
+  Files:   Core/Inc/ctrlr_config.h, Core/Src/commands.c,
+        Core/Inc/commands.h, Core/Inc/pfm_input.h, Core/Src/pfm_input.c,
+        python/pfm_table_upload.py
+
+2026-09-09  —  PFM_Input: frequency-ramp test finds two real bugs --
+               one fixed (buffer overflow), one open (dropped edges
+               at fast transitions)
+-----------------------------------------------------------------------
+  Change:  Added PROFILE 6 to python/pfm_table_upload.py: a 200-entry,
+        20-step frequency ramp (60 kHz -> 140 kHz, constant 50% duty,
+        10 periods/step -- sized to exactly match PFM_INPUT_MAX_PERIODS
+        so a single PFMIN:CAPTURE 200 covers the whole shot), to verify
+        pfm_input.c's rising-edge capture tracks a CHANGING period, not
+        just the constant 100 kHz carrier every prior real-hardware
+        test used.
+
+        Real-hardware result: fired 3 times, cross-checked against two
+        DSLogic captures (a narrow one covering the first 3 steps, then
+        a widened ~5 ms window covering the full 200-period shot:
+        /Users/everettpenne/DSLogic U3Pro32-la-260909-091458.dsl).
+        DSLogic's ground truth is CLEAN across all 200 real periods --
+        every one of the 20 programmed frequency steps lands correctly
+        on the real PA15 wire, no glitches, no doubled pulses anywhere.
+
+        But the firmware's own PFMIN:DATA? reply does NOT match this
+        cleanly: 9 of its 200 entries come back as almost exactly 2x
+        the correct value for that point in the ramp (e.g. one entry
+        read 3986, exactly 2x the real 1993-tick period at that step).
+        Cross-referencing index-for-index against the DSLogic ground
+        truth (accounting for a fixed, well-understood 1-index offset
+        between the two data sets -- firmware's period[0] is the
+        interval AFTER its reference-only first rise, so it's one
+        real edge ahead of DSLogic's own rise[0]) confirms: this is a
+        REAL missed capture, not a real signal artifact -- the
+        firmware's ISR is silently failing to register one specific
+        rising edge, always right at a frequency-transition boundary,
+        and increasingly often as the ramp's periods shorten (none in
+        the first ~5 steps at 2000+ ticks/period, then at nearly every
+        transition once periods drop below ~1700 ticks). NOT YET
+        ROOT-CAUSED. Leading hypothesis, unconfirmed: an ISR
+        service-time margin issue that only bites when the capture
+        callback's own turnaround time becomes comparable to the
+        (now much shorter) real period, possibly worsened by
+        contention with HRTIM1_Master_IRQHandler/
+        PFM_CycleBoundaryHandler firing at the same moment to load the
+        new per/cmp values for the transition. This is a DIFFERENT
+        bug from the 2026-09-08 duty-cycle one (which corrupted every
+        single measurement, not just transitions, and is confirmed
+        gone -- see below) -- it only affects period tracking of a
+        FAST-CHANGING signal, not a constant one.
+
+        Separately, and unrelated: PFMIN:DATA? 1 was observed to
+        report 201 entries against an armed target of 200, with the
+        201st value being pure garbage (64250 = 0xFAFA). Root cause:
+        HAL_TIM_IC_Stop_IT() does not take effect instantaneously: a
+        capture already in flight when capturedCount reaches
+        targetCount can still race it and reach HAL_TIM_IC_
+        CaptureCallback() one more time, writing period[targetCount]
+        -- one past this channel's array -- which silently overflows
+        into the START of the NEXT channel's PfmInputState_t in
+        g_state[] (g_state[] is a plain contiguous array). FIXED:
+        the callback now bails out immediately if
+        capturedCount >= targetCount, before touching anything else,
+        making "already finished" a true no-op regardless of how the
+        stop race lands. Rebuilt clean (zero warnings); NOT yet
+        re-verified on hardware.
+
+  Files:   Core/Src/pfm_input.c, python/pfm_table_upload.py
+
+2026-09-08  —  PFM_Input: duty-cycle measurement dropped, rising-edge
+               period-only capture (bug sidestepped, not root-caused)
+-----------------------------------------------------------------------
+  Change:  Two independent duty-cycle capture designs (BOTHEDGE +
+        live-GPIO disambiguation, then an alternating-single-polarity
+        redesign with a disassembly-confirmed CCxE-toggle fix) both
+        gave a real signal wired to PFM_Input_01 consistently ONE FULL
+        REAL PERIOD LATE readings (reported high == real period + real
+        high; reported period == 2x real period, 20/20 captures both
+        times) -- see the two entries below for the full diagnostic
+        history. A follow-up PWM-Input-Mode isolation test caused two
+        real board hangs (recovered via physical power-cycle both
+        times) and was abandoned before producing data; that
+        diagnostic code was written, tested, and then fully removed
+        again in the same session.
+
+        Decision: duty-cycle (time-high) measurement is dropped
+        entirely rather than continuing to chase an unexplained bug.
+        pfm_input.c now measures period only, via plain
+        TIM_ICPOLARITY_RISING armed once at PfmInput_Init() and never
+        touched again -- ArmPolarity()/the WAIT_RISE/WAIT_FALL phase
+        state machine are gone. The one thing every failed duty-cycle
+        attempt had in common was an in-ISR polarity change; rising-
+        edge-only capture has none, which should sidestep the bug
+        entirely rather than fix it -- NOT yet re-verified on real
+        hardware (next step: repeat the phase-U-into-PFM_Input_01
+        test from the entry below and confirm period reads correctly
+        this time).
+
+        Wire-format change: PFMIN:DATA? <ch> now replies
+        "OK <count> OVERCAP=<n> <per1> <per2> ..." (dropped the
+        per-period "<hi>" field). PfmInput_GetHighTicks() removed from
+        pfm_input.h's API.
+
+  Files:   Core/Src/pfm_input.c, Core/Inc/pfm_input.h,
+        Core/Src/commands.c, Core/Inc/commands.h, AGENTS.md
+
+  CONFIRMED FIXED, real hardware, same day: reflashed, uploaded the
+        identical 100-entry/100 kHz/40%-duty table used in the earlier
+        broken test (per=1699, cmp=680, all 3 channels), phase U wired
+        to PFM_Input_01 exactly as before, PFMIN:CAPTURE 20, FIRE.
+        PFMIN:DATA? 1 -> "OK 20 OVERCAP=0" followed by 1699 twenty
+        times, no exceptions -- the exact real period, not 3398.
+        Independently confirmed against a fresh DSLogic capture of the
+        same shot (/Users/everettpenne/DSLogic
+        U3Pro32-la-260909-090119.dsl): 50 real rising edges captured,
+        and (excluding one cold-start-settling first period, already
+        documented elsewhere in this project) the other 48 average
+        1697.1 ticks at 170 MHz (range 1695.9-1698.0, sigma ~0.55) --
+        matching the firmware's 1699 within ordinary 250 MHz-sample-
+        into-170-MHz-tick quantization/clock-tolerance noise, nothing
+        like the old bug's clean, exact 2x signature. Root cause of
+        the original bug is still not explained -- it was sidestepped,
+        not fixed -- but the measured data is now correct.
+
+2026-09-08  —  PFM_Input real-hardware test: data corruption found,
+               root cause NOT yet found -- diagnostic writeup
+-----------------------------------------------------------------------
+  Change:  First real-signal test of pfm_input.c (see the entry below
+        for the feature itself): phase U's HRTIM output (per=1699,
+        cmp=680 -- 100 kHz, 40% duty, this exact per/cmp pair already
+        hardware-verified via DSLogic in earlier sessions) wired
+        directly to PFM_Input_01 (PA15), a 100-entry constant table
+        fired, PFMIN:CAPTURE 20 armed beforehand.
+
+        Result: the capture mechanism itself works exactly as designed
+        -- channel 1 reliably reached its armed count of 20 promptly
+        after FIRE, confirming the shot-synchronized arm/start/stop
+        plumbing end to end on real hardware, not just in isolation.
+        But the MEASURED VALUES are wrong: high-time (duty) values
+        consistently read correctly (~664 ticks, matching the
+        expected ~40% duty minus the same ~90-100 ns dead-time
+        shortfall already characterized in this project's earlier
+        DSLogic work), but period values consistently read as
+        roughly 2-3x the expected single-period tick count (~1700) --
+        i.e. real periods are being merged/undercounted.
+
+        Diagnosed with real instrumentation added to pfm_input.c
+        specifically for this (PfmInput_GetOvercaptureCount(),
+        PfmInput_DebugGetUnexpectedRise()/Fall(), all reported via a
+        temporary OVERCAP=/URISE=/UFALL= prefix on PFMIN:DATA?'s
+        reply -- not yet in docs/command_reference.md, this is
+        diagnostic-only for now), not guessed:
+          - Hardware overcapture (CCxOF) stayed near zero (0-1 across
+            20 captured periods) -- rules out simple CPU/ISR
+            starvation silently overwriting CCR values before the ISR
+            could read them.
+          - The other 5 armed-but-unconnected channels showed ZERO
+            capture activity (0 overcaptures, 0 captured periods each)
+            -- rules out floating-pin noise on the other channels
+            (e.g. PD4, sharing TIM2 with the pin under test)
+            interfering with channel 1's own servicing.
+          - UFALL (WAIT_CLOSING_RISE seeing an unexpected extra
+            falling-type capture) was consistently high (34-36 across
+            20 periods) -- the state machine IS reliably being handed
+            genuine extra capture events while waiting for the single
+            expected closing rise.
+          - Raising ICFilter (the timer's built-in digital
+            deglitch/noise filter, left at 0 in the first version) to
+            0x3 then 0xF did NOT converge toward correct -- 0x3 showed
+            no measurable change from 0, and 0xF made the corruption
+            categorically worse (high-time readings jumped to ~1700,
+            nearly a full period, instead of the correct ~664). This
+            is inconsistent with simple debounce-able signal ringing
+            (which more filtering should improve, not worsen) and is
+            more consistent with the filter's own sampling delay
+            desynchronizing HAL_TIM_ReadCapturedValue() (which goes
+            through the filter) from the separate, always-instantaneous
+            HAL_GPIO_ReadPin() this module uses to disambiguate BOTHEDGE
+            captures (which does not) -- a real mechanism, but one that
+            doesn't explain the ORIGINAL filter=0 corruption, which
+            has no filter delay to desync against in the first place.
+          - ICFilter reverted to 0 (neither 0x3 nor 0xF showed a real
+            improvement, and higher values add the GPIO-read/filter-
+            delay mismatch risk above for no confirmed benefit).
+
+        Root cause NOT found. What remains genuinely unknown, flagged
+        honestly rather than guessed: whether this is a real electrical
+        signal-integrity problem on the physical U-to-PFM_Input_01
+        connection (this session has no scope/logic analyzer access to
+        see the actual waveform) or a logic bug in pfm_input.c's
+        BOTHEDGE-plus-GPIO-level-read disambiguation approach itself
+        (e.g. a genuine race between an edge landing in CCR and this
+        module's separate GPIO read of the "current" pin state, if the
+        real signal is doing something other than this module's
+        two-edges-per-period assumption). Next step needs the bench:
+        a scope or DSLogic capture of the actual PA15/U signal during
+        a shot, to see the real waveform directly rather than infer it
+        indirectly through capture behavior.
+
+        Diagnostic instrumentation (PfmInput_GetOvercaptureCount() in
+        pfm_input.h; PfmInput_DebugGetUnexpectedRise()/Fall(), not in
+        the header, reached via local externs in commands.c) left in
+        place, not reverted -- the investigation isn't finished. Board
+        left flashed with ICFilter=0 (the original, unmodified value)
+        plus this diagnostic instrumentation.
+
+2026-09-08  —  PFM_Input period/duty capture (pfm_input.c/.h),
+               synchronized to PFM shot lifetime
+-----------------------------------------------------------------------
+  Change:  New module measuring period + duty (time-high) per period,
+        for a runtime-chosen count M of periods, independently on each
+        of the 6 PFM_Input_01..06 pins (docs/pin_mapping_v4.csv --
+        PA15/TIM2_CH1, PD4/TIM2_CH2, PB2/TIM5_CH1, PC12/TIM5_CH2,
+        PB4/TIM3_CH1, PD12/TIM4_CH1). Requested as a plan first
+        (plan mode used directly); the plan's first draft had
+        PFMIN:CAPTURE both arm AND immediately start-and-block on its
+        own, with no tie to FIRE at all -- corrected per direct
+        follow-up request before implementation: capture must begin
+        exactly when a PFM output shot begins, not at some arbitrary
+        later moment.
+
+        Design, as corrected: PFMIN:CAPTURE <M> now only ARMS a target
+        period count per channel (PfmInput_Arm(), pfm_input.c) -- pure
+        bookkeeping, touches no TIMx hardware, returns OK immediately.
+        The actual HAL_TIM_IC_Start_IT() calls happen inside
+        PFM_Restart() (pfm.c), the same function that calls
+        HRTIM1_PWM_Start() for the shot itself, via a new
+        PfmInput_OnShotStart() call added right alongside it -- so
+        input capture and PWM output begin at the literal same call,
+        not a separately-timed command. A capture also can never run
+        longer than the shot that started it: PfmInput_OnShotEnd() is
+        called from every place pfm.c stops a shot (PFM_ForceStop(),
+        shared with both fault sources, AND the normal
+        end-of-table-exhaustion branch in PFM_CycleBoundaryHandler(),
+        which stops inline rather than via PFM_ForceStop() and so
+        needed its own explicit call) -- stops any channel still
+        running, leaving its partial count intact. This means there is
+        no separate, arbitrarily-chosen capture timeout to invent: the
+        shot's own already-deterministic duration is the bound.
+        New PFMIN:STATus? (current captured-period count per channel,
+        the way to know when an armed capture has finished without
+        PFMIN:CAPTURE itself blocking) and PFMIN:DATA? <ch> (raw
+        per-period ticks, self-describing its own count rather than
+        assuming the armed M was reached, matching TABLE:END's own
+        `OK <count>` precedent). New ERR 8/9.
+
+        Channel/pin/AF mapping verified before writing any code, not
+        assumed: docs/pin_mapping_v4.csv + the same datasheet
+        column-position method already trusted in this project (Table
+        13), cross-checked against known-good reference points on the
+        same rows (TIM2_CH1 on PA15 -> AF1, matching the universally-
+        known STM32 TIM1/TIM2=AF1 convention; SPI4/USART3/HRTIM1_FLTx
+        landing on their own already-expected AF numbers on nearby
+        rows). All 6: PA15/TIM2_CH1=AF1, PD4/TIM2_CH2=AF2,
+        PB2/TIM5_CH1=AF2, PC12/TIM5_CH2=AF1, PB4/TIM3_CH1=AF2,
+        PD12/TIM4_CH1=AF2. PA15 and PB4 both default to JTAG-debug-port
+        pins at reset (JTDI, JTRST) -- reclaiming them as plain
+        AF-muxed GPIO is standard given this project's SWD-only debug
+        link, not a real risk, just noted.
+
+        Key hardware constraint confirmed before designing the capture
+        mechanism: TIM2 hosts BOTH PFM_Input_01 (CH1) and PFM_Input_02
+        (CH2); TIM5 hosts BOTH PFM_Input_03 (CH1) and PFM_Input_04
+        (CH2) -- a fixed PCB trace-routing fact, not a software choice.
+        This rules out STM32's classic "PWM Input Mode" (which
+        cross-connects a timer's CH1+CH2 to measure ONE input's
+        rising+falling edges together) for those two timers, since each
+        channel here must independently measure its own, possibly
+        unrelated signal. Used TIM_ICPOLARITY_BOTHEDGE independently on
+        every one of the 6 channels instead, with the live GPIO pin
+        level read at each capture interrupt to disambiguate rising
+        from falling -- applied uniformly across all 6 channels
+        (including the two solo ones on TIM3/TIM4) for one consistent
+        mechanism rather than mixing PWM Input Mode in where it would
+        happen to fit.
+
+        TIM2 and TIM5 are 32-bit counters; TIM3 and TIM4 are 16-bit
+        (confirmed via stm32g474xx.h's IS_TIM_32B_COUNTER_INSTANCE
+        macro). At this board's confirmed ~100 kHz-ish PFM_Input signal
+        range and the 170 MHz timer kernel clock (APB1 undivided, same
+        derivation already documented for HRTIM), no prescaler is used
+        on any of the 4 counters -- full resolution (~1700 ticks/period
+        at 100 kHz), and even the 16-bit counters' ~385 us/~2.6 kHz
+        overflow floor is comfortably below this signal range. A real
+        ceiling, not assumed to hold forever if actual signals turn out
+        slower than expected -- flagged in pfm_input.c.
+
+        stm32g4xx_hal_tim.c/.h (+ _tim_ex) did not exist in this
+        project's Drivers/ tree at all (HAL_TIM_MODULE_ENABLED was
+        commented out) -- copied from STM32Cube_FW_G4_V1.6.3, same
+        exact-HAL-version-match reasoning as the QSPI driver copy last
+        session (HAL Driver V1.2.7). Debug/Drivers/.../subdir.mk and
+        Debug/objects.list hand-patched again (Core/Src/pfm_input.c,
+        the two new Drivers/ source files).
+
+        HAL_TIM_IC_MspInit()/MspDeInit() live in pfm_input.c itself,
+        not stm32g4xx_hal_msp.c, matching hrtim.c/qspi_test.c's
+        precedent for hand-added (non-CubeMX) peripherals.
+        stm32g4xx_it.c's TIM2/TIM3/TIM4/TIM5_IRQHandler()s use the
+        generic HAL_TIM_IRQHandler() + overridden
+        HAL_TIM_IC_CaptureCallback() dispatch, the same style already
+        used for USART2 (HAL_UART_IRQHandler()/RxCpltCallback(),
+        uart.c) -- a better fit than HRTIM1_Master_IRQHandler()'s
+        hand-rolled raw-flag style for 4 instances x up to 2 channels
+        each. NVIC priority tied with HRTIM1_Master_IRQn and the
+        GateDriverStatus EXTI interrupts (1,0), above USART2 (2,0).
+
+        Self-contained and removable (PFM_INPUT_FEATURE_ENABLED,
+        pfm_input.h), matching boot_jump.h/qspi_test.h's established
+        pattern -- including a real gap caught and fixed before it ever
+        shipped: the first version unconditionally declared
+        `extern TIM_HandleTypeDef htim2..htim5` in the header and
+        referenced them unconditionally in stm32g4xx_it.c's 4 new
+        IRQHandler()s, but pfm_input.c only DEFINES them inside its own
+        `#if PFM_INPUT_FEATURE_ENABLED` block -- building with the
+        feature disabled would have failed to link (undefined
+        references) despite compiling cleanly, a real hole the "does it
+        actually still build with everything else here" habit this
+        project already has caught before it needed a bug report. Fixed
+        by guarding both the extern declarations and the 4 IRQHandler()
+        definitions on the same macro -- confirmed by actually building
+        both ways (see Verified below), not just re-reading the fix.
+
+        Buffer sizing note: PFMIN:DATA?'s reply can be large (up to
+        PFM_INPUT_MAX_PERIODS=200 entries, ~4.4 KB of text) -- this
+        project's linker script reserves only 1 KB (_Min_Stack_Size,
+        STM32G474QETX_FLASH.ld) for the stack, so that buffer is
+        `static` in commands.c, not a stack-local array, even though
+        the actual runtime stack has much more room in practice (see
+        AGENTS.md's own already-flagged, still-deferred note on stack
+        sizing) -- not worth adding a multi-KB stack frame to a
+        codebase that has already flagged this as an open question
+        rather than a settled one.
+
+        Verified on real hardware: clean rebuild (zero warnings) with
+        PFM_INPUT_FEATURE_ENABLED both 1 and 0 (confirms genuine
+        removability -- disabling drops 14704 bytes of .bss, and fixes
+        the extern/IRQHandler linkage gap described above, confirmed by
+        the disabled build actually linking cleanly). With it enabled:
+        reflashed, PFMIN:CAPTURE 20 with no FIRE yet -> PFMIN:STATUS?
+        correctly reads all zeros (arming alone touches no hardware);
+        M=0 and M=9999 both correctly rejected with ERR 9; channel 0
+        and 7 both correctly rejected with ERR 8 on PFMIN:DATA?; a
+        normal TABLE upload + FIRE with an armed-but-unconnected
+        capture completed normally (FIRE still replies OK immediately,
+        no blocking) and PFMIN:STATUS?/DATA? afterward correctly showed
+        all-zero counts (no signal present on any PFM_Input pin on this
+        bench right now, the expected result, not a hang). NOT yet
+        verified on real hardware: an actual signal's period/duty
+        values coming back correctly, the TIM2/TIM5 shared-channel
+        independence claim, and a fault-triggered stop mid-capture --
+        all need a real signal source (function generator, or an HRTIM
+        output looped back to a PFM_Input pin) and are the bench's own
+        work, not something this session could do standalone.
+        docs/command_reference.md not yet updated with
+        PFMIN:CAPTURE/STATus?/DATA?/ERR 8/9 -- deferred until that
+        bench verification lands, so the write-up reflects fully
+        confirmed behavior, not just the command-layer shape of it.
+
+2026-09-08  —  QUADSPI test module (qspi_test.c/.h) -- W25Q128JVS
+               connectivity confirmed on real hardware
+-----------------------------------------------------------------------
+  Change:  Requested as an easily removable module, following
+        boot_jump.h's own "self-contained and removable" pattern
+        exactly: QSPI_TEST_FEATURE_ENABLED (qspi_test.h) is the single
+        point of control. Scope, per direct confirmation: connectivity
+        only -- one command, the W25Q128JVS's standard JEDEC Read ID
+        instruction (0x9F, plain 1-line mode, no Quad Enable required)
+        -- not a general QUADSPI driver, not program/erase, not
+        memory-mapped access.
+
+        HAL enablement: stm32g4xx_hal_qspi.c/.h did not exist in this
+        project's Drivers/ tree at all (QUADSPI was never enabled via
+        CubeMX here). Copied from STM32Cube_FW_G4_V1.6.3's package,
+        chosen specifically because it bundles HAL Driver V1.2.7 -- an
+        exact version match against every other driver file already in
+        this project (confirmed via each file's own version banner
+        before copying, not assumed) -- to avoid any HAL-version API
+        mismatch. HAL_QSPI_MODULE_ENABLED uncommented in
+        stm32g4xx_hal_conf.h. Both Debug/Drivers/.../subdir.mk and
+        Debug/objects.list needed the same hand-patching gotcha
+        AGENTS.md already documents for Core/Src additions -- this is
+        the first time it applied to Drivers/ instead.
+
+        Pin/AF mapping verified before writing any code, not assumed
+        from the HAL header's existence: docs/pin_mapping_v4.csv lists
+        PE12-PE15 (BK1_IO0-3) and PB10/PB11 (CLK/BK1_NCS). The HAL only
+        exposes two QUADSPI-capable AF constants (AF3, AF10) and which
+        one applies is pin-specific -- confirmed via the same datasheet
+        column-position method already trusted in this project (Table
+        13), calibrated against three independent already-known-good
+        reference points on the same table rows (TIM1_CH3N->AF2,
+        SPI4_SCK->AF5, FMC_D9->AF12 on the PE12 row; USART3_TX->AF7,
+        HRTIM1_FLT3->AF13 on the PB10 row -- that last one an exact
+        cross-check against this session's own already-hardware-verified
+        PC10/HRTIM1_FLT6->AF13 result). All 6 pins landed on AF10
+        (GPIO_AF10_QUADSPI) -- confirmed, not guessed.
+
+        qspi_test.c: HAL_QSPI_MspInit()/MspDeInit() live here, not in
+        stm32g4xx_hal_msp.c, matching hrtim.c's own precedent for
+        hand-added (non-CubeMX-generated) peripheral pin config -- see
+        AGENTS.md's "NOT REGEN-SAFE" HRTIM/CubeMX collision history for
+        why. QUADSPI kernel clock explicitly set to SYSCLK
+        (HAL_RCCEx_PeriphCLKConfig(), RCC_QSPICLKSOURCE_SYSCLK) rather
+        than relying on the POR default being correct. ClockPrescaler
+        chosen for a conservative 5 MHz first-bring-up rate (170 MHz
+        SYSCLK / 34). NCS pin gets GPIO_PULLUP (flagged assumption, no
+        external pull confirmed -- idle-deselected-by-default before
+        the peripheral drives it); CLK/IO0-3 get GPIO_NOPULL.
+
+        New QSPI:ID? command (commands.c/commands.h, cmd_parser.c),
+        gated on QSPI_TEST_FEATURE_ENABLED the same way BOOT is gated
+        on BOOT_JUMP_FEATURE_ENABLED -- entirely absent from the
+        command table when disabled. Reports the 3 raw ID bytes as hex
+        ("OK EF 40 18"), no hardcoded expected value asserted -- the
+        command reports what the chip says, doesn't claim to validate
+        it. New ERR 7 (QUADSPI command/receive failure or timeout).
+
+        BUGFIX, found and fixed via real-hardware testing, not
+        docs/guesswork: the first QSPI:ID? attempt against actual
+        silicon returned a stable, repeatable "DE 80 30" instead of the
+        expected Winbond "EF 40 18". Confirmed this was not noise or a
+        wiring fault: EF4018 left-shifted by exactly 1 bit (as one
+        continuous 24-bit stream) == DE8030, an exact match. Root cause:
+        QSPI_InitTypeDef.SampleShifting was QSPI_SAMPLE_SHIFTING_HALFCYCLE
+        (the usually-recommended default, meant to compensate for
+        signal propagation delay) -- switching to
+        QSPI_SAMPLE_SHIFTING_NONE fixed it immediately and repeatably.
+        Plausible explanation (not chased further): at this
+        deliberately conservative 5 MHz and whatever this board's
+        QUADSPI trace length actually is, the extra half-cycle of
+        sample delay overshoots past the valid data window instead of
+        centering in it. Documented inline in qspi_test.c; worth
+        revisiting if the clock rate is ever raised well past 5 MHz.
+
+        Verified on real hardware, end to end: clean rebuild (zero
+        warnings) both with the module enabled and with
+        QSPI_TEST_FEATURE_ENABLED forced to 0 (confirms genuine
+        removability, not just a claim -- disabling drops 2308 bytes of
+        .text and the command disappears from the table). With it
+        enabled and the SampleShifting fix applied: QSPI:ID? returned
+        "OK EF 40 18" -- correct Winbond manufacturer ID, correct
+        W25Q128 memory type/capacity bytes -- repeatably (3x) after
+        reflashing. This confirms the new QUADSPI hardware (pins,
+        traces, the W25Q128JVS itself) is wired and responding
+        correctly, beyond just the firmware compiling.
+
+        docs/command_reference.md updated with QSPI:ID?/ERR 7 -- and,
+        since this session's real-hardware verification of the
+        GateDriverStatus fault path (see the entry below) was already
+        thorough enough to stand on its own, FAULT?/FAULT:CLEAR/ERR 6
+        got written up in the same pass rather than staying deferred
+        any longer, with the PC10-specific low-drive bench trip
+        clearly flagged there as the one still-open item.
+
+2026-09-08  —  GateDriverStatus fault interrupt (PE0-PE11) + version.h/
+               ctrlr_config.h re-condensed
+-----------------------------------------------------------------------
+  Change:  Two changes requested together, both in ctrlr_config.h:
+
+        1. version.h condensed back into ctrlr_config.h. Briefly split
+        earlier the same day (identity in version.h, behavior in
+        ctrlr_config.h) on the reasoning that identity and behavior are
+        different kinds of thing -- re-condensed per direct request,
+        back to one config file, matching the sibling PFM-STM32G474
+        project's single supply_config.h. version.h deleted;
+        HW_BOARD_NAME/REV, FW_VERSION_STRING now live in
+        ctrlr_config.h. Only one includer existed (commands.c); updated,
+        plus doc-comment references in commands.h/commands.c/AGENTS.md.
+
+        2. GateDriverStatus_01..12 (PE0-PE11) promoted from GDS?'s
+        read-only diagnostic (see the entry below) to a real fault
+        interrupt that can stop PWM output on its own, independent of
+        PC10/HRTIM1_FLT6. New GDS_FAULT_POLARITY (ctrlr_config.h,
+        NORMALLY_HIGH/NORMALLY_LOW, naming matches the sibling
+        PFM-STM32G474 project's supply_config.h exactly) -- set to
+        NORMALLY_LOW after direct confirmation against this board's
+        actual gate driver ICs. Single source of truth in one file,
+        avoiding the sibling project's own documented history of this
+        same setting once being defined twice (supply_config.h and
+        gate_driver.h, with gate_driver.h's #ifndef always silently
+        winning) -- not a risk here structurally, since gate_driver.h
+        includes ctrlr_config.h rather than defining anything itself.
+
+        main.c: PE0-PE11 upgraded from GPIO_MODE_INPUT to
+        GPIO_MODE_IT_RISING_FALLING (both edges -- the fault/healthy
+        determination happens in software against GDS_FAULT_POLARITY,
+        not by picking a trigger edge), plus __HAL_RCC_SYSCFG_CLK_ENABLE()
+        (required for HAL_GPIO_Init() to actually route EXTI lines) and
+        NVIC priority/enable for all 7 vectors PE0-PE11 spans
+        (EXTI0-EXTI4 individually, EXTI9_5, EXTI15_10 -- tied with
+        HRTIM1_Master_IRQn's priority, above USART2's).
+
+        stm32g4xx_it.c: 7 new IRQ handlers, each clearing only its own
+        pin's pending bit then calling gate_driver.c's
+        GateDriver_CheckFault() -- which re-reads and evaluates ALL 12
+        pins itself regardless of which specific edge woke the CPU, per
+        the literal ask ("bitwise read PE0 through PE11" -- see below
+        for why PE11, not PE12 as originally asked; confirmed with the
+        user before implementing).
+
+        gate_driver.c/.h: new GateDriver_CheckFault() (bitwise mask
+        against GDS_FAULT_POLARITY: NORMALLY_LOW faults on any HIGH bit,
+        NORMALLY_HIGH faults on any LOW bit; on a fault, immediately
+        PFM_ForceStop() + latch) and GateDriver_FaultIsLatched()/
+        GateDriver_FaultClear(). GateDriver_FaultClear() clears the
+        latch then immediately re-validates by calling
+        GateDriver_CheckFault() again -- deliberate, and load-bearing:
+        unlike PC10/HRTIM1_FLT6's hardware latch (which re-trips on its
+        own if the condition is still physically present),
+        GateDriver_CheckFault() only ever runs from an EXTI edge (or the
+        one explicit boot-time call, next paragraph) -- without the
+        recheck, clearing a still-bad pin would silently report FAULT?
+        OK 0 until the next incidental toggle.
+
+        main.c also gained one explicit GateDriver_CheckFault() call at
+        boot, before uart_init(). EXTI is edge-triggered: a pin already
+        in its fault state at the moment PE0-PE11 are configured for
+        interrupt mode produces no edge of its own and would otherwise
+        go undetected until something happened to toggle it later. This
+        was not a hypothetical concern -- see Verified below.
+
+        pfm.h/pfm.c: new PFM_ForceStop() (HRTIM1_PWM_Stop() +
+        g_pfmState = STOPPED), extracted from the two places
+        PFM_CycleBoundaryHandler() already did exactly this inline (the
+        PC10-fault and empty-table branches), so GateDriver_CheckFault()
+        -- running from EXTI context, independent of the HRTIM
+        master-repetition ISR -- can force the same clean stop without
+        leaving g_pfmState stale at RUNNING.
+
+        commands.c: FAULT?/FAULT:CLEAR/FIRE's ERR 6 check now consider
+        BOTH fault sources via a new AnyFaultLatched() helper
+        (HRTIM1_FaultIsTripped() || GateDriver_FaultIsLatched()) --
+        combined only at this command layer; the two detection
+        mechanisms stay structurally independent underneath. FAULT:CLEAR
+        clears both latches unconditionally.
+
+        Pin range clarified before implementing, not assumed: the
+        request said "PE0 through PE12," but docs/pin_mapping_v4.csv
+        shows PE12 is unconnected on this board (QUADSPI_BK1_IO0, "No
+        connection") while PE0-PE11 are exactly the 12 GateDriverStatus
+        pins already confirmed by GDS?. Confirmed PE0-PE11 (12 pins) was
+        intended before writing any pin-mask/EXTI code -- including an
+        unconnected, floating PE12 in the fault-OR logic would have
+        risked either a spurious permanent fault-lock or, depending on
+        how it happened to float, silently masking a real fault.
+
+        Verified on real hardware, end-to-end: clean rebuild (zero
+        warnings), reflash. GDS? read GateDriverStatus_03 (PE2) already
+        HIGH -- under the confirmed NORMALLY_LOW polarity, that's a real
+        fault condition, present before this change ever existed to
+        detect it. Immediately after flashing: FAULT? read OK 1 (the
+        boot-time explicit check caught it, confirming that fix was not
+        just theoretical), FIRE was correctly rejected with ERR 6, and
+        FAULT:CLEAR correctly re-latched (FAULT? back to OK 1 right
+        after) rather than clearing a fault that was still physically
+        present -- confirming the recheck-on-clear behavior end to end,
+        not just by inspection.
+
+2026-09-08  —  GateDriverStatus diagnostic (GDS?, PE0-PE11)
+-----------------------------------------------------------------------
+  Change:  Added a raw HIGH/LOW readback of the 12 GateDriverStatus_01
+        through _12 pins (PE0-PE11, GPIOE -- docs/pin_mapping_v4.csv),
+        requested while investigating why a fault wasn't being
+        registered. New Core/Src/Inc/gate_driver.c/.h -- deliberately
+        narrow (unlike the sibling PFM-STM32G474 project's
+        gate_driver.c/fault_pins.c): just GateDriver_Read(), a direct
+        GPIOE->IDR read with no debounce, no fault-latching, no per-pin
+        polarity/callback table. These 12 pins are gate-driver-IC status
+        outputs and were never wired into HRTIM's native fault input
+        (HRTIM1_FLT6/PC10, see the entry below) -- this command cannot
+        stop PWM by itself; it's read-only visibility.
+
+        These pins had never been configured as GPIO inputs at all
+        before this change -- MX_GPIO_Init() (main.c) only enabled
+        GPIOA. Added GPIOE clock enable + GPIO_MODE_INPUT/GPIO_NOPULL
+        config for PE0-PE11 there, matching the sibling project's
+        gpio.c precedent for these same 12 pins exactly (plain input,
+        no pull -- actively driven by the gate driver ICs).
+
+        New GDS? command (commands.c/commands.h, cmd_parser.c) reports
+        all 12 states on a single OK line ("OK 01=HIGH 02=LOW ...",
+        NN = 01-12 matching the GateDriverStatus_01..12 numbering,
+        space-separated, PE0 first) -- kept to this project's existing
+        single-"OK <value>"-line convention rather than adopting the
+        sibling project's multi-line/bitmask GDS? reply shapes.
+
+        Build note: gate_driver.c is a source file added directly (not
+        via CubeIDE's UI), so Debug/Core/Src/subdir.mk and
+        Debug/objects.list both needed hand-patching to pick it up from
+        the command line -- see AGENTS.md's "Adding a new source file
+        from outside CubeIDE" note (already documented there from
+        earlier files; not new guidance).
+
+        Verified on real hardware: clean rebuild (zero warnings),
+        reflash, GDS? read twice back-to-back -- stable, repeatable
+        result (11 of 12 pins LOW, one HIGH) on this board's current
+        as-wired state. What that particular pattern means electrically
+        (which pin, what it indicates) was not interpreted here -- raw
+        readback only, by design.
+
+2026-09-08  —  HRTIM native hardware fault input (PC10 / HRTIM1_FLT6)
+-----------------------------------------------------------------------
+  Change:  Wired up PC10, wired on this board directly to HRTIM1's own
+        FLT6 fault input (docs/pin_mapping_v4.csv), as a real silicon-
+        level fault mechanism -- the peripheral forces every fault-
+        enabled channel's outputs to a safe (INACTIVE) level
+        autonomously, in hardware, the instant the pin trips, with no
+        CPU/interrupt/polling latency and no dependency on the CPU
+        being alive. Deliberately NOT the sibling PFM-STM32G474
+        project's HRTIM1_EmergencyStop()/fault_pins.c approach (a
+        GPIO-polled pin, software-forced off after the fact) -- this
+        project's hrtim.h had flagged that as "port verbatim when fault
+        handling is added"; the real ask turned out to be stronger than
+        a port, so it wasn't ported.
+
+        Active-low (fault = pin driven low), per direct confirmation
+        against the fault-sensing circuit. AF13 (GPIO_AF13_HRTIM1)
+        confirmed via the same datasheet column-position method already
+        trusted in this project, re-calibrated against the already-known
+        -good PC8/AF3 result before trusting the new PC10 result.
+
+        hrtim.c: HAL_HRTIM_MspInit() configures PC10 (AF13, GPIO_PULLUP
+        -- a flagged defensive-default assumption, no external pull
+        confirmed). HRTIM1_FullInit() adds HAL_HRTIM_FaultConfig() +
+        HAL_HRTIM_FaultModeCtl() for FLT6 (DIGITALINPUT source, LOW
+        polarity), pTimerCfg.FaultEnable = HRTIM_TIMFAULTENABLE_FAULT6
+        for every timer, pOutputCfg.FaultLevel =
+        HRTIM_OUTPUTFAULTLEVEL_INACTIVE for every output (the field that
+        actually does the output-safing; FaultEnable alone does not).
+        New HRTIM1_FaultIsTripped() (reads the ISR flag directly, no
+        software cache) and HRTIM1_FaultClear() (stops counters, clears
+        the flag -- deliberately does NOT re-issue
+        HAL_HRTIM_WaveformOutputStart() itself; reconnecting outputs is
+        left entirely to the next explicit FIRE -> PFM_Restart() ->
+        HRTIM1_PWM_Start(), which already does a complete from-scratch
+        reconnect with no assumption about prior state, so duplicating
+        any part of it here would be unnecessary risk -- a deliberate
+        simplification of this feature's own plan, reasoning recorded in
+        the code comment).
+
+        pfm.c: PFM_CycleBoundaryHandler() gains a bookkeeping check --
+        if HRTIM1_FaultIsTripped(), stop the counters and get
+        PFM_GetState() out of RUNNING (the hardware has already safed
+        the outputs by the time this ever runs; this just stops the
+        table from silently continuing to advance).
+
+        commands.c/commands.h/cmd_parser.c: new FAULT? (OK 0|1) and
+        FAULT:CLEAR (OK) commands, and FIRE now rejects with a new
+        ERR 6 ("Fault latched -- send FAULT:CLEAR first") if a fault is
+        latched, checked before the existing empty-table ERR 5 check.
+        Latched-until-cleared by design (matching the sibling project's
+        Lockout/CLEARFAULTS convention) -- FAULT:CLEAR must be sent
+        explicitly even after the physical fault condition has gone
+        away; a fault silently clearing itself with output resuming
+        unnoticed is the hazard this avoids.
+
+        Verified on real hardware so far: clean rebuild (zero warnings),
+        reflash, command-layer pass with no fault forced -- FAULT? reads
+        OK 0 at idle (PC10's idle-high state does not read as a spurious
+        trip, the key regression risk from this change), FIRE still
+        works normally. NOT yet verified: an actual PC10-low trip
+        observed on scope/DSLogic, and the FAULT:CLEAR recovery sequence
+        (whether clearing the flag alone is sufficient to resume PWM on
+        the next FIRE) -- both need the pin physically driven low on the
+        bench, still pending. docs/command_reference.md not yet updated
+        with these commands/ERR 6 -- deferred until that bench
+        verification is done, per the original plan's own verification
+        checklist.
+
+2026-09-08  —  Configurable HRTIM channel count (compile-time, 1-5)
+-----------------------------------------------------------------------
+  Change:  Requested as a planned, reviewed change (plan mode used
+        directly): make version.h's PWM_NUM_CHANNELS -- documentation-
+        only since it was added, "NOT read by hrtim.c today" -- into a
+        real, working setting. New Core/Inc/ctrlr_config.h holds
+        HRTIM_NUM_CHANNELS (1-5, #error-guarded outside that range),
+        superseding PWM_NUM_CHANNELS; version.h now holds board/
+        firmware IDENTITY only, a deliberate split from the prior "one
+        config file" decision (both files' headers explain why).
+
+        Range is 1-5, not 1-6, because the HRTIM Master timer has
+        exactly 4 compare registers (5 total trigger points incl. its
+        own PER event) -- confirmed against the HAL headers before
+        committing to this scope, along with confirming real (if
+        unused here) HAL support exists for a 6th phase-locked channel
+        via cross-timer HRTIM_TIMRESETTRIGGER_OTHERx_CMPy reset
+        triggers -- deliberately left as a follow-up, not bundled in,
+        since it needs new phase math with no existing pattern to
+        extend.
+
+        Generalized (every hardcoded A/B/C block became a loop over
+        0..N-1, or in HRTIM1_FullInit()'s case 0..5 with the
+        phase-locked/free-running split moving to depend on N instead
+        of being hardcoded per timer):
+          - pfm.h/pfm.c: PFM_Step_t's cmpA/cmpB/cmpC -> cmp[N], sized
+            exactly per build (N=3 stays 8 B/entry, unchanged;
+            N=4->10 B, N=5->12 B). PFM_Phase120()/PFM_Phase240() ->
+            PFM_PhaseForChannel(). PFM_Phase_t/PFM_SetPhaseEnabled()/
+            PFM_GetPhaseEnabled() -> plain 0..N-1 channel index, same
+            durability contract (not reset by PFM_Init() after the
+            first call -- see that function's own comment for why a
+            GCC __attribute__((constructor)) approach was tried and
+            rejected in favor of a portable static-flag pattern, no
+            dependency on __libc_init_array() actually running).
+          - hrtim.h/hrtim.c: HRTIM1_FullInit()'s A/B/C-phase-locked +
+            D/E/F-free-running blocks -> one loop, channel < N gets
+            MASTER_PER (channel 0) or MASTER_CMP1..4 (channels 1..N-1),
+            channel >= N gets ResetTrigger=NONE (identical to the old
+            D/E/F treatment). HRTIM1_PWM_Start()'s per-phase cold-start
+            settling (see the 2026-09-04 entries below) generalizes
+            directly, unchanged in mechanism -- HRTIM1_WaitForPhase
+            AndConnect() now called in a loop (channels 1..N-1 ascending,
+            channel 0 last) instead of 3 named calls.
+            HRTIM1_ApplyPfmStep() takes (per, cmp[], phase[]) instead of
+            6 named scalars. Per-channel register-address getters
+            (HRTIM1_GetTimerAPerRegAddress() etc.) -> single indexed
+            getters (HRTIM1_GetTimerPerRegAddress(channel) etc.) backed
+            by lookup tables confirmed against the HAL headers
+            (HRTIM_TIMERINDEX_TIMER_A..F sequential 0x0-0x5;
+            HRTIM_OUTPUT_Tx1/2 bitmasks arithmetic but looked up via
+            named-constant tables anyway rather than relied on as raw
+            bit tricks, since this path isn't latency-critical the way
+            HRTIM1_PWM_Start()'s cold-start settling is).
+          - commands.c: TABLE:STEP's fixed 4-token parse -> 1+N tokens
+            (per + one compare per channel). New CONFig:CHANnels?
+            (OK <N>) so host tooling can confirm a board's actual N
+            instead of assuming it.
+          - python/pfm_table_upload.py: build_table()/_ramp() build
+            (per, *cmp[0..N-1]) tuples via a new _entry() helper instead
+            of hardcoded 4-tuples; queries CONFIG:CHANNELS? at startup
+            and refuses to upload on a mismatch against its own
+            HRTIM_NUM_CHANNELS constant.
+
+        A real bug was found and fixed during this work, not just
+        designed around: cmd_table_step()'s first version tried to
+        stringify TABLE_STEP_TOKEN_COUNT (= 1 + HRTIM_NUM_CHANNELS)
+        with the standard #x/two-level preprocessor stringification
+        idiom -- which only works on plain literals, not expressions,
+        so the ERR 4 message printed the literal unevaluated text
+        "(1U + (4U))" instead of "5". Caught by actually reading the
+        real device reply during hardware testing, not just compiling.
+        Fixed with a runtime snprintf() (SendTableStepCountErr())
+        instead of compile-time stringification.
+
+        Verified: full clean rebuild at the default N=3, zero warnings,
+        .bss unchanged from before this change (PFM_Step_t stays
+        exactly 8 B/entry at N=3 -- confirms the generalization adds no
+        overhead at the project's actual current channel count).
+        Reflashed over serial, *IDN? and the new CONFig:CHANnels? both
+        correct, a real 500-entry table uploaded (with the new
+        mismatch-check passing) and FIRE'd twice, board stayed fully
+        responsive throughout.
+
+        Then temporarily rebuilt at N=4 specifically to prove the
+        generalization works at a DIFFERENT channel count, not just
+        N=3 restated: .bss grew by exactly the predicted +10,000 B
+        (2 B/entry x 5000 entries -- real .map numbers, not estimated),
+        CONFig:CHANnels? correctly reported 4, a hand-built 4-wide
+        table uploaded and FIRE'd cleanly, and the wrong-token-count
+        rejection (ERR 4, with the now-fixed message) was confirmed
+        against a deliberately-3-wide TABLE:STEP. Also confirmed the
+        ctrlr_config.h #error guard actually fires for an out-of-range
+        N=6, not just that the comment claims it does. Reverted to the
+        real N=3 default before committing -- N=4/5 are proven to
+        compile, flash, and respond correctly at the command layer;
+        they are not the shipped setting.
+
+        NOT done as part of this entry: a DSLogic capture confirming
+        N=4/5's actual electrical waveform (even spacing at the new
+        angle, correct dead time on the added channel) -- this
+        project's physical probes have only ever been wired to 3
+        channels, so that verification needs new wiring plus a bench
+        pass, out of scope for a from-the-desk implementation session.
+        Command-layer + RAM-math verification above is real and
+        thorough, but it is not a substitute for that.
+
+2026-09-04  —  New tool: python/dsl_viewer.py
+------------------------------------------------
+  Change:  Requested directly: an easier way to visualize/interact with
+        saved DSLogic .dsl captures, specifically to zoom the time axis
+        -- every .dsl decode this session up to now was a one-off
+        script (unzip, parse the INI header, unpack the bit-packed
+        L-<channel>/0 files, print edge timestamps by hand). Generalized
+        that into a real, reusable interactive viewer instead of
+        re-deriving it next time.
+
+        Renders every channel as a stacked digital trace (matplotlib),
+        picks up channel names already set in DSView's own session JSON
+        automatically (or via --labels), and skips all-zero/disabled
+        channels by default (e.g. this project's usual unconnected
+        4/5) unless --all-channels is passed. Two custom interactions
+        on top of matplotlib's own pan/zoom toolbar: scroll wheel zooms
+        the time axis only, centered on the cursor (the actual ask --
+        dragging a zoom box every time was the friction point); and a
+        two-cursor measurement readout (left-click = cursor A,
+        right-click = cursor B, delta time + implied frequency shown in
+        the title) -- directly mirrors the manual edge-timing math this
+        session kept doing by hand for dead time, phase spacing, and
+        duty cycle.
+
+        .dsl format handling documents its own scope honestly: only
+        device mode 0 (plain digital capture) and single-block files
+        are supported, both confirmed by every real capture decoded
+        this session -- multi-block or oscilloscope-mode captures raise
+        a clear error instead of silently misdecoding, since neither
+        has ever actually been seen to verify against.
+
+        Verified against a real capture (the 50176-sample profile-3
+        capture from the per-phase cold-start fix, see the entry
+        further below): decoded and rendered correctly headlessly
+        (--save) at both the full 5ms view (a dense, expected "brush"
+        pattern at 100 kHz) and a zoomed 22us window, matching the
+        hand-decoded values from that same file earlier in this
+        session exactly. Also caught and fixed a real argparse bug
+        during testing: a single --window "start,end" argument silently
+        failed on any negative start time (argparse mistook the leading
+        "-" for another flag) -- replaced with separate --window-start/
+        --window-end float arguments instead of working around it.
+
+2026-09-04  —  Documentation: SOP Rev B (TABLE/FIRE procedure)
+------------------------------------------------------------------
+  Change:  docs/sop/wham_pfmg474_v4_sop.tex Rev A (2026-08-31) predated
+        TABLE:*/FIRE entirely and explicitly stated "this firmware
+        currently implements no PWM, HRTIM, or power-stage control" --
+        no longer true. Requested directly: update it to explain the
+        new functionality (one-time pass, not itself an ongoing
+        changelog-style update).
+
+        Added Section 8, "Procedure: Upload and Fire a PFM Table"
+        (build a table with python/pfm_table_upload.py, confirm via
+        TABLE:END/TABLE?, send FIRE, note auto-stop and the ERR 5
+        empty-table guard) with a CAUTION callout matching the
+        severity of what changed: this firmware now drives real HRTIM
+        PWM output the instant FIRE is sent, with no ARM step, state
+        machine, or fault interlock. Section 2 (Scope) rewritten to
+        acknowledge this rather than continue asserting the old "no
+        PWM" claim -- the SOP's prior blanket exclusion of power-stage
+        operation is now backed by an explicit caution instead of a
+        (now false) statement that nothing is being driven. Also
+        picked up the 115200 baud change (Section 7 and the revision
+        table) while in there, since Rev A's "9600" text would
+        otherwise mislead the very next person to follow it.
+
+        Revision table: added Rev B row. References section: added
+        pfm_table_upload.py and test_protocol.md.
+
+        Verified: recompiled to PDF (pdflatex, 2 passes -- all
+        cross-references resolved clean, only benign font-substitution
+        warnings), visually reviewed the rendered output page by page,
+        confirmed the CAUTION box and section numbering render
+        correctly. Build artifacts (.aux/.log/.out) cleaned up,
+        matching how this repo doesn't track those elsewhere.
+
+2026-09-04  —  Baud rate raised 9600 -> 115200 (real-hardware experiment)
+-----------------------------------------------------------------------------
+  Change:  Requested directly: "can we experiment with increasing the
+        baud rate?" -- motivated by table uploads still taking a few
+        seconds even after the earlier read_until() fix (see the
+        pfm_table_upload.py entry further below), since a meaningful
+        chunk of that time is genuinely wire time at 9600 baud, not
+        avoidable per-call overhead.
+
+        Method: real hardware, not a guess -- edited main.c's
+        huart2.Init.BaudRate, rebuilt, reflashed, and measured a full
+        500-entry TABLE:STEP upload at each step.
+          9600    -> ~20 s   (established baseline, see earlier entry)
+          115200  -> 3.3 s   clean *IDN?, clean upload, OK 500. ~6x.
+          921600  -> FAILED  consistently garbled replies (same length,
+                              wrong content, re-tried 3x -- a real baud
+                              mismatch/reliability failure, not a fluke)
+
+        921600 also broke serial recovery: BOOT needs a working link to
+        even request the ROM bootloader, so a board stuck at a bad baud
+        can't reflash itself back to a good one over serial. Recovered
+        with an ST-Link connected mid-session: `st-info --probe`
+        confirmed detection (STM32G47x_G48x, chipid 0x469), then
+        `st-flash write Debug/WHAM-PFMG474-V4.bin 0x08000000` flashed
+        the 115200 build directly over SWD, completely bypassing the
+        broken serial link. *IDN? at 115200 confirmed recovery
+        immediately after.
+
+        Settled on 115200 (explicit decision, not further tuned) --
+        clearly a large win (~6x) and clearly reliable, without chasing
+        the exact ceiling between 115200 and 921600 (230400/460800
+        untested, left as a real gap if anyone wants to push further
+        later). This is a WHAM-PFMG474-V4-only change -- the sibling
+        PFM-STM32G474 project still uses 9600, and this doesn't imply
+        porting it there.
+
+        Updated everywhere the old convention was written down: main.c
+        (with an updated regen-hazard comment -- HAL's own CubeMX
+        default now happens to BE 115200, so a future .ioc regen
+        wouldn't visibly break this by coincidence, which is not the
+        same as it being safe on principle), python/wham_serial_flash.py
+        (APP_BAUD_DEFAULT + docstring), python/pfm_table_upload.py
+        (APP_BAUD + comment), python/scpi.py (BAUD, flipping which of
+        the file's own two candidate lines was already active),
+        docs/command_reference.md, docs/test_protocol.md,
+        docs/serial_reflash_guide.md, AGENTS.md.
+
+        Verified: full clean rebuild at 115200, zero warnings.
+        Reflashed (via the recovered ST-Link path), *IDN? clean,
+        500-entry table re-uploaded and confirmed (OK 500) at the new
+        baud and measured speed.
+
+2026-09-04  —  Per-phase cold-start settling (real fix, not just jitter reduction)
+-----------------------------------------------------------------------------------
+  Change:  A fresh DSLogic capture of profile 3 (90% -> 10% ramp) exposed
+        that the previous two entries below, while a real improvement,
+        hadn't actually gotten the phase-lock settling right -- they
+        eliminated the catastrophic U/V/W collision, but connected all
+        three outputs together after waiting for a single event (one
+        full Master period). Since V/W's own ResetTrigger (MASTER_CMP1/
+        CMP2) fires much earlier (1/3, 2/3 of a period), by the time all
+        three connected together V/W were already mid-way through
+        whatever their comparators had been doing since that earlier,
+        still-hidden reset -- exposing a stale/in-progress duty cycle,
+        not a clean pulse, and what looked like a "recovery" edge near
+        120/240 deg was actually just each timer's own natural TIMPER
+        rollover after its hidden reset -- which only lands near there
+        by coincidence of that particular duty value, not by design.
+        Confirmed by decoding the .dsl capture's raw per-channel data
+        directly (per-channel bit-packed L-N/0 files inside the archive).
+
+        Real fix: HRTIM1_PWM_Start() now waits for and connects each
+        phase SEPARATELY, at its own reset-trigger event -- new static
+        helper HRTIM1_WaitForPhaseAndConnect(), called three times (V at
+        MASTER_CMP1, W at MASTER_CMP2, U at MASTER_PER/MREP, in that
+        chronological order within one masked critical section). V/W
+        additionally re-force output1 ACTIVE/output2 INACTIVE (direct
+        SETx1R/RSTx2R writes, same reasoning as the direct OENR write)
+        at the exact moment their flag is observed -- necessary because
+        an externally-triggered counter reset does NOT itself generate
+        a fresh SET event (confirmed against the capture data), so
+        without this the output would still reflect whatever the
+        original pre-counter-start force-ACTIVE call left it in, not a
+        clean restart. Timer A needs no such re-force: MASTER_PER
+        coincides with its own natural rollover, a genuine TIMPER
+        SET-source event that already transitions the output correctly
+        on its own. Net effect: nothing visible on V/W until 120/240 deg
+        after U's first edge, then a clean, correctly-timed,
+        correctly-dutied pulse -- not a snapshot of an in-progress cycle.
+
+        Considered and rejected: reverting to relying solely on
+        pre-loading step 0's per/compare values (raised directly, in
+        chat) instead of delaying output connection at all. Doesn't
+        work -- PFM_Restart() already pre-loads those values via
+        PFM_ApplyCurrentStep()/HRTIM1_SoftwareUpdate() BEFORE
+        HRTIM1_PWM_Start() runs, unchanged since before any of these
+        fixes existed, and the original bug happened anyway with that
+        pre-loading already in place. The defect was never stale
+        register content; it's genuine counter-timing settling that
+        only resolves once real time has elapsed, which register values
+        can't substitute for.
+
+        Verified: full clean rebuild, zero warnings (text 34904->35036
+        bytes vs. the masked-interrupt entry below). Reflashed, table
+        re-uploaded, FIRE -> OK twice back to back, board stayed fully
+        responsive to *IDN?/TABLE? throughout.
+
+        CONFIRMED on real hardware the same day: a ~5 ms DSLogic capture
+        spanning nearly the entire shot (499 of 500 periods) shows
+        phase spacing holding rock-solid at ~3300 ns/~6600-6700 ns
+        (target 3333/6667 ns for 120/240 deg) consistently from the
+        cold-start edge all the way to the last period, and U's duty
+        tracking profile 3's 90% -> 10% ramp cleanly throughout (86% ->
+        73% -> 56% -> 41% -> 24% -> exactly 10.0% on the final sampled
+        period) -- confirms PFM_CycleBoundaryHandler() advancing the
+        table stays correctly phase-locked for the whole shot, not just
+        at the exact startup instant. This closes out the cold-start
+        phase-lock investigation that started with the first DSLogic
+        capture earlier today.
+
+2026-09-04  —  Masked interrupts during the settling wait's critical section
+---------------------------------------------------------------------------
+  Change:  Second follow-up to the cold-start phase-lock fix. A fresh
+        DSLogic capture after the loop-tightening entry directly below
+        showed real improvement (first pulse 200 ns -> 600 ns; U/V/W
+        edge-timing error ~700 ns -> ~230-270 ns off target) but a
+        genuine, non-shrinking residual remained -- and it varied run
+        to run (200 ns, then 600 ns), which pointed away from a fixed
+        software-latency floor and toward interrupt preemption:
+        HRTIM1_PWM_Start()'s poll runs with global interrupts enabled,
+        and SysTick (priority 0, the HIGHEST in this firmware -- see
+        FixSysTickPriority()) or USART2 (priority 2, this very FIRE
+        command's own reply path) can legitimately preempt the tight
+        poll loop for a handful of cycles at exactly the wrong moment.
+
+        Fix: wrapped the poll and the OENR write in __disable_irq()/
+        __enable_irq() -- a short, bounded critical section (worst case
+        ~385 us for a uint16_t `per`'s longest representable period,
+        typically ~10 us at 100 kHz). Since HAL_GetTick() can't advance
+        while global interrupts are masked (it's SysTick-driven, and
+        SysTick is masked too), the previous entry's wall-clock timeout
+        doesn't work here -- replaced with a plain 1,000,000-iteration
+        spin-count ceiling, deliberately loose (many milliseconds of
+        real time even pessimistically) rather than tuned, so it can
+        only ever trip on a genuine hang, never in normal operation.
+
+        Verified: full clean rebuild, zero warnings. Reflashed, table
+        re-uploaded, FIRE -> OK repeatedly (fired twice back to back),
+        board stayed fully responsive to *IDN?/TABLE? throughout -- no
+        hang, and no UART data loss from the masked window (a ~10 us,
+        worst-case ~385 us mask is far shorter than the ~1 ms/byte
+        margin at 9600 baud, so an in-flight RX byte just sits in the
+        UART's hardware data register a little longer, unaffected).
+        Re-capturing with DSLogic to confirm the residual actually
+        shrank is the next step, not yet done as of this writing.
+
+2026-09-04  —  Tightened the cold-start settling wait's reaction latency
+--------------------------------------------------------------------------
+  Change:  Follow-up to the cold-start phase-lock fix directly below,
+        after a fresh DSLogic capture confirmed it worked (U/V/W
+        genuinely staggered, ~120/240 deg spacing accurate to a few
+        counts in steady state) but also showed a small residual: the
+        very first visible pulse still read ~200 ns instead of the
+        clean ~1000 ns steady-state width -- software reaction latency
+        between the MREP flag actually going true in hardware and
+        HRTIM1_PWM_Start() acting on it, not a phase-lock problem.
+
+        Two changes to HRTIM1_PWM_Start(), same function, no new
+        approach:
+          - The polling loop's inner spin no longer calls HAL_GetTick()
+            on every iteration -- that's a real function call, added
+            avoidable cycles to the exact latency being chased. The
+            wall-clock timeout (still 5 ms, still Error_Handler() on
+            expiry) is now sampled only every 256 spins; the inner loop
+            itself is just a register read, compare, and branch.
+          - Connecting the outputs on flag-observed now writes OENR
+            directly (hhrtim1.Instance->sCommonRegs.OENR |= outputMask)
+            instead of calling HAL_HRTIM_WaveformOutputStart(), which
+            does the identical single register write wrapped in
+            __HAL_LOCK/State=BUSY/__HAL_UNLOCK bookkeeping this call
+            site doesn't need. Same precedent already used by
+            HRTIM1_SoftwareUpdate()'s direct CR2 write elsewhere in
+            this file. Re-arming HRTIM_MASTER_IT_MREP (needed before
+            this function returns, not before) now happens AFTER the
+            OENR write, not before -- it isn't time-critical, and
+            keeping it out of the way removes two more register
+            round-trips from the critical path.
+
+        Verified: full clean rebuild, zero warnings (text +16 bytes net
+        vs. the previous entry). Reflashed over serial, re-uploaded the
+        table, FIRE -> OK promptly, board stayed responsive to *IDN?
+        afterward -- the tightened spin loop and reordering introduced
+        no hang or regression. Re-capturing with DSLogic to confirm the
+        first-pulse width actually improved is the next step, not yet
+        done as of this writing.
+
+2026-09-04  —  Bugfix: cold-start phase-lock glitch on every FIRE
+------------------------------------------------------------------
+  Change:  Found via a real DSLogic U3Pro32 capture (decoded by hand --
+        no capture-analysis tooling in this repo, just the .dsl
+        archive's raw bit-packed channel data). Symptom: on every
+        `FIRE`, U/V/W's first-ever output edges all landed on the
+        exact same sample -- not staggered 120°/240° apart as
+        intended -- producing ~1-2 garbled cycles (one phase measured
+        holding ON ~7.4x too long; that first "period" reading as low
+        as ~60 kHz) before self-correcting from cycle 2 onward. Matches
+        what the user had independently noticed as "~60 kHz garbage for
+        the first ~2 periods" on a real scope.
+
+        Root cause: HRTIM1_PWM_Start()'s HAL_HRTIM_WaveformSetOutputLevel()
+        calls (needed, per ST's own HAL guidance, to avoid an undefined
+        complementary-pair state when DeadTimeInsertion is enabled)
+        force TA1/TB1/TC1 all ACTIVE at the same instant, with no
+        regard for their intended stagger. Timer A's ResetTrigger
+        (MASTER_PER) happens to coincide with its own natural period
+        rollover, but Timers B/C (ResetTrigger = MASTER_CMP1/CMP2)
+        aren't genuinely phase-locked until they've received their
+        first Master-CMPx-triggered reset -- which hasn't happened yet
+        at the moment the counters first start.
+
+        Fix: HRTIM1_PWM_Start() now starts the counters as before, but
+        delays connecting the outputs to the pins (WaveformOutputStart())
+        until the Master's own MREP (repetition) flag confirms one full
+        period has genuinely elapsed in hardware -- by then every
+        timer has already received its first phase-defining reset, so
+        the first VISIBLE edge is already correctly phase-locked.
+        Waiting on the hardware flag rather than computing a busy-wait
+        from `per`/HRTIM_TIMER_CLK_HZ makes this automatically correct
+        for whatever period is currently loaded -- no hardcoded 100 kHz
+        assumption, so it stays correct if/when variable-frequency
+        tables exist (per user request, 2026-09-04). HRTIM_MASTER_IT_MREP
+        (armed at boot by HRTIM1_EnableMasterInterrupt(), and still
+        armed from any previous shot) is masked for the duration of
+        this wait and any stale flag discarded first -- otherwise
+        PFM_CycleBoundaryHandler() would fire for real during the
+        settling wait and silently advance the table to step 1 before
+        step 0 was ever visible on the pins. Bounded to 5 ms
+        (>12x margin over the ~385 us worst-case period a uint16_t
+        `per` can represent) with an Error_Handler() fallback, matching
+        this file's existing defensive-timeout convention (see
+        HAL_HRTIM_PollForDLLCalibration() in HRTIM1_FullInit()).
+
+        Verified: full clean rebuild (make clean && make all -j4, zero
+        warnings; text grew 88 bytes). Verified on real hardware:
+        reflashed over serial, re-uploaded a 500-entry table, sent
+        FIRE -> OK promptly (no hang from the new bounded poll -- the
+        real risk this change introduced), board stayed responsive to
+        *IDN? immediately after. Re-capturing with DSLogic to confirm
+        the actual edge timing is now clean is the next step, not yet
+        done as of this writing.
+
+2026-09-04  —  pfm_table_upload.py: reverted profiles 4/5's 0%-duty pad
+--------------------------------------------------------------------------
+  Change:  Reverted the leading 0%-duty pad added in the entry directly
+        below, per project decision. Profiles 4 (10% -> 90%) and 5
+        (90% -> 25%) are now plain full-500-period ramps, built the
+        same way as profiles 2/3 (_ramp(), RAMP_STEPS=50 x
+        RAMP_DWELL_PERIODS=10) -- no separate padded code path.
+        PAD_PERIODS/PAD_RAMP_STEPS/PAD_RAMP_DWELL_PERIODS and
+        _padded_ramp() removed as dead code.
+
+        Verified offline (module import) before re-uploading: both
+        profiles land at exactly 500 entries with clean start/end duty
+        (profile 4: 10.01% -> 89.99%; profile 5: 89.99% -> 25.01%), no
+        pad segment. Re-uploaded profile 4 to the board to replace the
+        padded version from the entry below (TABLE:END -> OK 500).
+
+2026-09-04  —  pfm_table_upload.py: profiles 4/5 (padded ramps)
+-----------------------------------------------------------------
+  Change:  Added two more fixed profiles, following a real-hardware
+        DSLogic/scope bring-up session (see the FIRE entry below):
+        PROFILE 4 (10% -> 90% ramp) and PROFILE 5 (90% -> 25% ramp),
+        each preceded by 5 periods held at 0% duty as a clearly-zero
+        baseline before the ramp starts -- useful for unambiguously
+        marking a shot's actual start on a capture. Total entries
+        still exactly 500 (5ms), matching profiles 1-3: the pad is
+        carved out of the existing 500-period budget (5 pad + 495
+        ramp, via new PAD_RAMP_STEPS=45 x PAD_RAMP_DWELL_PERIODS=11),
+        not appended on top of it -- profiles 1-3's own math/behavior
+        is untouched.
+
+        Note: "0% duty" is approximate -- cmp_from_duty()'s existing
+        [2, per-2] clamp (matching hrtim.c's HRTIM1_ClampCompare()
+        margin) floors it to cmp=2, i.e. ~0.12% duty at per=1699, not
+        a literal zero. Close enough to read as "off" on a scope, but
+        worth knowing if reading exact numbers off a capture.
+
+        Verified offline (module import, no serial connection) before
+        touching hardware: both profiles land at exactly 500 entries,
+        pad entries all identical at the cmp=2 floor, ramp endpoints
+        within ~0.02% of the intended targets. Verified on real
+        hardware: profile 4 uploaded and confirmed (TABLE:END -> OK
+        500) over the actual serial link.
+
+2026-09-04  —  Bugfix: pfm_table_upload.py ~25-50x slower than it
+                should have been
+------------------------------------------------------------------
+  Change:  Found while running the first real end-to-end bench pass
+        (flash -> upload -> FIRE) of the FIRE command below.
+        send_and_expect_ok() read replies with a manual
+        `while time.time() < deadline: chunk = ser.read(128)` poll
+        loop against a Serial(..., timeout=1.0) port. pyserial's
+        read(size) keeps trying to fill the *entire* requested size
+        until the port's own timeout elapses, even once a short reply
+        (every firmware reply here is a handful of bytes, e.g.
+        "OK\r\n") has already fully arrived -- so every single
+        TABLE:STEP round-trip was costing close to the full 1 s
+        timeout instead of the real ~20-30 ms wire time at 9600 baud.
+        500 entries were taking 8+ minutes; this was mistakable for
+        "9600 baud is just slow", but the baud rate was never the
+        problem.
+
+        Fix: replaced the poll loop with ser.read_until(b"\n"), which
+        returns the instant the terminator arrives (falling back to
+        the port's timeout only on a genuine no-reply failure, which
+        still needs to time out and raise). No protocol or firmware
+        change. Verified: a real 500-entry upload (profile 1) dropped
+        from 500-1000+ s to 20.2 s measured wall-clock, same successful
+        `TABLE:END -> OK 500` result.
+
+        Considered and deferred (see the FIRE entry below's own
+        real-hardware pass for why 20 s was accepted as fine for now):
+        batching multiple TABLE:STEP entries per line (needs a
+        firmware/protocol change; marginal win once the read-loop bug
+        is fixed, since ~30 s of raw payload at 9600 baud is close to
+        the real floor for 500 entries either way) and pipelining
+        without waiting for each ACK (real risk of silently overrunning
+        uart.c's single-line RX buffer without first checking its
+        buffering model -- not done without that check).
+
+2026-09-04  —  FIRE command + HRTIM master-interrupt wiring, verified
+                end-to-end on real hardware
+-------------------------------------------------------------------------
+  Change:  Closed the gap flagged in the previous entry and in
+        AGENTS.md's "Known gaps": added a FIRE command that actually
+        plays back an uploaded table. Two pieces, both ported from the
+        sibling PFM-STM32G474 project:
+
+          - hrtim.c gained HRTIM1_EnableMasterInterrupt() (enables
+            HRTIM1_Master_IRQn, unmasks HRTIM_MASTER_IT_MREP), called
+            once at boot from main.c -- the ISR is armed and ready
+            before the first FIRE, not enabled reactively at fire
+            time. stm32g4xx_it.c gained HRTIM1_Master_IRQHandler(),
+            which clears the MREP flag and calls
+            PFM_CycleBoundaryHandler() once per PWM period while the
+            Master counter runs -- ported with the state-machine/
+            fault-pin calls stripped out (SM_CycleBoundaryTick(),
+            FaultPins_Poll()), since neither exists in this project.
+
+          - main.c also gained FixSysTickPriority() (ported), called
+            immediately after HAL_Init(), which raises SysTick's NVIC
+            priority off HAL's default lowest value. Matches the
+            sibling project's exact interrupt-priority scheme:
+            SysTick=0 (highest), HRTIM1_Master=1, USART2=2 (USART2 was
+            already at priority 2 here from the original serial-
+            command-architecture port, so this completes a scheme that
+            was already half in place). main.c now also calls
+            PFM_Init() at boot (previously never called anywhere in
+            this project) to bring the table module to a known-empty,
+            known-stopped state before any command can touch it.
+
+        commands.c/commands.h gained cmd_fire() -- wraps PFM_Restart()
+        (resets to step 0, forces a software register update, starts
+        HRTIM1_PWM_Start() for phases A/B/C), registered as FIRE in
+        cmd_parser.c's command_table[]. One guard: rejects with the new
+        ERR 5 ("Table is empty") if PFM_GetEntryCount() == 0 --
+        otherwise an empty-table FIRE would silently blip outputs on
+        and back off at the very first master-repetition interrupt
+        (PFM_CycleBoundaryHandler()'s own defensive empty-table check),
+        with no error ever reaching the operator.
+
+        Deliberately NOT added, per project decision (scope stayed to
+        exactly what was asked): no ARM/state-machine interlock (FIRE
+        always takes effect immediately), no STOP command (playback
+        only stops on its own at table exhaustion), no fault gating.
+        See docs/command_reference.md's FIRE entry.
+
+        Verified via a full Debug/ rebuild (make all -j4, clean) and
+        `nm` confirming HRTIM1_Master_IRQHandler linked as a strong
+        symbol overriding the startup file's weak Default_Handler
+        alias (the vector table entry already existed there --
+        HRTIM1 was never enabled via CubeMX's own IRQ-handler
+        generation for this project, but the STM32G474 startup file
+        lists every peripheral vector regardless of .ioc content).
+        Verified end-to-end on real hardware the same day: flashed over
+        serial (python/wham_serial_flash.py, `*IDN?` replying
+        immediately post-flash, confirming the Go-jump/VTOR fix still
+        holds), uploaded a real 500-entry table
+        (python/pfm_table_upload.py, profile 1), then `FIRE` -> `OK`
+        with no `ERR`. Command-layer round trip confirmed only --
+        no scope was available in this pass, so the actual waveform
+        (dead time, 120/240 deg phase spacing, duty accuracy) per
+        docs/test_protocol.md's T4.5-T4.8 is still an open item, not
+        yet observed on an instrument.
+
+2026-09-04  —  PFM table upload (TABLE:BEGIN/STEP/END/?)
+----------------------------------------------------------
+  Change:  Added a serial command set for uploading a complete PFM
+        shot profile from a host script -- pfm.c gained three minimal,
+        generic primitives (PFM_TableReset()/PFM_AppendStep()/
+        PFM_GetEntryCount(), no construction logic, no validation
+        beyond "does it fit") and commands.c gained the four TABLE:*
+        handlers that drive them over the wire. See pfm.h's "ADDED"
+        header note and docs/command_reference.md for the full
+        protocol.
+
+        Table CONSTRUCTION deliberately stays off-controller, per
+        project decision: python/pfm_table_upload.py is the reference
+        builder, with exactly three fixed profiles for now (constant
+        50% duty; duty ramping 25%->75%; duty ramping 90%->10%; all
+        three at a constant 100 kHz carrier, all three ~5 ms total
+        shot length), selected by editing a PROFILE constant before
+        running -- explicitly not meant to be read as "the design" for
+        how profiles will eventually be specified; that's undecided.
+
+        Verified the math independently of any serial connection:
+        loaded the script as a module and checked all three profiles'
+        entry counts, period consistency, per-phase-always-equal
+        invariant, and start/end duty percentages land where expected
+        (profile 1: 500 entries @ 50.03% constant, matching hrtim.c's
+        own hardcoded init default of 850/1699 exactly; profile 2:
+        25.01%->74.99%; profile 3: 89.99%->10.01% -- all within
+        rounding of the intended targets). Not yet verified against
+        real hardware (no on-host test suite for this firmware -- see
+        AGENTS.md); the actual serial round-trip and PFM_AppendStep()
+        error paths (ERR 2/3/4) still need a bench pass.
+
+        No command exists yet to fire an uploaded table (no ARM/FIRE,
+        no state machine) -- this covers upload and verification
+        (TABLE?) only.
+
+2026-08-31  —  Documentation: AGENTS.md + docs/
+-------------------------------------------------
+  Change:  First documentation pass for this project. Added AGENTS.md
+        (orientation file, mirroring the sibling PFM-STM32G474 project's
+        convention), docs/command_reference.md, docs/serial_reflash_guide.md,
+        and this changelog. Everything below this entry documents work
+        that happened before the docs existed to record it as it went;
+        dated to when it actually happened, reconstructed from the
+        session it was done in.
+
+2026-08-31  —  Bugfix: ROM bootloader Go-jump left interrupts dead
+---------------------------------------------------------------------
+  Change:  Found and fixed on real hardware while first testing
+        wham_serial_flash.py end-to-end. Root cause, symptom, and fix
+        are documented in full in boot_jump.c's BootJump_CheckAndEnter()
+        and in docs/serial_reflash_guide.md Section 4 -- summary:
+
+        Symptom: a serial reflash reported success (write + verify both
+        passed via stm32flash), but the newly-flashed firmware was
+        completely unresponsive over USART2 afterward -- *IDN? got no
+        reply -- until the board was power-cycled, at which point it
+        worked immediately and correctly.
+
+        Root cause: stm32flash's -g (the ROM bootloader's "Go" command)
+        branches to the new app without performing a real chip reset.
+        SCB->VTOR and SYSCFG->MEMRMP, left pointing at the ROM
+        bootloader's own vector table from the *previous* boot's jump
+        INTO the bootloader (the normal BOOT-command flow), are never
+        corrected by anything in this firmware -- system_stm32g4xx.c's
+        SystemInit() only sets VTOR under USER_VECT_TAB_ADDRESS, which
+        is not defined here (the CubeMX default). Every interrupt,
+        including the USART2 RX interrupt the whole command parser
+        depends on, vectored into the ROM bootloader's table instead of
+        the app's own.
+
+        Fix: BootJump_CheckAndEnter()'s normal-boot path now
+        unconditionally restores SCB->VTOR = FLASH_BASE and the main-
+        Flash SYSCFG remap before falling through to HAL_Init(). No-op
+        on a true reset (both already correct there); the actual fix on
+        the Go-jump path.
+
+        Verified: flashed a new firmware version over serial, queried
+        *IDN? immediately with no manual reset, got the new version back
+        correctly -- confirmed twice in a row (v0.5, then v0.6).
+
+        Not yet ported to the sibling PFM-STM32G474/-V4 projects, which
+        carry the same unfixed boot_jump.c this one was forked from --
+        deliberately deferred per project decision, not forgotten.
+
+2026-08-31  —  Serial-bootloader entry (BOOT command)
+---------------------------------------------------------
+  Change:  Ported boot_jump.c/boot_jump.h from the sibling PFM-STM32G474
+        project -- software jump into the STM32 ROM bootloader over
+        USART2, no physical BOOT0/NRST access needed. Two additions
+        beyond a straight port:
+
+          - Made removable by design: BOOT_JUMP_FEATURE_ENABLED
+            (boot_jump.h) is the single point of control. Verified both
+            configurations compile and link clean (the enabled build has
+            the full mechanism; the disabled build's cmd_boot() and
+            BOOT table row disappear entirely, confirmed via `nm`, and
+            BootJump_RequestBootloader()/CheckAndEnter() reduce to empty
+            no-op functions).
+          - (See the dedicated bugfix entry above, added the same day
+            once real-hardware testing surfaced the Go-jump issue.)
+
+        cmd_boot() added to commands.c/commands.h, BOOT registered in
+        cmd_parser.c's command_table[]. main.c calls
+        BootJump_CheckAndEnter() as the literal first statement in
+        main(), before HAL_Init() -- unconditional regardless of the
+        feature flag, so main.c never needs its own #if.
+
+2026-08-31  —  Ported wham_serial_flash.py
+-----------------------------------------------
+  Change:  Ported from the sibling project's pfm_serial_flash.py, in
+        python/ (an existing host-tooling directory, not a new one --
+        consolidated rather than fragmenting script locations).
+        Corrected for this project's actual build artifact name
+        (WHAM-PFMG474-V4.bin, from .cproject's artifactName=${ProjName})
+        and baud rate (9600, matching main.c and scpi.py -- V3/V4's
+        script uses 9600 too; this project's USART2 was briefly
+        configured for 115200 during initial bring-up before being
+        corrected to 9600 for project-wide consistency).
+
+2026-08-31  —  SCPI-style hierarchical command dispatch
+-------------------------------------------------------------
+  Change:  Replaced cmd_parser.c's flat case-sensitive exact-match table
+        with SCPI-style matching (scpi_match()/scpi_token_match()):
+        colon-separated hierarchy levels, per-level short/long form
+        (mandatory-uppercase-prefix + optional-lowercase-suffix),
+        case-insensitive, exact query-suffix (?) matching, tolerant of
+        a leading colon on input. Table stays flat (one row per leaf
+        command, full mnemonic path as the pattern) -- no separate tree
+        structure to build or maintain.
+
+        Verified with a standalone native (non-cross-compiled) test
+        harness before wiring in: 19 cases covering short/long form,
+        mixed-form, wrong depth, wrong query suffix, case variants, and
+        leading-colon tolerance, all passing. Also confirmed strtok_r/
+        strncasecmp/isupper actually link under this toolchain's
+        --specs=nano.specs (not guaranteed in every newlib-nano config).
+
+        *IDN was renamed to *IDN? to match real IEEE 488.2/SCPI form,
+        now that the trailing ? is meaningfully enforced.
+
+2026-08-31  —  *IDN command + version.h
+---------------------------------------------
+  Change:  Added cmd_idn() (commands.c/commands.h) and a new version.h
+        holding HW_BOARD_NAME, HW_BOARD_REV (placeholder -- update to
+        match actual PCB silkscreen), and FW_VERSION_STRING as separate,
+        easy-to-bump constants, kept out of commands.c itself.
+
+2026-08-31  —  Ported serial command architecture
+--------------------------------------------------------
+  Change:  Ported uart.c/uart.h (interrupt-driven single-byte USART2
+        receive, line-buffer accumulation, blocking transmit) and
+        cmd_parser.c/cmd_parser.h (tokenize + dispatch) from the sibling
+        PFM-STM32G474 project -- architecture only, no command handlers.
+        commands.c/commands.h added as empty placeholders carrying the
+        OK/ERR response convention forward.
+
+        Wired into main.c (uart_init()/uart_process() in the USER CODE
+        blocks) and stm32g4xx_it.c (USART2_IRQHandler()/
+        HAL_UART_RxCpltCallback(), which didn't exist in this fresh
+        project yet, plus the local `extern huart2` matching the sibling
+        project's convention). The USART2 NVIC priority/enable call
+        (HAL_NVIC_SetPriority/EnableIRQ) was added inside
+        MX_USART2_UART_Init()'s own USER CODE block -- easy to miss,
+        load-bearing: without it, HAL_UART_Receive_IT() arms but the
+        interrupt never reaches the NVIC.
+
+        Verified by compiling and linking the whole project standalone
+        with arm-none-eabi-gcc against this project's own Drivers/ and
+        linker script (no Debug/ build existed yet at this point).

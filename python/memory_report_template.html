@@ -1,0 +1,568 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>WHAM-XREX-PFMG474 -- Memory Footprint</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+  :root {
+    color-scheme: light;
+    --page:        #f5f4f0;
+    --surface:     #ffffff;
+    --surface-2:   #faf9f6;
+    --ink:         #16181a;
+    --ink-2:       #565b5f;
+    --ink-muted:   #8b9095;
+    --border:      rgba(22,24,26,0.10);
+    --border-2:    rgba(22,24,26,0.16);
+    --accent:      #0e7c86;
+    --accent-ink:  #ffffff;
+    --grid:        #e7e5df;
+    --flash:       #2a78d6;
+    --flash-wash:  rgba(42,120,214,0.10);
+    --ram:         #eb6834;
+    --ram-wash:    rgba(235,104,52,0.10);
+    --other:       #a7a49c;
+    --good:        #0ca30c;
+    --shadow:      0 1px 2px rgba(22,24,26,0.04), 0 8px 24px -12px rgba(22,24,26,0.12);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      color-scheme: dark;
+      --page:        #0c0e0f;
+      --surface:     #16191b;
+      --surface-2:   #1c2022;
+      --ink:         #f2f1ec;
+      --ink-2:       #b8bcbe;
+      --ink-muted:   #83898c;
+      --border:      rgba(242,241,236,0.10);
+      --border-2:    rgba(242,241,236,0.16);
+      --accent:      #2bb3ad;
+      --accent-ink:  #06201f;
+      --grid:        #24282a;
+      --flash:       #3987e5;
+      --flash-wash:  rgba(57,135,229,0.14);
+      --ram:         #e2793f;
+      --ram-wash:    rgba(226,121,63,0.14);
+      --other:       #6d716f;
+      --good:        #35c235;
+      --shadow:      0 1px 2px rgba(0,0,0,0.3), 0 8px 24px -12px rgba(0,0,0,0.5);
+    }
+  }
+  :root[data-theme="dark"] {
+    color-scheme: dark;
+    --page:        #0c0e0f;
+    --surface:     #16191b;
+    --surface-2:   #1c2022;
+    --ink:         #f2f1ec;
+    --ink-2:       #b8bcbe;
+    --ink-muted:   #83898c;
+    --border:      rgba(242,241,236,0.10);
+    --border-2:    rgba(242,241,236,0.16);
+    --accent:      #2bb3ad;
+    --accent-ink:  #06201f;
+    --grid:        #24282a;
+    --flash:       #3987e5;
+    --flash-wash:  rgba(57,135,229,0.14);
+    --ram:         #e2793f;
+    --ram-wash:    rgba(226,121,63,0.14);
+    --other:       #6d716f;
+    --good:        #35c235;
+    --shadow:      0 1px 2px rgba(0,0,0,0.3), 0 8px 24px -12px rgba(0,0,0,0.5);
+  }
+
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; }
+  body {
+    background: var(--page);
+    color: var(--ink);
+    font-family: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+    -webkit-font-smoothing: antialiased;
+    line-height: 1.45;
+  }
+  .mono {
+    font-family: "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, monospace;
+    font-variant-numeric: tabular-nums;
+  }
+  .wrap { max-width: 1080px; margin: 0 auto; padding: 40px 24px 64px; }
+
+  header.page-head {
+    display: flex; flex-direction: column; gap: 6px;
+    margin-bottom: 32px;
+    padding-bottom: 20px;
+    border-bottom: 1px solid var(--border);
+  }
+  .eyebrow {
+    font-family: "IBM Plex Mono", monospace;
+    font-size: 12px; letter-spacing: 0.08em; text-transform: uppercase;
+    color: var(--accent); font-weight: 500;
+  }
+  h1 {
+    font-size: 28px; font-weight: 700; margin: 2px 0 0;
+    letter-spacing: -0.01em; text-wrap: balance;
+  }
+  .subtitle { color: var(--ink-2); font-size: 14px; margin-top: 2px; }
+  .subtitle .mono { color: var(--ink-muted); }
+
+  section { margin-bottom: 28px; }
+  h2 {
+    font-size: 13px; font-weight: 600; text-transform: uppercase;
+    letter-spacing: 0.06em; color: var(--ink-muted);
+    margin: 0 0 12px;
+  }
+
+  .card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    box-shadow: var(--shadow);
+    padding: 20px;
+  }
+
+  /* ---- stat tiles ---- */
+  .tiles { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+  @media (max-width: 620px) { .tiles { grid-template-columns: 1fr; } }
+  .tile { display: flex; flex-direction: column; gap: 10px; }
+  .tile-top { display: flex; align-items: center; justify-content: space-between; }
+  .tile-label { display: flex; align-items: center; gap: 8px; font-size: 13px; font-weight: 600; color: var(--ink-2); }
+  .dot { width: 9px; height: 9px; border-radius: 50%; flex: none; }
+  .tile-pct { font-family: "IBM Plex Mono", monospace; font-size: 13px; font-weight: 500; color: var(--ink-muted); }
+  .tile-value { font-size: 30px; font-weight: 700; letter-spacing: -0.01em; }
+  .tile-value .unit { font-size: 15px; font-weight: 500; color: var(--ink-muted); margin-left: 2px; }
+  .tile-of { font-family: "IBM Plex Mono", monospace; font-size: 12.5px; color: var(--ink-muted); margin-top: -6px; }
+  .meter-track { height: 6px; border-radius: 4px; background: var(--surface-2); border: 1px solid var(--border); overflow: hidden; }
+  .meter-fill { height: 100%; border-radius: 4px; }
+  .tile-foot { display: flex; align-items: center; justify-content: space-between; font-size: 12px; color: var(--ink-muted); }
+  .spark { display: block; }
+
+  /* ---- chart card ---- */
+  .chart-card .card-head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; flex-wrap: wrap; margin-bottom: 4px; }
+  .chart-title { font-size: 15px; font-weight: 600; }
+  .chart-note { font-size: 12.5px; color: var(--ink-muted); }
+  .legend { display: flex; gap: 16px; margin: 10px 0 4px; flex-wrap: wrap; }
+  .legend-item { display: flex; align-items: center; gap: 7px; font-size: 12.5px; color: var(--ink-2); }
+  .legend-swatch { width: 14px; height: 2.5px; border-radius: 2px; }
+  .legend-swatch.other { width: 9px; height: 9px; border-radius: 50%; }
+
+  svg.chart { display: block; width: 100%; height: auto; overflow: visible; }
+  .axis-label { font-family: "IBM Plex Mono", monospace; font-size: 10.5px; fill: var(--ink-muted); }
+  .gridline { stroke: var(--grid); stroke-width: 1; }
+  .baseline { stroke: var(--border-2); stroke-width: 1; }
+
+  .crosshair-line { stroke: var(--border-2); stroke-width: 1; pointer-events: none; }
+  .hover-dot { pointer-events: none; }
+
+  .tooltip {
+    position: absolute; pointer-events: none; z-index: 10;
+    background: var(--surface); border: 1px solid var(--border-2);
+    border-radius: 8px; box-shadow: var(--shadow);
+    padding: 10px 12px; font-size: 12.5px; min-width: 180px;
+    opacity: 0; transform: translate(-50%, -100%); transition: opacity 0.08s ease;
+  }
+  .tooltip.visible { opacity: 1; }
+  .tooltip-date { font-family: "IBM Plex Mono", monospace; font-size: 11px; color: var(--ink-muted); margin-bottom: 6px; }
+  .tooltip-subject { font-size: 12px; color: var(--ink-2); margin-bottom: 8px; padding-bottom: 8px; border-bottom: 1px solid var(--border); }
+  .tooltip-row { display: flex; align-items: center; gap: 8px; justify-content: space-between; }
+  .tooltip-row + .tooltip-row { margin-top: 4px; }
+  .tooltip-key { display: flex; align-items: center; gap: 6px; color: var(--ink-2); }
+  .tooltip-key .stroke { width: 12px; height: 2.5px; border-radius: 2px; }
+  .tooltip-val { font-family: "IBM Plex Mono", monospace; font-weight: 600; color: var(--ink); }
+
+  .bar-tooltip {
+    position: absolute; pointer-events: none; z-index: 10;
+    background: var(--surface); border: 1px solid var(--border-2);
+    border-radius: 8px; box-shadow: var(--shadow);
+    padding: 8px 11px; font-size: 12.5px;
+    opacity: 0; transition: opacity 0.08s ease;
+  }
+  .bar-tooltip.visible { opacity: 1; }
+  .bar-tooltip .name { color: var(--ink-2); font-size: 11.5px; margin-bottom: 3px; }
+  .bar-tooltip .val { font-family: "IBM Plex Mono", monospace; font-weight: 600; }
+
+  /* ---- breakdown bars ---- */
+  .breakdown-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+  @media (max-width: 760px) { .breakdown-grid { grid-template-columns: 1fr; } }
+  .bar-row { display: flex; align-items: center; gap: 10px; padding: 5px 0; }
+  .bar-row-label { flex: 0 0 148px; font-size: 12px; color: var(--ink-2); text-align: right; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .bar-row-track { flex: 1; position: relative; height: 18px; background: var(--surface-2); border-radius: 4px; overflow: hidden; }
+  .bar-row-fill { position: absolute; inset: 0 auto 0 0; border-radius: 4px; transition: filter 0.1s ease; cursor: default; }
+  .bar-row-fill:hover { filter: brightness(1.08); }
+  .bar-row-val { flex: 0 0 64px; font-family: "IBM Plex Mono", monospace; font-size: 11.5px; color: var(--ink-muted); text-align: right; }
+
+  /* ---- table ---- */
+  .table-wrap { overflow-x: auto; }
+  table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+  th, td { text-align: left; padding: 8px 10px; white-space: nowrap; }
+  th { font-family: "IBM Plex Mono", monospace; font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--ink-muted); font-weight: 500; border-bottom: 1px solid var(--border-2); position: sticky; top: 0; background: var(--surface); }
+  td { border-bottom: 1px solid var(--border); color: var(--ink-2); }
+  td.mono { color: var(--ink); }
+  tr:last-child td { border-bottom: none; }
+  td.subject { white-space: normal; min-width: 260px; color: var(--ink); }
+  .num { text-align: right; font-variant-numeric: tabular-nums; }
+
+  footer { margin-top: 40px; padding-top: 18px; border-top: 1px solid var(--border); font-size: 12px; color: var(--ink-muted); }
+  footer code { font-family: "IBM Plex Mono", monospace; background: var(--surface-2); border: 1px solid var(--border); padding: 1px 5px; border-radius: 4px; color: var(--ink-2); }
+  footer a { color: var(--accent); text-decoration: none; }
+  footer a:hover { text-decoration: underline; }
+
+  @media (prefers-reduced-motion: reduce) {
+    * { transition: none !important; }
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header class="page-head">
+    <div class="eyebrow">WHAM-XREX-PFMG474 &middot; STM32G474QET6</div>
+    <h1>Memory footprint</h1>
+    <div class="subtitle">
+      As of <span class="mono">__LATEST_COMMIT__</span> &mdash; __LATEST_SUBJECT__
+      &middot; tracked every commit since __FIRST_DATE__
+    </div>
+  </header>
+
+  <section class="tiles">
+    <div class="card tile">
+      <div class="tile-top">
+        <div class="tile-label"><span class="dot" style="background:var(--flash)"></span>Flash (512 KiB)</div>
+        <div class="tile-pct">__FLASH_PCT__%</div>
+      </div>
+      <div class="tile-value">__FLASH_USED_KB__<span class="unit">KB used</span></div>
+      <div class="tile-of">__FLASH_USED_B__ / __FLASH_TOTAL_B__ bytes</div>
+      <div class="meter-track"><div class="meter-fill" style="width:__FLASH_PCT__%;background:var(--flash)"></div></div>
+      <div class="tile-foot">
+        <span>__FLASH_REMAIN_KB__ KB remaining</span>
+        <svg class="spark" width="96" height="24" viewBox="0 0 96 24" id="spark-flash"></svg>
+      </div>
+    </div>
+    <div class="card tile">
+      <div class="tile-top">
+        <div class="tile-label"><span class="dot" style="background:var(--ram)"></span>RAM (128 KiB)</div>
+        <div class="tile-pct">__RAM_PCT__%</div>
+      </div>
+      <div class="tile-value">__RAM_USED_KB__<span class="unit">KB used</span></div>
+      <div class="tile-of">__RAM_USED_B__ / __RAM_TOTAL_B__ bytes</div>
+      <div class="meter-track"><div class="meter-fill" style="width:__RAM_PCT__%;background:var(--ram)"></div></div>
+      <div class="tile-foot">
+        <span>__RAM_REMAIN_KB__ KB remaining</span>
+        <svg class="spark" width="96" height="24" viewBox="0 0 96 24" id="spark-ram"></svg>
+      </div>
+    </div>
+  </section>
+
+  <section class="chart-card">
+    <div class="card">
+      <div class="card-head">
+        <div class="chart-title">Utilization over project lifetime</div>
+        <div class="chart-note">__COMMIT_COUNT__ commits &middot; __FIRST_DATE__ &ndash; __LAST_DATE__</div>
+      </div>
+      <div class="legend">
+        <div class="legend-item"><span class="legend-swatch" style="background:var(--flash)"></span>Flash</div>
+        <div class="legend-item"><span class="legend-swatch" style="background:var(--ram)"></span>RAM</div>
+      </div>
+      <div style="position:relative">
+        <svg class="chart" id="trend-chart" viewBox="0 0 960 320"></svg>
+        <div class="tooltip" id="trend-tooltip"></div>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <h2>Current breakdown by module</h2>
+    <div class="breakdown-grid">
+      <div class="card">
+        <div class="chart-title" style="margin-bottom:12px">Flash &mdash; __FLASH_USED_KB__ KB</div>
+        <div id="flash-bars"></div>
+      </div>
+      <div class="card">
+        <div class="chart-title" style="margin-bottom:12px">RAM &mdash; __RAM_USED_KB__ KB</div>
+        <div id="ram-bars"></div>
+      </div>
+    </div>
+    <div class="bar-tooltip" id="bar-tooltip"></div>
+  </section>
+
+  <section>
+    <h2>Full history</h2>
+    <div class="card" style="padding:0">
+      <div class="table-wrap" style="max-height:360px; overflow-y:auto">
+        <table id="history-table">
+          <thead>
+            <tr>
+              <th>Commit</th>
+              <th>Date</th>
+              <th>Subject</th>
+              <th class="num">Flash</th>
+              <th class="num">Flash %</th>
+              <th class="num">RAM</th>
+              <th class="num">RAM %</th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+
+  <footer>
+    Generated by <code>python/memory_report.py report</code> from
+    <code>docs/memory_history.csv</code>. Regenerate after any commit that
+    changes flash/RAM usage: <code>python3 memory_report.py history</code>
+    then <code>python3 memory_report.py report</code>, and commit both the
+    CSV and this file. Per-module sizes are read from the linked ELF's own
+    retained symbol table (arm-none-eabi-nm), not summed .o files, so
+    dead code the linker strips (--gc-sections) is never counted.
+  </footer>
+
+</div>
+
+<script id="report-data" type="application/json">__DATA_JSON__</script>
+<script>
+(function () {
+  "use strict";
+  var DATA = JSON.parse(document.getElementById("report-data").textContent);
+  var rows = DATA.history;
+  var flashModules = DATA.flash_modules;
+  var ramModules = DATA.ram_modules;
+
+  function cssVar(name) {
+    return getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+  }
+  function fmtKB(bytes) { return (bytes / 1024).toFixed(1); }
+  function fmtBytes(bytes) { return bytes.toLocaleString("en-US"); }
+  function fmtPct(used, total) { return (100 * used / total).toFixed(1); }
+  function shortDate(iso) { return iso.slice(0, 10); }
+
+  // ---------------- sparklines ----------------
+  function renderSpark(id, series, color) {
+    var el = document.getElementById(id);
+    var w = 96, h = 24, pad = 3;
+    if (series.length < 2) { return; }
+    var min = Math.min.apply(null, series), max = Math.max.apply(null, series);
+    if (max === min) { max = min + 1; }
+    var pts = series.map(function (v, i) {
+      var x = pad + (i / (series.length - 1)) * (w - 2 * pad);
+      var y = h - pad - ((v - min) / (max - min)) * (h - 2 * pad);
+      return [x, y];
+    });
+    var d = pts.map(function (p, i) { return (i === 0 ? "M" : "L") + p[0].toFixed(1) + "," + p[1].toFixed(1); }).join(" ");
+    var last = pts[pts.length - 1];
+    el.innerHTML =
+      '<path d="' + d + '" fill="none" stroke="' + color + '" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"/>' +
+      '<circle cx="' + last[0].toFixed(1) + '" cy="' + last[1].toFixed(1) + '" r="2.4" fill="' + color + '"/>';
+  }
+
+  // ---------------- trend line chart ----------------
+  function renderTrend() {
+    var svg = document.getElementById("trend-chart");
+    var tooltip = document.getElementById("trend-tooltip");
+    var VBW = 960, VBH = 320;
+    var padL = 34, padR = 14, padT = 14, padB = 30;
+    var plotW = VBW - padL - padR, plotH = VBH - padT - padB;
+    var n = rows.length;
+
+    var flashColor = cssVar("--flash"), ramColor = cssVar("--ram");
+    var gridColor = cssVar("--grid"), baseColor = cssVar("--border-2");
+    var surfaceColor = cssVar("--surface");
+
+    function xAt(i) { return n <= 1 ? padL : padL + (i / (n - 1)) * plotW; }
+    function yAt(pct) { return padT + plotH - (pct / 100) * plotH; }
+
+    var flashPts = rows.map(function (r, i) { return [xAt(i), yAt(100 * r.flash_used / r.flash_total)]; });
+    var ramPts = rows.map(function (r, i) { return [xAt(i), yAt(100 * r.ram_used / r.ram_total)]; });
+
+    function pathOf(pts) {
+      return pts.map(function (p, i) { return (i === 0 ? "M" : "L") + p[0].toFixed(2) + "," + p[1].toFixed(2); }).join(" ");
+    }
+    function areaOf(pts) {
+      var base = yAt(0);
+      return "M" + pts[0][0].toFixed(2) + "," + base.toFixed(2) + " " +
+        pts.map(function (p) { return "L" + p[0].toFixed(2) + "," + p[1].toFixed(2); }).join(" ") +
+        " L" + pts[pts.length - 1][0].toFixed(2) + "," + base.toFixed(2) + " Z";
+    }
+
+    var svgParts = [];
+    // gridlines at 0/25/50/75/100%
+    [0, 25, 50, 75, 100].forEach(function (pct) {
+      var y = yAt(pct);
+      svgParts.push('<line class="gridline" x1="' + padL + '" x2="' + (VBW - padR) + '" y1="' + y.toFixed(1) + '" y2="' + y.toFixed(1) + '"/>');
+      svgParts.push('<text class="axis-label" x="' + (padL - 8) + '" y="' + (y + 3.5).toFixed(1) + '" text-anchor="end">' + pct + '%</text>');
+    });
+    svgParts.push('<line class="baseline" x1="' + padL + '" x2="' + (VBW - padR) + '" y1="' + yAt(0).toFixed(1) + '" y2="' + yAt(0).toFixed(1) + '"/>');
+
+    // x labels: first, last, and up to 6 evenly spaced short hashes
+    var labelIdx = [];
+    var maxLabels = Math.min(n, 8);
+    for (var k = 0; k < maxLabels; k++) {
+      labelIdx.push(Math.round((k / (maxLabels - 1 || 1)) * (n - 1)));
+    }
+    labelIdx = labelIdx.filter(function (v, i, a) { return a.indexOf(v) === i; });
+    labelIdx.forEach(function (i) {
+      svgParts.push('<text class="axis-label" x="' + xAt(i).toFixed(1) + '" y="' + (VBH - padB + 16) + '" text-anchor="middle">' + rows[i].commit.slice(0, 7) + '</text>');
+    });
+
+    svgParts.push('<path d="' + areaOf(flashPts) + '" fill="' + flashColor + '" opacity="0.10"/>');
+    svgParts.push('<path d="' + areaOf(ramPts) + '" fill="' + ramColor + '" opacity="0.10"/>');
+    svgParts.push('<path d="' + pathOf(flashPts) + '" fill="none" stroke="' + flashColor + '" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>');
+    svgParts.push('<path d="' + pathOf(ramPts) + '" fill="none" stroke="' + ramColor + '" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>');
+
+    flashPts.forEach(function (p) {
+      svgParts.push('<circle cx="' + p[0].toFixed(2) + '" cy="' + p[1].toFixed(2) + '" r="3.5" fill="' + flashColor + '" stroke="' + surfaceColor + '" stroke-width="2"/>');
+    });
+    ramPts.forEach(function (p) {
+      svgParts.push('<circle cx="' + p[0].toFixed(2) + '" cy="' + p[1].toFixed(2) + '" r="3.5" fill="' + ramColor + '" stroke="' + surfaceColor + '" stroke-width="2"/>');
+    });
+
+    // end labels
+    var lastFlash = flashPts[flashPts.length - 1], lastRam = ramPts[ramPts.length - 1];
+    var lastRow = rows[rows.length - 1];
+    svgParts.push('<text class="axis-label" x="' + (lastFlash[0] + 8) + '" y="' + (lastFlash[1] + 4) + '" fill="' + flashColor + '" font-weight="600">' + fmtPct(lastRow.flash_used, lastRow.flash_total) + '%</text>');
+    svgParts.push('<text class="axis-label" x="' + (lastRam[0] + 8) + '" y="' + (lastRam[1] + 4) + '" fill="' + ramColor + '" font-weight="600">' + fmtPct(lastRow.ram_used, lastRow.ram_total) + '%</text>');
+
+    // crosshair (hidden until hover)
+    svgParts.push('<line class="crosshair-line" id="crosshair" x1="0" x2="0" y1="' + padT + '" y2="' + (VBH - padB) + '" style="opacity:0"/>');
+
+    svg.setAttribute("viewBox", "0 0 " + VBW + " " + VBH);
+    svg.innerHTML = svgParts.join("\n");
+
+    var crosshair = document.getElementById("crosshair");
+    var hitRect = document.createElementNS("http://www.w3.org/2000/svg", "rect");
+    hitRect.setAttribute("x", padL); hitRect.setAttribute("y", padT);
+    hitRect.setAttribute("width", plotW); hitRect.setAttribute("height", plotH);
+    hitRect.setAttribute("fill", "transparent");
+    hitRect.style.cursor = "crosshair";
+    svg.appendChild(hitRect);
+
+    function showAt(i, clientX, clientY) {
+      var r = rows[i];
+      crosshair.setAttribute("x1", xAt(i).toFixed(2));
+      crosshair.setAttribute("x2", xAt(i).toFixed(2));
+      crosshair.style.opacity = "1";
+
+      tooltip.innerHTML =
+        '<div class="tooltip-date">' + shortDate(r.date) + ' &middot; <span class="mono">' + r.commit + '</span></div>' +
+        '<div class="tooltip-subject">' + r.subject.replace(/</g, "&lt;") + '</div>' +
+        '<div class="tooltip-row"><span class="tooltip-key"><span class="stroke" style="background:' + flashColor + '"></span>Flash</span><span class="tooltip-val">' + fmtPct(r.flash_used, r.flash_total) + '% &middot; ' + fmtBytes(r.flash_used) + ' B</span></div>' +
+        '<div class="tooltip-row"><span class="tooltip-key"><span class="stroke" style="background:' + ramColor + '"></span>RAM</span><span class="tooltip-val">' + fmtPct(r.ram_used, r.ram_total) + '% &middot; ' + fmtBytes(r.ram_used) + ' B</span></div>';
+
+      var box = svg.getBoundingClientRect();
+      var px = box.left + (xAt(i) / VBW) * box.width;
+      var py = box.top + (Math.min(yAt(100 * r.flash_used / r.flash_total), yAt(100 * r.ram_used / r.ram_total)) / VBH) * box.height;
+      tooltip.style.left = (px - box.left) + "px";
+      tooltip.style.top = (py - box.top - 10) + "px";
+      tooltip.classList.add("visible");
+    }
+    function hide() {
+      crosshair.style.opacity = "0";
+      tooltip.classList.remove("visible");
+    }
+
+    function nearestIndex(clientX) {
+      var box = svg.getBoundingClientRect();
+      var localX = ((clientX - box.left) / box.width) * VBW;
+      var best = 0, bestDist = Infinity;
+      for (var i = 0; i < n; i++) {
+        var d = Math.abs(xAt(i) - localX);
+        if (d < bestDist) { bestDist = d; best = i; }
+      }
+      return best;
+    }
+
+    hitRect.addEventListener("pointermove", function (e) {
+      showAt(nearestIndex(e.clientX), e.clientX, e.clientY);
+    });
+    hitRect.addEventListener("pointerleave", hide);
+    hitRect.addEventListener("focus", function () { showAt(n - 1); });
+    hitRect.setAttribute("tabindex", "0");
+    hitRect.addEventListener("keydown", function (e) {
+      var cur = 0;
+      if (e.key === "ArrowLeft") { cur = Math.max(0, (window.__trendFocus || n - 1) - 1); }
+      else if (e.key === "ArrowRight") { cur = Math.min(n - 1, (window.__trendFocus || 0) + 1); }
+      else { return; }
+      window.__trendFocus = cur;
+      showAt(cur);
+    });
+  }
+
+  // ---------------- breakdown bar charts ----------------
+  function renderBars(containerId, modules, color, totalUsed) {
+    var el = document.getElementById(containerId);
+    var tooltip = document.getElementById("bar-tooltip");
+    var max = Math.max.apply(null, modules.map(function (m) { return m.bytes; }));
+    var otherLabel = "Padding / unattributed (alignment, vector table, anon symbols)";
+
+    el.innerHTML = modules.map(function (m) {
+      var pct = (100 * m.bytes / max).toFixed(1);
+      var barColor = m.name === otherLabel ? cssVar("--other") : color;
+      var kb = m.bytes >= 1024 ? (m.bytes / 1024).toFixed(1) + " KB" : m.bytes + " B";
+      return (
+        '<div class="bar-row" data-name="' + m.name.replace(/"/g, "&quot;") + '" data-bytes="' + m.bytes + '" data-pct="' + fmtPct(m.bytes, totalUsed) + '">' +
+        '<div class="bar-row-label" title="' + m.name.replace(/"/g, "&quot;") + '">' + m.name + '</div>' +
+        '<div class="bar-row-track"><div class="bar-row-fill" style="width:' + pct + '%;background:' + barColor + '"></div></div>' +
+        '<div class="bar-row-val">' + kb + '</div>' +
+        '</div>'
+      );
+    }).join("");
+
+    el.querySelectorAll(".bar-row-fill").forEach(function (fillEl) {
+      var row = fillEl.closest(".bar-row");
+      function show(e) {
+        tooltip.innerHTML =
+          '<div class="name">' + row.getAttribute("data-name") + '</div>' +
+          '<div class="val">' + Number(row.getAttribute("data-bytes")).toLocaleString("en-US") + ' bytes &middot; ' + row.getAttribute("data-pct") + '% of used</div>';
+        var box = row.getBoundingClientRect(), wrap = document.querySelector(".wrap").getBoundingClientRect();
+        tooltip.style.left = (box.left - wrap.left + box.width / 2) + "px";
+        tooltip.style.top = (box.top - wrap.top - 8) + "px";
+        tooltip.style.transform = "translate(-50%, -100%)";
+        tooltip.classList.add("visible");
+      }
+      function hide() { tooltip.classList.remove("visible"); }
+      fillEl.addEventListener("pointerenter", show);
+      fillEl.addEventListener("pointermove", show);
+      fillEl.addEventListener("pointerleave", hide);
+    });
+  }
+
+  // ---------------- history table ----------------
+  function renderTable() {
+    var tbody = document.querySelector("#history-table tbody");
+    var frag = document.createDocumentFragment();
+    rows.slice().reverse().forEach(function (r) {
+      var tr = document.createElement("tr");
+      function td(text, cls) {
+        var cell = document.createElement("td");
+        if (cls) { cell.className = cls; }
+        cell.textContent = text;
+        return cell;
+      }
+      tr.appendChild(td(r.commit, "mono"));
+      tr.appendChild(td(shortDate(r.date)));
+      tr.appendChild(td(r.subject, "subject"));
+      tr.appendChild(td(fmtBytes(r.flash_used) + " B", "num mono"));
+      tr.appendChild(td(fmtPct(r.flash_used, r.flash_total) + "%", "num mono"));
+      tr.appendChild(td(fmtBytes(r.ram_used) + " B", "num mono"));
+      tr.appendChild(td(fmtPct(r.ram_used, r.ram_total) + "%", "num mono"));
+      frag.appendChild(tr);
+    });
+    tbody.appendChild(frag);
+  }
+
+  // ---------------- go ----------------
+  var flashSeries = rows.map(function (r) { return 100 * r.flash_used / r.flash_total; });
+  var ramSeries = rows.map(function (r) { return 100 * r.ram_used / r.ram_total; });
+  renderSpark("spark-flash", flashSeries, cssVar("--flash"));
+  renderSpark("spark-ram", ramSeries, cssVar("--ram"));
+  renderTrend();
+  renderBars("flash-bars", flashModules, cssVar("--flash"), rows[rows.length - 1].flash_used);
+  renderBars("ram-bars", ramModules, cssVar("--ram"), rows[rows.length - 1].ram_used);
+  renderTable();
+
+  window.addEventListener("resize", function () {}); // viewBox scaling handles resize; no-op hook kept for clarity
+})();
+</script>
+</body>
+</html>

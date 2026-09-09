@@ -1,0 +1,4 @@
+../Core/Src/uart.c:24:6:uart_init	48	static
+../Core/Src/uart.c:38:6:uart_send	24	static
+../Core/Src/uart.c:49:6:uart_rx_callback	24	static
+../Core/Src/uart.c:70:6:uart_process	16	static

@@ -1,0 +1,18 @@
+# OS / editor cruft
+.DS_Store
+__pycache__/
+*.pyc
+
+# LaTeX build intermediates (the .tex source and final .pdf are tracked;
+# these are pure regenerable byproducts of running pdflatex) -- same
+# convention as the sibling PFM-STM32G474 project's .gitignore
+*.aux
+*.log
+*.out
+*.toc
+*.fls
+*.fdb_latexmk
+*.synctex.gz
+
+# NOTE: Debug/ build artifacts are NOT ignored here, matching the
+# sibling project's convention -- if that changes, update this file.

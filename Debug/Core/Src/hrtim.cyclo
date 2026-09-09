@@ -1,0 +1,16 @@
+../Core/Src/hrtim.c:96:17:HRTIM1_ClampCompare	4
+../Core/Src/hrtim.c:120:6:HRTIM1_FullInit	26
+../Core/Src/hrtim.c:470:6:HAL_HRTIM_MspInit	2
+../Core/Src/hrtim.c:559:6:HAL_HRTIM_MspDeInit	2
+../Core/Src/hrtim.c:599:16:HRTIM1_WaitForPhaseAndConnect	5
+../Core/Src/hrtim.c:628:6:HRTIM1_PWM_Start	10
+../Core/Src/hrtim.c:808:6:HRTIM1_EnableMasterInterrupt	1
+../Core/Src/hrtim.c:871:6:HRTIM1_PWM_Stop	2
+../Core/Src/hrtim.c:895:9:HRTIM1_FaultIsTripped	2
+../Core/Src/hrtim.c:900:6:HRTIM1_FaultClear	1
+../Core/Src/hrtim.c:925:6:HRTIM1_SoftwareUpdate	2
+../Core/Src/hrtim.c:947:6:HRTIM1_ApplyPfmStep	4
+../Core/Src/hrtim.c:987:20:HRTIM1_GetMasterPerRegAddress	1
+../Core/Src/hrtim.c:992:20:HRTIM1_GetMasterCmpRegAddress	5
+../Core/Src/hrtim.c:1007:20:HRTIM1_GetTimerPerRegAddress	1
+../Core/Src/hrtim.c:1012:20:HRTIM1_GetTimerCmp1RegAddress	1

@@ -1,0 +1,4 @@
+../Core/Src/qspi_test.c:69:6:QspiTest_Init	3
+../Core/Src/qspi_test.c:111:9:QspiTest_ReadId	3
+../Core/Src/qspi_test.c:150:6:HAL_QSPI_MspInit	1
+../Core/Src/qspi_test.c:178:6:HAL_QSPI_MspDeInit	1

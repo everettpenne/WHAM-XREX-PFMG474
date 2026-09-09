@@ -1,0 +1,17 @@
+../Core/Src/pfm.c:110:10:PFM_PhaseForChannel	24	static
+../Core/Src/pfm.c:116:6:PFM_Init	16	static
+../Core/Src/pfm.c:168:6:PFM_ApplyCurrentStep	32	static
+../Core/Src/pfm.c:196:6:PFM_CycleBoundaryHandler	16	static
+../Core/Src/pfm.c:282:6:PFM_Restart	8	static
+../Core/Src/pfm.c:329:6:PFM_SetPhaseEnabled	16	static
+../Core/Src/pfm.c:338:9:PFM_GetPhaseEnabled	16	static
+../Core/Src/pfm.c:347:6:PFM_ForceStop	8	static
+../Core/Src/pfm.c:365:6:PFM_ResetIndices	4	static
+../Core/Src/pfm.c:375:13:PFM_GetState	4	static
+../Core/Src/pfm.c:380:19:PFM_GetCurrentStep	4	static
+../Core/Src/pfm.c:385:19:PFM_GetStepByIndex	16	static
+../Core/Src/pfm.c:395:6:PFM_TableReset	4	static
+../Core/Src/pfm.c:400:9:PFM_AppendStep	16	static
+../Core/Src/pfm.c:414:10:PFM_GetEntryCount	4	static
+../Core/Src/pfm.c:419:6:PFM_GetDiagCounters	16	static
+../Core/Src/pfm.c:431:17:PFM_GetDiagGapLog	24	static
