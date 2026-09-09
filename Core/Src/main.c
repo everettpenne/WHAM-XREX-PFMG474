@@ -29,6 +29,7 @@
 #include "gate_driver.h"
 #include "qspi_test.h"
 #include "pfm_input.h"
+#include "pid.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -152,6 +153,12 @@ int main(void)
      PFM_Restart() in pfm.c). No-op when PFM_INPUT_FEATURE_ENABLED is
      0. */
   PfmInput_Init();
+
+  /* Closed-loop PID controller (pid.h) -- brings every channel's PID
+     state to a known, safe-inert default (all gains 0). Does not touch
+     HRTIM or PFM_Input hardware -- that's PID_Start(), via a new
+     serial command (not yet added, see docs/changelog.txt). */
+  PID_Init();
 
   uart_init(&uart2, &huart2);
 

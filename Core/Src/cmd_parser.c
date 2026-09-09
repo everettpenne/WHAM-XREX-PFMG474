@@ -123,6 +123,16 @@ static const command_t command_table[] = {
     { "PFMIN:DMASTAT?",      cmd_pfmin_dmastat },  /* TEMPORARY, see commands.h */
     { "PFMIN:DATA?",         cmd_pfmin_data    },
 #endif
+
+    /* Closed-loop PID control -- this project's whole point, see
+       commands.c's own header comment on the cmd_pid_*() handlers and
+       pid.h for the architecture. Not gated on a feature-enable flag,
+       unlike the modules above. */
+    { "PID:START",           cmd_pid_start     },
+    { "PID:STOP",            cmd_pid_stop      },
+    { "PID:SETPOINT",        cmd_pid_setpoint  },
+    { "PID:GAINS",           cmd_pid_gains     },
+    { "PID:STATus?",         cmd_pid_status    },
 };
 
 #define NUM_COMMANDS  (sizeof(command_table) / sizeof(command_table[0]))

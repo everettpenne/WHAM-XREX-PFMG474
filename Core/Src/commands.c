@@ -19,6 +19,7 @@
 #include "gate_driver.h"
 #include "qspi_test.h"
 #include "pfm_input.h"
+#include "pid.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -610,3 +611,155 @@ void cmd_pfmin_data(uart_instance_t *inst, char *args)
     uart_send(inst, g_pfminDataBuf);
 }
 #endif /* PFM_INPUT_FEATURE_ENABLED */
+
+/* --------------------------------------------------------------------------
+ * PID:* -- closed-loop control, see pid.h for the full architecture.
+ * Channel numbering matches PFMIN:DATA?'s own convention: 1..N on the
+ * wire, 0..N-1 internally (N = HRTIM_NUM_CHANNELS, CONFig:CHANnels?
+ * reports it). Error codes 11 (invalid channel) and 12 (invalid
+ * argument count/value) -- see commands.h.
+ * -------------------------------------------------------------------------- */
+
+void cmd_pid_start(uart_instance_t *inst, char *args)
+{
+    (void)args;
+    (void)PID_Start();
+    uart_send(inst, "OK\r\n");
+}
+
+void cmd_pid_stop(uart_instance_t *inst, char *args)
+{
+    (void)args;
+    PID_Stop();
+    uart_send(inst, "OK\r\n");
+}
+
+void cmd_pid_setpoint(uart_instance_t *inst, char *args)
+{
+    char *tok;
+    long  chArg;
+    long  hzArg;
+    uint8_t ch;
+
+    tok = (args != NULL) ? strtok(args, " \r\n") : NULL;
+    if (tok == NULL)
+    {
+        SendErr(inst, 12, "PID:SETPOINT needs two arguments: channel hz");
+        return;
+    }
+    chArg = atol(tok);
+
+    tok = strtok(NULL, " \r\n");
+    if (tok == NULL)
+    {
+        SendErr(inst, 12, "PID:SETPOINT needs two arguments: channel hz");
+        return;
+    }
+    hzArg = atol(tok);
+
+    if ((chArg < 1L) || (chArg > (long)HRTIM_NUM_CHANNELS))
+    {
+        SendErr(inst, 11, "Invalid PID channel");
+        return;
+    }
+    ch = (uint8_t)(chArg - 1L);   /* 1..N on the wire -> 0..N-1 internally */
+
+    if (hzArg < 0L)
+    {
+        SendErr(inst, 12, "hz must be >= 0");
+        return;
+    }
+
+    /* PID_SetSetpoint() clamps into [PID_OUTPUT_MIN_HZ,
+       PID_OUTPUT_MAX_HZ] itself -- an out-of-range value here is
+       accepted, not rejected, matching this project's existing
+       clamp-don't-reject convention for HRTIM1_ClampCompare(). */
+    (void)PID_SetSetpoint(ch, (uint32_t)hzArg);
+    uart_send(inst, "OK\r\n");
+}
+
+void cmd_pid_gains(uart_instance_t *inst, char *args)
+{
+    char *tok;
+    long  chArg;
+    double kp;
+    double ki;
+    double kd;
+    uint8_t ch;
+
+    tok = (args != NULL) ? strtok(args, " \r\n") : NULL;
+    if (tok == NULL)
+    {
+        SendErr(inst, 12, "PID:GAINS needs four arguments: channel kp ki kd");
+        return;
+    }
+    chArg = atol(tok);
+
+    tok = strtok(NULL, " \r\n");
+    if (tok == NULL)
+    {
+        SendErr(inst, 12, "PID:GAINS needs four arguments: channel kp ki kd");
+        return;
+    }
+    kp = atof(tok);
+
+    tok = strtok(NULL, " \r\n");
+    if (tok == NULL)
+    {
+        SendErr(inst, 12, "PID:GAINS needs four arguments: channel kp ki kd");
+        return;
+    }
+    ki = atof(tok);
+
+    tok = strtok(NULL, " \r\n");
+    if (tok == NULL)
+    {
+        SendErr(inst, 12, "PID:GAINS needs four arguments: channel kp ki kd");
+        return;
+    }
+    kd = atof(tok);
+
+    if ((chArg < 1L) || (chArg > (long)HRTIM_NUM_CHANNELS))
+    {
+        SendErr(inst, 11, "Invalid PID channel");
+        return;
+    }
+    ch = (uint8_t)(chArg - 1L);
+
+    (void)PID_SetGains(ch, (float)kp, (float)ki, (float)kd);
+    uart_send(inst, "OK\r\n");
+}
+
+void cmd_pid_status(uart_instance_t *inst, char *args)
+{
+    char buf[96];
+    char *tok;
+    long  chArg;
+    uint8_t ch;
+    uint32_t setpointHz;
+    uint32_t measuredHz;
+    uint32_t outputHz;
+
+    tok = (args != NULL) ? strtok(args, " \r\n") : NULL;
+    if (tok == NULL)
+    {
+        SendErr(inst, 12, "PID:STATus? needs one argument: channel");
+        return;
+    }
+    chArg = atol(tok);
+
+    if ((chArg < 1L) || (chArg > (long)HRTIM_NUM_CHANNELS))
+    {
+        SendErr(inst, 11, "Invalid PID channel");
+        return;
+    }
+    ch = (uint8_t)(chArg - 1L);
+
+    (void)PID_GetStatus(ch, &setpointHz, &measuredHz, &outputHz);
+
+    snprintf(buf, sizeof(buf), "OK %u %lu %lu %lu\r\n",
+             (unsigned int)PID_IsRunning(),
+             (unsigned long)setpointHz, (unsigned long)measuredHz,
+             (unsigned long)outputHz);
+    uart_send(inst, buf);
+}

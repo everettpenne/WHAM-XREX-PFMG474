@@ -1,6 +1,143 @@
 WHAM-XREX-PFMG474 Firmware Changelog
 =====================================
 
+2026-09-09  —  Closed-loop PID controller implemented, a real
+               anti-windup bug found and fixed, CONFIRMED converging
+               on real hardware
+-----------------------------------------------------------------------
+  Change:  Implemented the architecture designed in the entry below --
+        Possibility 3 + fixed-rate Master heartbeat, 4 independent
+        channels. New/changed files:
+
+          - Core/Inc/pid.h, Core/Src/pid.c (new): the control loop
+            itself. Per-channel {setpoint, Kp/Ki/Kd, integral,
+            derivative history} state, fully independent across
+            channels. PID_Update() -- called once per Master heartbeat
+            from HRTIM1_Master_IRQHandler() -- reads each channel's
+            latest measured period (pfm_input.c), converts to Hz,
+            runs that channel's PID with a fixed Delta-t, clamps to
+            [PID_OUTPUT_MIN_HZ, PID_OUTPUT_MAX_HZ] (ctrlr_config.h,
+            3000-150000 Hz -- the floor is a real HRTIM 16-bit-PER
+            hardware limit, not a tuning choice), writes the result via
+            hrtim.c's new HRTIM1_SetChannelPeriod(). PID_Start()/
+            PID_Stop() begin/end closed-loop operation (PFM_Input
+            continuous capture + HRTIM output together); PID:START/
+            STOP/SETPOINT/GAINS/STATus? (commands.c/.h, cmd_parser.c)
+            are the wire interface, ERR 11/12 added.
+
+          - Core/Src/hrtim.c, Core/Inc/hrtim.h: HRTIM1_FullInit()'s
+            per-channel timer config changed to Possibility 3 for every
+            active channel (ResetTrigger=NONE, UpdateTrigger=NONE,
+            ResetUpdate=ENABLED -- shadow->active promotion on that
+            channel's own roll-over, no Master involvement, no
+            relationship between channels). Master's own timebase
+            repurposed from "shared PWM carrier" to "PID heartbeat"
+            (HRTIM_MASTER_PID_PERIOD/_PRESCALE, derived from
+            ctrlr_config.h's new PID_LOOP_RATE_HZ). The old
+            HRTIM1_ApplyPfmStep() (one shared `per` + a Master-CMPk
+            phase-offset array) replaced by HRTIM1_SetChannelPeriod()
+            (one channel, one `per`, CMP1 always recomputed as per/2 --
+            see that function's own comment for why a fixed
+            *proportional* 50% duty, not a fixed tick count, is the
+            right default for a V-to-F tone). The old
+            HRTIM1_WaitForPhaseAndConnect()/multi-step cold-start phase
+            dance in HRTIM1_PWM_Start() -- needed only to bring up a
+            phase-LOCKED carrier cleanly -- removed entirely; the 4
+            independent channels have no phase relationship to get
+            right at cold start, so there's nothing left to wait for.
+            HRTIM1_ApplyPfmStep() kept as a thin compatibility shim
+            (ignores cmp[]/phase[], just calls HRTIM1_SetChannelPeriod()
+            per channel) so pfm.c's inherited TABLE:STEP/FIRE path
+            still links and does something sane, though it's no longer
+            this project's real output path.
+
+          - Core/Src/pfm_input.c, Core/Inc/pfm_input.h: new continuous/
+            free-running capture mode (PfmInput_StartContinuous()/
+            StopContinuous()/GetLatestPeriod()) alongside the existing
+            bounded bench-capture path (PFMIN:CAPTURE/STATus?/DATA?,
+            unchanged) -- no target count, no array accumulation
+            (can't overflow PFM_INPUT_MAX_PERIODS), just one
+            continuously-overwritten latest-period scalar per channel,
+            for a live consumer instead of a bench snapshot. A
+            `running` flag shared between both modes keeps them from
+            colliding on the same channel's DMA/timer resource.
+
+          - ctrlr_config.h: HRTIM_NUM_CHANNELS raised 3 -> 4 (repurposed
+            meaning: independent PID channels, not phase-locked ones --
+            see that file's own updated comment). New PID_LOOP_RATE_HZ
+            (1000, a first conservative guess, NOT yet tuned against
+            real Transrex/magnet electrical time constants) and
+            PID_OUTPUT_MIN_HZ/MAX_HZ (3000/150000).
+
+        REAL BUG, found and fixed via real-hardware bench testing, not
+        just code review: the first working build's anti-windup logic
+        (`if (clampedHzF == outputHzF) { integrate }` -- freeze the
+        integrator any time output is clamped, regardless of direction)
+        deadlocked in exactly the common starting condition -- setpoint
+        well above PID_OUTPUT_MIN_HZ, output computes small before the
+        integral has built up, gets clamped UP to the floor, and the
+        old check then refused to integrate because output was
+        "clamped" -- even though integrating was exactly what would
+        have escaped the clamp. Confirmed on real hardware: channel 1's
+        output AND measured feedback (a real loopback wire from earlier
+        WHAM-PFMG474-V4 bench testing, PFM_Input_01<->HRTIM channel 0,
+        still connected) both sat frozen at exactly 3000 Hz indefinitely
+        with setpoint=20000, Kp=0.02, Ki=0.5 -- error stayed large and
+        positive, integral never moved. Fixed: only block integration
+        when it would make the SAME saturation worse (clamped-high with
+        still-positive error, or clamped-low with still-negative
+        error); otherwise integrating is what should happen to escape
+        the rail. See pid.c's own comment on this fix for the full
+        writeup -- a genuinely easy mistake worth remembering.
+
+        CONFIRMED on real hardware after the fix, same setpoint/gains,
+        channel 1 (the one channel with a real loopback wired):
+        measured/output climbed smoothly and monotonically from
+        ~4100 Hz toward the 20000 Hz setpoint over 3 seconds (4098 ->
+        7317 -> 9883 -> 11928 -> 13544 -> 14851 -> 15896 -> 16727 ->
+        17384 -> 17911 -> 18332 -> 18671, at 0.25 s intervals), output
+        tracking measured almost exactly throughout (confirming the
+        loopback is real and the whole chain -- PFM_Input capture ->
+        Hz conversion -> PID -> HRTIM per-channel write -> real output
+        -> real feedback -- is genuinely closed). A classic smooth
+        asymptotic approach, exactly the expected shape for these
+        gains against whatever this loopback's own effective time
+        constant is (not a real magnet -- see "explicitly NOT yet
+        resolved" below).
+
+        Explicitly NOT yet resolved (real open items, not implementation
+        detail):
+
+          - Kp/Ki/Kd used above (0.02/0.5/0) were arbitrary bench-test
+            values against a wire loopback, not tuned against any real
+            Transrex/magnet plant -- expect this to need real retuning
+            once real hardware is in the loop.
+          - Only channel 1 has ever been verified end-to-end (the one
+            channel with a physical loopback on this bench right now).
+            Channels 2-4 build and report status correctly but are
+            functionally untested -- nothing physically wired to their
+            PFM_Input feedback pins yet.
+          - PID_LOOP_RATE_HZ (1000 Hz) is a first guess, not validated
+            against real magnet-supply control-bandwidth requirements.
+          - A latched hardware fault (PID_Update()'s own check) calls
+            PID_Stop() but there is no command yet to explicitly
+            re-arm/restart PID after a FAULT:CLEAR -- an operator must
+            send PID:START again manually once real fault-recovery
+            behavior is decided.
+          - Everything from the previous entry's own "explicitly NOT
+            yet resolved" list that this pass didn't touch (FDM fault
+            decode, COMMS/Ethernet, fiber-optic I/O, E-stop hardware
+            independence) is still fully out of scope, per direct
+            instruction.
+
+  Files:  Core/Inc/pid.h (new), Core/Src/pid.c (new), Core/Src/hrtim.c,
+        Core/Inc/hrtim.h, Core/Src/pfm_input.c, Core/Inc/pfm_input.h,
+        Core/Inc/ctrlr_config.h, Core/Src/commands.c, Core/Inc/commands.h,
+        Core/Src/cmd_parser.c, Core/Src/stm32g4xx_it.c, Core/Src/main.c,
+        Debug/Core/Src/subdir.mk, Debug/objects.list (STM32CubeIDE's
+        generated-Makefile gotcha, same as every previous Core/Src
+        addition -- see AGENTS.md)
+
 2026-09-09  —  Project start: reseeded from WHAM-PFMG474-V4, closed-loop
                PID architecture for 4 independent Transrex channels
                designed (no code yet)

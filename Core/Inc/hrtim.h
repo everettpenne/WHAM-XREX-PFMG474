@@ -65,6 +65,24 @@ extern HRTIM_HandleTypeDef hhrtim1;
 #define HRTIM_DEADTIME_NS       100U
 #define HRTIM_DEADTIME_COUNTS   17U
 
+/* Master timebase for the PID control-loop heartbeat -- added
+ * 2026-09-09, see ctrlr_config.h's PID_LOOP_RATE_HZ for the full
+ * reasoning and hrtim.c's HRTIM1_FullInit() for where these are
+ * applied. /4 prescale chosen as the smallest (fastest, finest-grained)
+ * prescale that still fits PID_LOOP_RATE_HZ's default (1 kHz) inside
+ * HRTIM's 16-bit PER register -- /1 or /2 would overflow (170 MHz or
+ * 85 MHz respectively, divided by 1 kHz, both exceed 65535); /4
+ * (42.5 MHz) gives exactly 42500 counts at 1 kHz, with headroom to go
+ * slower (down to ~649 Hz at /4 before needing a coarser prescale) if
+ * PID_LOOP_RATE_HZ is ever lowered further. Raise the divider (DIV8,
+ * DIV16, ...) if PID_LOOP_RATE_HZ is ever set below that floor -- this
+ * is NOT auto-selected, matching this project's existing
+ * "compile-time constant, not auto-derived" philosophy elsewhere
+ * (HRTIM_NUM_CHANNELS, HRTIM_MAX_CARRIER_FREQ_HZ). */
+#define HRTIM_MASTER_PID_PRESCALE   HRTIM_PRESCALERRATIO_DIV4
+#define HRTIM_MASTER_PID_PRESCALE_DIV  4U
+#define HRTIM_MASTER_PID_PERIOD    ((uint16_t)((HRTIM_TIMER_CLK_HZ / HRTIM_MASTER_PID_PRESCALE_DIV / PID_LOOP_RATE_HZ) - 1U))
+
 /* Safe compare clamping margin */
 #define HRTIM_COMPARE_MIN           ((uint16_t)2U)
 
@@ -140,14 +158,31 @@ void HRTIM1_FaultClear(void);
  * is called (counters are stopped, no HAL calls are active). */
 void HRTIM1_SoftwareUpdate(void);
 
-/* Coherent register update helper. `cmp` and `phase` must each point
- * to exactly HRTIM_NUM_CHANNELS entries (channel 0..N-1); `phase[0]`
- * is ignored (channel 0 has no phase register of its own -- it IS the
- * Master-PER 0 deg reference). Use PFM_PhaseForChannel() (pfm.h) to
- * compute `phase[1..N-1]`. */
-void HRTIM1_ApplyPfmStep(uint16_t per,
-                         const uint16_t *cmp,
-                         const uint16_t *phase);
+/* Writes a new period (and a recomputed 50%-duty CMP1, see this
+ * function's own comment in hrtim.c for why that's not a fixed tick
+ * count) into ONE channel's shadow registers -- pid.c's per-heartbeat
+ * output write, Possibility 3's core primitive. Always safe to call,
+ * at any time, regardless of what that channel's counter is currently
+ * doing -- the hardware promotes shadow to active at THAT channel's
+ * own next roll-over (ResetUpdate=ENABLED, see HRTIM1_FullInit()), not
+ * at the moment this function runs. `channel` out of range
+ * (>= HRTIM_NUM_CHANNELS) is a no-op. Replaces the old
+ * HRTIM1_ApplyPfmStep() (one shared `per` + a phase-offset array
+ * across all active channels) -- that function assumed a phase-locked
+ * multi-channel carrier this project no longer drives; see git history
+ * (WHAM-PFMG474-V4, this project's own base) if that's ever needed
+ * again. */
+void HRTIM1_SetChannelPeriod(uint8_t channel, uint16_t per);
+
+/* COMPATIBILITY SHIM, 2026-09-09 -- kept only so pfm.c's inherited
+ * table-engine (TABLE:STEP/FIRE, not this project's point, not yet
+ * removed) still links and does something sane on real hardware, not
+ * this project's actual output path (pid.c's per-heartbeat
+ * HRTIM1_SetChannelPeriod() calls are). `cmp`/`phase` are IGNORED --
+ * see the .c file's own comment for why neither means anything under
+ * Possibility 3 -- every active channel just gets the same `per`,
+ * independently, no interleave. */
+void HRTIM1_ApplyPfmStep(uint16_t per, const uint16_t *cmp, const uint16_t *phase);
 
 /* Register access helpers -- indexed by channel (0..HRTIM_NUM_CHANNELS-1
  * for the per-timer getters) rather than one named function per

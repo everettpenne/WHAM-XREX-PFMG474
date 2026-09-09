@@ -27,6 +27,7 @@
 #include "pfm.h"
 #include "gate_driver.h"
 #include "pfm_input.h"
+#include "pid.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -242,24 +243,30 @@ void USART2_IRQHandler(void)
   *
   * Not a CubeMX-generated handler -- HRTIM1_Master_IRQn is enabled and
   * primed for this one flag by HRTIM1_EnableMasterInterrupt() (hrtim.c),
-  * called once at boot from main.c, matching the sibling PFM-STM32G474
-  * project's own HRTIM1_Master_IRQHandler() (state_machine/fault-pin
-  * calls stripped out -- neither exists in this project). Fires once
-  * per PWM period (the Master repetition event) while the Master
-  * counter is running, i.e. only during/after a FIRE (see
-  * PFM_Restart()) -- never before HRTIM1_PWM_Start() has been called,
-  * and never again after PFM_CycleBoundaryHandler() stops the counters
-  * at the end of a shot (see its own comment in pfm.c on why the
-  * counters, not just the outputs, must stop -- otherwise this ISR
-  * would keep firing forever at the full carrier rate and could starve
-  * the main loop).
+  * called once at boot from main.c.
+  *
+  * REWIRED, 2026-09-09, closed-loop PID architecture (see
+  * docs/changelog.txt's design-decision entry and pid.h's own header
+  * comment): Master's repetition event is no longer a shared PWM
+  * carrier's own period boundary (WHAM-PFMG474-V4's switching-supply
+  * meaning, and PFM_CycleBoundaryHandler()'s own reason for existing --
+  * that function is still here, inherited, still callable, just no
+  * longer wired to this ISR) -- it's now the PID control loop's
+  * fixed-rate heartbeat, reprogrammed onto Master's own timebase to
+  * PID_LOOP_RATE_HZ (ctrlr_config.h) by hrtim.c's HRTIM1_FullInit().
+  * Fires at that fixed rate while the Master counter is running, i.e.
+  * only during/after PID_Start() -- never before, and never again
+  * after PID_Stop() stops the counters (HRTIM1_PWM_Stop(), same
+  * reasoning as the old comment here: leaving the counters running
+  * after outputs stop would starve the main loop with this ISR firing
+  * forever).
   */
 void HRTIM1_Master_IRQHandler(void)
 {
     if (__HAL_HRTIM_MASTER_GET_FLAG(&hhrtim1, HRTIM_MASTER_FLAG_MREP) != RESET)
     {
         __HAL_HRTIM_MASTER_CLEAR_IT(&hhrtim1, HRTIM_MASTER_IT_MREP);
-        PFM_CycleBoundaryHandler();
+        PID_Update();
     }
 }
 

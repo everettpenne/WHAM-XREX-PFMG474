@@ -164,6 +164,22 @@ typedef struct
     uint16_t targetCount;       /* 0 = not armed */
     uint16_t overcaptureCount;  /* diagnostic: CCxOF observed -- see the note above */
     uint32_t period[PFM_INPUT_MAX_PERIODS];
+
+    /* Continuous ("free-running") mode -- added 2026-09-09, see
+       pfm_input.h's own comment block on PfmInput_StartContinuous().
+       `running` is shared between BOTH capture modes (set by
+       PfmInput_OnShotStart() for a bench capture, or by
+       PfmInput_StartContinuous() for this one) -- the single source of
+       truth for "is something already using this channel's DMA/timer,"
+       so the two modes can't collide. `continuous` distinguishes which
+       mode `running` refers to, for ProcessDmaChunk()'s branch and
+       PfmInput_StopContinuous()'s own "only stop what I started" check.
+       `lastPeriod` is written by EITHER mode (see PfmInput_GetLatestPeriod()'s
+       own comment) -- always safe to read, meaningless (0) until the
+       first period closes. */
+    uint8_t  running;
+    uint8_t  continuous;
+    uint32_t lastPeriod;
 } PfmInputState_t;
 
 static PfmInputState_t g_state[PFM_INPUT_NUM_CHANNELS];
@@ -351,6 +367,18 @@ void PfmInput_Arm(uint16_t m)
 
     for (uint8_t i = 0U; i < PFM_INPUT_NUM_CHANNELS; i++)
     {
+        /* Defensive, added alongside continuous mode (2026-09-09): a
+           channel currently owned by PfmInput_StartContinuous() (e.g.
+           a PID feedback channel) must not have its capture state
+           reset out from under it by an operator accidentally sending
+           PFMIN:CAPTURE -- leave it untouched. targetCount stays 0 for
+           it either way, so PfmInput_OnShotStart() below won't try to
+           start a second, colliding DMA transfer on it. */
+        if (g_state[i].running != 0U)
+        {
+            continue;
+        }
+
         g_state[i].haveFirstRise    = 0U;
         g_state[i].lastRiseTick     = 0U;
         g_state[i].capturedCount    = 0U;
@@ -374,6 +402,10 @@ void PfmInput_OnShotStart(void)
         {
             g_dmaStartStatus[i] = HAL_TIM_IC_Start_DMA(htim, kDesc[i].timChannel,
                                                        g_dmaBuf[i], PFM_DMA_BUF_LEN);
+            if (g_dmaStartStatus[i] == HAL_OK)
+            {
+                g_state[i].running = 1U;   /* see PfmInputState_t's own comment */
+            }
         }
     }
 }
@@ -452,6 +484,7 @@ void PfmInput_OnShotEnd(void)
            its target should not silently keep listening into some
            later, unrelated shot. */
         g_state[i].targetCount = 0U;
+        g_state[i].running     = 0U;   /* see PfmInputState_t's own comment */
     }
 }
 
@@ -482,6 +515,69 @@ uint16_t PfmInput_GetOvercaptureCount(uint8_t channel)
     return g_state[channel].overcaptureCount;
 }
 
+uint8_t PfmInput_StartContinuous(uint8_t channel)
+{
+    if ((channel >= PFM_INPUT_NUM_CHANNELS) || (ChannelIsActive(channel) == 0U))
+    {
+        return 0U;
+    }
+    if (g_state[channel].running != 0U)
+    {
+        return 0U;   /* already running -- continuous or an armed bench capture */
+    }
+
+    TIM_HandleTypeDef *htim = HandleForTimer(kDesc[channel].timer);
+    if (htim == NULL)
+    {
+        return 0U;
+    }
+
+    g_state[channel].haveFirstRise = 0U;
+    g_state[channel].lastRiseTick  = 0U;
+    g_state[channel].lastPeriod    = 0U;
+    g_dmaNextOffset[channel]       = 0U;
+
+    g_dmaStartStatus[channel] = HAL_TIM_IC_Start_DMA(htim, kDesc[channel].timChannel,
+                                                      g_dmaBuf[channel], PFM_DMA_BUF_LEN);
+    if (g_dmaStartStatus[channel] != HAL_OK)
+    {
+        return 0U;
+    }
+
+    g_state[channel].continuous = 1U;
+    g_state[channel].running    = 1U;
+    return 1U;
+}
+
+void PfmInput_StopContinuous(uint8_t channel)
+{
+    if (channel >= PFM_INPUT_NUM_CHANNELS)
+    {
+        return;
+    }
+    if (g_state[channel].continuous == 0U)
+    {
+        return;   /* not running in continuous mode -- leave a bench capture alone */
+    }
+
+    TIM_HandleTypeDef *htim = HandleForTimer(kDesc[channel].timer);
+    if (htim != NULL)
+    {
+        HAL_TIM_IC_Stop_DMA(htim, kDesc[channel].timChannel);
+    }
+    g_state[channel].continuous = 0U;
+    g_state[channel].running    = 0U;
+}
+
+uint32_t PfmInput_GetLatestPeriod(uint8_t channel)
+{
+    if (channel >= PFM_INPUT_NUM_CHANNELS)
+    {
+        return 0U;
+    }
+    return g_state[channel].lastPeriod;
+}
+
 /* --------------------------------------------------------------------------
  * ProcessDmaChunk() -- shared by both DMA batch callbacks below.
  * Processes `count` freshly-DMA'd raw tick values starting at
@@ -495,14 +591,12 @@ static void ProcessDmaChunk(uint8_t idx, uint16_t startOffset, uint16_t count)
 {
     PfmInputState_t *st = &g_state[idx];
 
-    /* Already finished (see the old per-edge callback's own comment,
-       kept for the same reason: a DMA batch already in flight when
-       the target is reached should be a clean no-op, not an
-       out-of-bounds write). */
-    if (st->capturedCount >= st->targetCount)
-    {
-        return;
-    }
+    /* 16-bit-counter wraparound mask -- see this file's top comment
+       (DMA REDESIGN section) and TIM3/TIM4's real-hardware findings,
+       2026-09-09. Unchanged from the old per-edge design, just
+       computed once per chunk instead of once per edge. Needed by
+       both modes below, so computed once here rather than twice. */
+    uint32_t mask = kDesc[idx].is16Bit ? 0xFFFFU : 0xFFFFFFFFU;
 
     /* Diagnostic: coarser-grained than the old per-edge check (this
        can only say "at least one overcapture happened somewhere in
@@ -511,7 +605,8 @@ static void ProcessDmaChunk(uint8_t idx, uint16_t startOffset, uint16_t count)
        from whenever it was set until explicitly cleared here.
        Expected to read 0 in normal operation: DMA services CCRx far
        faster than the old software ISR did, so this should be even
-       less likely to fire now than before. */
+       less likely to fire now than before. Unconditional, applies to
+       both capture modes below. */
     {
         TIM_HandleTypeDef *htim = HandleForTimer(kDesc[idx].timer);
         if (htim != NULL)
@@ -525,11 +620,46 @@ static void ProcessDmaChunk(uint8_t idx, uint16_t startOffset, uint16_t count)
         }
     }
 
-    /* 16-bit-counter wraparound mask -- see this file's top comment
-       (DMA REDESIGN section) and TIM3/TIM4's real-hardware findings,
-       2026-09-09. Unchanged from the old per-edge design, just
-       computed once per chunk instead of once per edge. */
-    uint32_t mask = kDesc[idx].is16Bit ? 0xFFFFU : 0xFFFFFFFFU;
+    /* Continuous ("free-running") mode -- added 2026-09-09, see
+       pfm_input.h's own comment on PfmInput_StartContinuous(). Handled
+       as its own early branch, BEFORE the targetCount-based early
+       return below: targetCount is always 0 for a continuous channel
+       (PfmInput_Arm() was never called for it), so falling through to
+       that check would incorrectly look "already finished" and never
+       process anything. No array accumulation here (can't overflow
+       PFM_INPUT_MAX_PERIODS since nothing is ever appended), no target
+       count, never stops DMA on its own -- just keeps lastPeriod
+       current. */
+    if (st->continuous != 0U)
+    {
+        for (uint16_t k = 0U; k < count; k++)
+        {
+            uint32_t tick = g_dmaBuf[idx][(uint16_t)(startOffset + k)];
+
+            if (st->haveFirstRise == 0U)
+            {
+                st->haveFirstRise = 1U;   /* first rise -- reference only */
+            }
+            else
+            {
+                st->lastPeriod = (tick - st->lastRiseTick) & mask;
+            }
+            st->lastRiseTick = tick;
+        }
+        g_dmaNextOffset[idx] = (uint16_t)((startOffset + count) % PFM_DMA_BUF_LEN);
+        return;
+    }
+
+    /* Bounded bench-capture mode (unchanged below, aside from also
+       keeping lastPeriod current -- see PfmInput_GetLatestPeriod()'s
+       own comment on why that's meaningful here too). Already finished
+       (see the old per-edge callback's own comment, kept for the same
+       reason: a DMA batch already in flight when the target is reached
+       should be a clean no-op, not an out-of-bounds write). */
+    if (st->capturedCount >= st->targetCount)
+    {
+        return;
+    }
 
     for (uint16_t k = 0U; k < count; k++)
     {
@@ -545,6 +675,7 @@ static void ProcessDmaChunk(uint8_t idx, uint16_t startOffset, uint16_t count)
         {
             uint16_t n = st->capturedCount;
             st->period[n]     = (tick - st->lastRiseTick) & mask;
+            st->lastPeriod    = st->period[n];
             st->capturedCount = (uint16_t)(n + 1U);
 
             if (st->capturedCount >= st->targetCount)
@@ -560,6 +691,7 @@ static void ProcessDmaChunk(uint8_t idx, uint16_t startOffset, uint16_t count)
                    capturedCount >= targetCount check is what tells it
                    this channel needs no further action. Remaining
                    entries in this chunk (if any) are stale -- ignore. */
+                st->running = 0U;   /* see PfmInputState_t's own comment */
                 return;
             }
         }
@@ -753,5 +885,8 @@ uint16_t PfmInput_GetCount(uint8_t channel) { (void)channel; return 0U; }
 const uint32_t *PfmInput_GetPeriods(uint8_t channel) { (void)channel; return NULL; }
 uint16_t PfmInput_GetOvercaptureCount(uint8_t channel) { (void)channel; return 0U; }
 uint8_t PfmInput_GetDmaStartStatus(uint8_t channel) { (void)channel; return 0xFFU; }
+uint8_t PfmInput_StartContinuous(uint8_t channel) { (void)channel; return 0U; }
+void PfmInput_StopContinuous(uint8_t channel) { (void)channel; }
+uint32_t PfmInput_GetLatestPeriod(uint8_t channel) { (void)channel; return 0U; }
 
 #endif /* PFM_INPUT_FEATURE_ENABLED */

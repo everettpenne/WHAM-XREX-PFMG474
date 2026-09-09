@@ -27,10 +27,11 @@ Master-tick heartbeat driving the PID compute step itself (a real,
 deliberate design point -- fixed control-loop sample time, decoupled
 from each channel's own instantaneous carrier frequency; DO NOT
 "simplify" this back to a self-clocked per-channel update without
-re-reading that discussion first). None of the PID/multi-independent-
-channel work exists yet as of this repo's first commit -- this file's
-"Current functionality" section below describes only what was inherited
-at the fork point.
+re-reading that discussion first). Implemented 2026-09-09 (same day as
+the fork) and CONFIRMED converging on real hardware -- see
+"Current functionality" below and docs/changelog.txt's own entry for
+the full writeup, including a real anti-windup bug found and fixed via
+real-hardware bench testing.
 
 **Provenance**: this repo was reseeded (2026-09-09) from
 [`WHAM-PFMG474-V4`](https://github.com/everettpenne/WHAM-PFMG474-V4) at
@@ -62,24 +63,56 @@ Code ported over is called out explicitly below and in each file's own
 comments -- check there before assuming a mechanism is unique to this
 project or before "fixing" something that was a deliberate port.
 
-## Current functionality (as of the fork point, 2026-09-08)
+## Current functionality (as of 2026-09-09)
 
-**Inherited from WHAM-PFMG474-V4, unchanged so far.** This describes the
-switching-supply-oriented starting point this project was reseeded
-from -- not yet anything Transrex/PID-specific. See "What this project
-is" above for where this is headed.
+### Closed-loop PID control -- this project's actual point
 
-Configurable-channel-count PWM generation (HRTIM1, 1-5 channels
-phase-locked to the Master timer, set by `HRTIM_NUM_CHANNELS` in
-`Core/Inc/ctrlr_config.h` -- 3 by default, matching this board's actual
-current wiring; channels beyond N stay pin/dead-time-reserved but
-unlocked, up through Timer F) plus the serial command layer. A PFM
-table can be uploaded, its length confirmed, and fired: `FIRE` starts
-playback from step 0 via the HRTIM master-repetition interrupt, and it
-auto-stops when the table is exhausted. There is still **no state
+Implemented 2026-09-09, CONFIRMED converging on real hardware the same
+day. `Core/Inc/pid.h`/`Core/Src/pid.c`: `HRTIM_NUM_CHANNELS` (4)
+independent channels, each `{setpoint, Kp/Ki/Kd, integral, derivative
+history}`, no shared table, no relationship to any other channel.
+`PID_Update()` runs once per Master heartbeat (`PID_LOOP_RATE_HZ`,
+`ctrlr_config.h`, currently 1 kHz -- NOT yet tuned against real
+Transrex/magnet dynamics), reading each channel's latest measured
+period (`pfm_input.c`'s new continuous/free-running capture --
+`PfmInput_StartContinuous()`/`GetLatestPeriod()`, alongside the
+original bounded bench-capture path, unchanged), converting to Hz,
+running that channel's PID with a fixed Delta-t, clamping to
+`[PID_OUTPUT_MIN_HZ, PID_OUTPUT_MAX_HZ]` (3000-150000 Hz -- the floor
+is a real HRTIM 16-bit-`PER` hardware limit, not a tuning choice), and
+writing the result via `hrtim.c`'s `HRTIM1_SetChannelPeriod()` (each
+channel's own shadow registers, promoted at that channel's own
+roll-over -- Possibility 3, see "What this project is" above).
+Wire interface: `PID:START`/`STOP`/`SETPOINT <ch> <hz>`/
+`GAINS <ch> <kp> <ki> <kd>`/`STATus? <ch>` (`commands.c`, ERR 11/12).
+
+CONFIRMED on real hardware (channel 1, the one channel with a real
+loopback wired on this bench -- see docs/changelog.txt for the full
+numbers and the real anti-windup bug this testing found and fixed):
+measured/output climbed smoothly from ~4.1 kHz to within ~7% of a
+20 kHz setpoint over 3 seconds, tracking each other almost exactly
+throughout -- the whole chain (capture -> Hz conversion -> PID ->
+per-channel HRTIM write -> real output -> real feedback) genuinely
+closes. Channels 2-4 build and report status correctly but are
+functionally UNTESTED -- nothing physically wired to their feedback
+pins yet. Gains used were arbitrary bench values against a wire
+loopback, not a real plant.
+
+### Inherited from WHAM-PFMG474-V4 (still present, no longer this
+### project's real output path)
+
+Configurable-channel-count PWM generation (HRTIM1, phase-locked to the
+Master timer) plus the serial command layer, `TABLE:*`/`FIRE` --
+WHAM-PFMG474-V4's own switching-supply mechanism, carried over at the
+fork point. Still links and does something sane (a thin compatibility
+shim, `HRTIM1_ApplyPfmStep()` in `hrtim.c`, now calls
+`HRTIM1_SetChannelPeriod()` per channel with no phase/interleave), but
+is NOT how this project actually drives hardware anymore -- see
+`pid.c` above for that. Kept as a bench-testing fallback, not because
+this project needs a table-playback mode. There is still **no state
 machine** -- no ARM precondition, no interlock, no fault gating; `FIRE`
-takes effect immediately whenever sent, per current project decision
-(see `docs/command_reference.md`'s `FIRE` entry).
+takes effect immediately whenever sent, per the original project
+decision (see `docs/command_reference.md`'s `FIRE` entry).
 
 - **Serial command architecture** (`uart.c`, `cmd_parser.c`) -- ported
   from the sibling project, ported *architecture-only* (no command

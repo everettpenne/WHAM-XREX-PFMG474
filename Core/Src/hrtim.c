@@ -54,44 +54,23 @@ static const uint32_t kTimerUpdate[6] = {
     HRTIM_TIMERUPDATE_D, HRTIM_TIMERUPDATE_E, HRTIM_TIMERUPDATE_F
 };
 
-/* Master-timer reset-trigger identifiers for channel 1..4 (channel 0
-   uses MASTER_PER, handled separately -- it has no compare unit of its
-   own). Index [0] is unused padding so kMasterResetTrigger[channel]
-   reads naturally for channel=1..4; never indexed at channel=0. */
-static const uint32_t kMasterResetTrigger[5] = {
-    0U, /* unused */
-    HRTIM_TIMRESETTRIGGER_MASTER_CMP1, HRTIM_TIMRESETTRIGGER_MASTER_CMP2,
-    HRTIM_TIMRESETTRIGGER_MASTER_CMP3, HRTIM_TIMRESETTRIGGER_MASTER_CMP4
-};
-
-/* Master-timer flags (MISR, polled by HRTIM1_WaitForPhaseAndConnect())
-   for channel 1..4's reset event, same indexing as above. */
-static const uint32_t kMasterFlag[5] = {
-    0U, /* unused */
-    HRTIM_MASTER_FLAG_MCMP1, HRTIM_MASTER_FLAG_MCMP2,
-    HRTIM_MASTER_FLAG_MCMP3, HRTIM_MASTER_FLAG_MCMP4
-};
-
-/* Master-timer interrupt-enable identifiers, same indexing, used only
-   to mask/clear/re-enable around the settling sequence in
-   HRTIM1_PWM_Start() -- HRTIM1_EnableMasterInterrupt() itself only
-   ever arms HRTIM_MASTER_IT_MREP long-term (channel 0's event, the one
-   PFM_CycleBoundaryHandler() actually runs on); channels 1..N-1's IT
-   bits are enabled only transiently, for HRTIM1_WaitForPhaseAndConnect()
-   to have something to mask, and disabled again before this function
-   returns -- see the mask/restore block in HRTIM1_PWM_Start(). */
-static const uint32_t kMasterIT[5] = {
-    0U, /* unused */
-    HRTIM_MASTER_IT_MCMP1, HRTIM_MASTER_IT_MCMP2,
-    HRTIM_MASTER_IT_MCMP3, HRTIM_MASTER_IT_MCMP4
-};
-
-/* Master compare-unit identifiers (HRTIM_COMPAREUNIT_1..4, bit flags
-   not sequential integers) for channel 1..4, same indexing. */
-static const uint32_t kMasterCompareUnit[5] = {
-    0U, /* unused */
-    HRTIM_COMPAREUNIT_1, HRTIM_COMPAREUNIT_2, HRTIM_COMPAREUNIT_3, HRTIM_COMPAREUNIT_4
-};
+/* REMOVED, 2026-09-09, closed-loop PID architecture (see
+   docs/changelog.txt's design-decision entry): this file used to keep
+   kMasterResetTrigger[]/kMasterFlag[]/kMasterIT[]/kMasterCompareUnit[]
+   here -- one Master-CMPk identifier per channel 1..N-1, used to
+   phase-lock each channel's reset to an evenly-spaced offset of the
+   Master's own period (WHAM-PFMG474-V4's switching-supply meaning of
+   "N channels"). The 4 independent Transrex channels this project
+   actually drives now have NO phase relationship to each other or to
+   Master at all (Possibility 3: each channel's own roll-over both
+   resets ITS OWN counter and promotes ITS OWN shadow registers,
+   ResetTrigger=NONE/UpdateTrigger=NONE/ResetUpdate=ENABLED, see
+   HRTIM1_FullInit() below) -- so there is no longer anything for these
+   4 tables, or the phase-wait dance in the old HRTIM1_PWM_Start()/
+   HRTIM1_WaitForPhaseAndConnect() that consumed them, to do. Removed
+   rather than left dead; see git history (WHAM-PFMG474-V4, this
+   project's own base) for the original phase-locked version if a
+   future switching-supply-style mode is ever wanted back here. */
 
 static uint16_t HRTIM1_ClampCompare(uint16_t cmp, uint16_t per)
 {
@@ -171,22 +150,45 @@ void HRTIM1_FullInit(void)
         HAL_HRTIM_FaultModeCtl(&hhrtim1, HRTIM_FAULT_CHANNEL, HRTIM_FAULTMODECTL_ENABLED);
     }
 
-    /* Default initial period:
-       100 kHz => 170000000 / 100000 - 1 = 1699 */
-    pTimeBaseCfg.Period = 1699U;
+    /* Master timebase -- REPURPOSED, 2026-09-09, closed-loop PID
+       architecture (docs/changelog.txt's design-decision entry):
+       Master no longer carries a shared PWM carrier (each of the 4
+       Transrex channels free-runs at its own independently-computed
+       period, see the per-channel WaveformTimerConfig loop below and
+       pid.c) -- its repetition event is now purely the PID control
+       loop's fixed-rate heartbeat, deliberately decoupled from any
+       channel's own frequency (see ctrlr_config.h's PID_LOOP_RATE_HZ
+       for the full reasoning). HRTIM_MASTER_PID_PERIOD/_PRESCALE
+       (hrtim.h) derive the actual register values from that constant
+       at compile time -- 1 kHz default = 42500 counts at /4 prescale,
+       comfortably inside the 16-bit PER register with headroom to go
+       slower still. */
+    pTimeBaseCfg.Period = HRTIM_MASTER_PID_PERIOD;
     pTimeBaseCfg.RepetitionCounter = 0U;
-    pTimeBaseCfg.PrescalerRatio = HRTIM_PRESCALERRATIO_DIV1;
+    pTimeBaseCfg.PrescalerRatio = HRTIM_MASTER_PID_PRESCALE;
     pTimeBaseCfg.Mode = HRTIM_MODE_CONTINUOUS;
 
     if (HAL_HRTIM_TimeBaseConfig(&hhrtim1, HRTIM_TIMERINDEX_MASTER, &pTimeBaseCfg) != HAL_OK)
     {
         Error_Handler();
     }
-    /* All 6 timers get the same initial period, regardless of
-       HRTIM_NUM_CHANNELS -- channels beyond it are still fully
+
+    /* The 6 channel timers keep the OLD default (100 kHz, /1 prescale)
+       as their own, SEPARATE timebase -- full 170 MHz resolution, a
+       sane cold-start value pid.c overwrites per-channel once running
+       (HRTIM1_SetChannelPeriod()). Deliberately NOT tied to Master's
+       timebase above anymore -- a channel's own period has nothing to
+       do with Master's heartbeat rate now. All 6 get this regardless
+       of HRTIM_NUM_CHANNELS -- channels beyond it are still fully
        configured (dead time, complementary outputs, pins reserved),
-       just never phase-locked or started. See the WaveformTimerConfig
-       loop below for the one place channel count actually matters. */
+       just never independently-updated or started. See the
+       WaveformTimerConfig loop below for the one place channel count
+       actually matters. */
+    pTimeBaseCfg.Period = 1699U;   /* 170000000 / 100000 - 1 */
+    pTimeBaseCfg.RepetitionCounter = 0U;
+    pTimeBaseCfg.PrescalerRatio = HRTIM_PRESCALERRATIO_DIV1;
+    pTimeBaseCfg.Mode = HRTIM_MODE_CONTINUOUS;
+
     for (uint8_t ch = 0U; ch < 6U; ch++)
     {
         if (HAL_HRTIM_TimeBaseConfig(&hhrtim1, kTimerIndex[ch], &pTimeBaseCfg) != HAL_OK)
@@ -247,46 +249,33 @@ void HRTIM1_FullInit(void)
        harmlessly fault-gated too even though they're never started. */
     pTimerCfg.FaultEnable = HRTIM_TIMFAULTENABLE_FAULT6;
     pTimerCfg.DeadTimeInsertion = HRTIM_TIMDEADTIMEINSERTION_ENABLED;
-    pTimerCfg.ResetUpdate = HRTIM_TIMUPDATEONRESET_DISABLED;
 
-    /* Channels 0..HRTIM_NUM_CHANNELS-1: phase-locked to the Master --
-       UpdateTrigger = MASTER ties each one's shadow->active transfer to
-       the Master timer's own update event, so a channel's new PER/CMP
-       values become active at the same well-defined, coherent boundary
-       as its reset. This matches ST's own official multiphase
-       reference example (STM32CubeF3 HRTIM_Multiphase), which uses
-       this exact reset-from-master architecture. Channel 0's
-       ResetTrigger is MASTER_PER (0 deg, the reference); channels
-       1..N-1 use MASTER_CMP1..MASTER_CMP(N-1) respectively (kMasterResetTrigger).
-
-       Channels HRTIM_NUM_CHANNELS..5: initialized identically
-       otherwise (dead time, complementary outputs, pins reserved --
-       see the DeadTimeConfig/WaveformOutputConfig loops below, both
-       unconditional over all 6 channels) but deliberately left with
-       ResetTrigger = NONE (free-running from their own period, no
-       defined phase relationship to anything else) and
-       UpdateTrigger = NONE (self-updating at their own repetition
-       event via RepetitionUpdate, set above, rather than gated on the
-       Master's) -- exactly how Timers D/E/F behaved before this
-       generalization, for the N=3 default. See ctrlr_config.h's
-       HRTIM_NUM_CHANNELS comment for why a 6th phase-locked channel
-       isn't a simple extension of this loop. Also per project decision
-       (2026-08-31, still true): HRTIM1_PWM_Start() never starts these
-       -- they are configured, reserved, and pin-muxed, but nothing
-       starts their counters. */
+    /* Possibility 3 (docs/Transrex/hrtim_divergent_period_timing.pdf,
+       docs/changelog.txt's design-decision entry), applied 2026-09-09:
+       every channel gets ResetTrigger=NONE/UpdateTrigger=NONE
+       (free-running from its own period, no defined phase relationship
+       to Master or to any other channel) -- the SAME configuration
+       every channel beyond HRTIM_NUM_CHANNELS already used under the
+       old switching-supply scheme this project was reseeded from.
+       What's NEW is ResetUpdate: ENABLED for the HRTIM_NUM_CHANNELS
+       *active* channels (0..N-1) -- RM0440's TxRSTU, "update on
+       roll-over at PER, not just external resets" -- so a PER/CMP1
+       value pid.c writes into that channel's shadow registers
+       (HRTIM1_SetChannelPeriod(), any time, always safe -- Possibility
+       3's core property) is promoted to active automatically, cleanly,
+       at THAT CHANNEL'S OWN next roll-over. No Master involvement in
+       the transfer at all -- Master's only remaining role is the
+       control-loop heartbeat (its own timebase, configured above).
+       Channels HRTIM_NUM_CHANNELS..5 keep ResetUpdate DISABLED (never
+       written, never started -- reserved/pin-muxed only, exactly as
+       before). */
     for (uint8_t ch = 0U; ch < 6U; ch++)
     {
-        if (ch < HRTIM_NUM_CHANNELS)
-        {
-            pTimerCfg.UpdateTrigger = HRTIM_TIMUPDATETRIGGER_MASTER;
-            pTimerCfg.ResetTrigger = (ch == 0U) ? HRTIM_TIMRESETTRIGGER_MASTER_PER
-                                                 : kMasterResetTrigger[ch];
-        }
-        else
-        {
-            pTimerCfg.UpdateTrigger = HRTIM_TIMUPDATETRIGGER_NONE;
-            pTimerCfg.ResetTrigger = HRTIM_TIMRESETTRIGGER_NONE;
-        }
+        pTimerCfg.UpdateTrigger = HRTIM_TIMUPDATETRIGGER_NONE;
+        pTimerCfg.ResetTrigger = HRTIM_TIMRESETTRIGGER_NONE;
+        pTimerCfg.ResetUpdate = (ch < HRTIM_NUM_CHANNELS)
+                                     ? HRTIM_TIMUPDATEONRESET_ENABLED
+                                     : HRTIM_TIMUPDATEONRESET_DISABLED;
 
         if (HAL_HRTIM_WaveformTimerConfig(&hhrtim1, kTimerIndex[ch], &pTimerCfg) != HAL_OK)
         {
@@ -294,9 +283,12 @@ void HRTIM1_FullInit(void)
         }
     }
 
-    /* Initial compare ~50%, all 6 channels unconditionally (matches
-       the TimeBaseConfig loop above -- channel count only affects
-       phase-locking, not which timers get configured at all). */
+    /* Initial compare ~50%, all 6 channels unconditionally -- pid.c
+       recomputes each active channel's CMP1 every heartbeat once
+       running (HRTIM1_SetChannelPeriod(), always per/2 -- see that
+       function's own comment for why a fixed proportional 50% duty,
+       not a fixed tick count, is the right default for a single-ended
+       V-to-F tone), this is just a sane cold-start value. */
     pCompareCfg.CompareValue = 850U;
     pCompareCfg.AutoDelayedMode = HRTIM_AUTODELAYEDMODE_REGULAR;
     pCompareCfg.AutoDelayedTimeout = 0U;
@@ -309,25 +301,11 @@ void HRTIM1_FullInit(void)
         }
     }
 
-    /* Master compare values for each active channel's initial phase
-       offset, evenly spaced across HRTIM_NUM_CHANNELS at the
-       init-default 100 kHz period (1699, set above) -- channel k's
-       offset is k * 1700 / N, matching PFM_PhaseForChannel()'s runtime
-       formula exactly (per+1 = 1700). Channel 0 has no phase register
-       (implicit 0 deg via MASTER_PER, not a Master CMP unit). Channels
-       HRTIM_NUM_CHANNELS..4 (if N < 5) simply never get a compare
-       value written here -- their MCMPxR registers stay at reset
-       default, harmless since nothing's ResetTrigger references them
-       when N doesn't reach that far. */
-    for (uint8_t ch = 1U; ch < HRTIM_NUM_CHANNELS; ch++)
-    {
-        pCompareCfg.CompareValue = ((uint32_t)ch * 1700U) / HRTIM_NUM_CHANNELS;
-        if (HAL_HRTIM_WaveformCompareConfig(&hhrtim1, HRTIM_TIMERINDEX_MASTER,
-                                            kMasterCompareUnit[ch], &pCompareCfg) != HAL_OK)
-        {
-            Error_Handler();
-        }
-    }
+    /* REMOVED, 2026-09-09: this used to write each active channel's
+       Master-CMPk phase-offset register here (the 120/240-degree-style
+       interleave WHAM-PFMG474-V4's switching-supply mode needs). The 4
+       independent Transrex channels have no phase relationship to
+       preserve -- nothing left to write. */
 
     /* BUGFIX, real hardware, 2026-09-09 -- see docs/changelog.txt for
        the full diagnostic writeup. First finding: V/W's output SET
@@ -567,67 +545,25 @@ void HAL_HRTIM_MspDeInit(HRTIM_HandleTypeDef *hhrtim)
     }
 }
 
-/* Waits for one specific Master-timer flag (channel 0's MREP, or
- * channel k's MCMPk, k=1..4) to go true in hardware, then connects
- * exactly one channel's outputs to the pins -- see HRTIM1_PWM_Start()
- * below for why this exists and why it must be called with global
- * interrupts already masked. `reforceActive` re-asserts output1
- * ACTIVE/output2 INACTIVE (the same SETx1R/RSTx2R "software trigger"
- * bits HAL_HRTIM_WaveformSetOutputLevel() uses, written directly for
- * the same reason OENR is below: this call site owns hhrtim1
- * exclusively while it runs, so the HAL's lock/state-machine overhead
- * is pure avoidable latency here) immediately before unmasking --
- * needed for every active channel (0..N-1, as of the 2026-09-09
- * SET/RESET-collision fix -- see HRTIM1_FullInit()'s own comment):
- * each one's output SET source is CMP3, a genuinely separate event
- * from whatever resets its counter (MASTER_PER for channel 0,
- * MASTER_CMP1..4 for channels 1..N-1), so the reset alone does NOT
- * itself generate a fresh SET event for any of them (confirmed
- * against real hardware data, see the call sites' comments) and the
- * output would otherwise still reflect whatever state the very first
- * force-ACTIVE call (before ANY counter started) left it in. Before
- * that fix, channel 0's SET source WAS TIMPER (coinciding exactly
- * with its own MASTER_PER reset), so it alone didn't need this --
- * that is no longer true, and this function's only channel-0-specific
- * call site (HRTIM1_PWM_Start(), below) now passes reforceActive=1
- * for it too.
- *
- * Returns 0 on success, 1 if the spin-count ceiling was hit (a real
- * fault -- the counters aren't actually running -- not a timing corner
- * case; see HRTIM1_PWM_Start()'s comment on why this can't be a
- * wall-clock timeout here). */
-static uint8_t HRTIM1_WaitForPhaseAndConnect(uint32_t masterFlag,
-                                             uint32_t timerIdx,
-                                             uint32_t outputMask,
-                                             uint8_t reforceActive)
-{
-    uint32_t spins = 0U;
-
-    while (__HAL_HRTIM_MASTER_GET_FLAG(&hhrtim1, masterFlag) == RESET)
-    {
-        spins++;
-        if (spins >= 1000000U)
-        {
-            return 1U;
-        }
-    }
-
-    if (outputMask != 0U)
-    {
-        if (reforceActive != 0U)
-        {
-            hhrtim1.Instance->sTimerxRegs[timerIdx].SETx1R |= HRTIM_SET1R_SST;
-            hhrtim1.Instance->sTimerxRegs[timerIdx].RSTx2R |= HRTIM_RST2R_SRT;
-        }
-        hhrtim1.Instance->sCommonRegs.OENR |= outputMask;
-    }
-
-    return 0U;
-}
+/* REMOVED, 2026-09-09, closed-loop PID architecture: this file used to
+   have a static HRTIM1_WaitForPhaseAndConnect() helper here, plus a
+   much longer HRTIM1_PWM_Start() built around it -- an elaborate,
+   individually-timed per-channel cold-start dance (wait for THIS
+   channel's own Master-CMPk phase point, force its output active
+   exactly then, connect it) that existed entirely to solve one
+   problem: 3+ channels phase-locked to a shared carrier need their
+   very first pulses to come up at the CORRECT relative phase, not
+   garbled by whatever the force-ACTIVE-before-any-counter-starts step
+   left on the pins. The 4 independent Transrex channels have no phase
+   relationship to get right at cold start -- there's nothing to wait
+   FOR anymore, so that whole mechanism (and the real-hardware bugs it
+   fixed, DSLogic-confirmed, 2026-09-04, see docs/changelog.txt) simply
+   doesn't apply here. See HRTIM1_PWM_Start() below for what a cold
+   start needs now that channels genuinely free-run independently. */
 
 void HRTIM1_PWM_Start(const uint8_t *channelEnabled)
 {
-    uint32_t outputMask[HRTIM_NUM_CHANNELS];
+    uint32_t outputMask = 0U;
     uint32_t counterStartMask = HRTIM_TIMERID_MASTER;
 
     /* With DeadTimeInsertion enabled, output 2 of each timer is driven
@@ -637,168 +573,41 @@ void HRTIM1_PWM_Start(const uint8_t *channelEnabled)
        enabled it is necessary to force the output level by software to
        have the outputs in a complementary state as soon as the RUN
        mode is entered." Force output 1 ACTIVE / output 2 INACTIVE on
-       each timer before starting the counters, so the pair begins in a
-       known, genuinely complementary state rather than whatever level
-       the deadtime unit happens to reset into. Only done for channels
-       that will actually be enabled below -- harmless either way since
-       WaveformSetOutputLevel doesn't itself enable an output, but no
-       reason to touch a channel that's staying disabled.
-
-       This is a PREREQUISITE for the counters to start into a defined
-       state, not the last word on what the pins eventually show -- see
-       HRTIM1_WaitForPhaseAndConnect()'s `reforceActive` for why
-       channels 1..N-1 need this repeated later, right as they
-       individually connect. */
+       each enabled channel before starting the counters, so every pair
+       begins in a known, genuinely complementary state. Unlike the old
+       phase-locked version, that's the WHOLE cold-start story now --
+       no per-channel phase point to wait for afterward, since
+       ResetTrigger=NONE means each channel's counter (and, with
+       ResetUpdate=ENABLED, its shadow->active promotion) is entirely
+       self-timed from the moment its own counter starts running, not
+       referenced to Master or to any other channel. */
     for (uint8_t ch = 0U; ch < HRTIM_NUM_CHANNELS; ch++)
     {
         if (channelEnabled[ch] != 0U)
         {
             HAL_HRTIM_WaveformSetOutputLevel(&hhrtim1, kTimerIndex[ch], kOutput1[ch], HRTIM_OUTPUTLEVEL_ACTIVE);
             HAL_HRTIM_WaveformSetOutputLevel(&hhrtim1, kTimerIndex[ch], kOutput2[ch], HRTIM_OUTPUTLEVEL_INACTIVE);
-            outputMask[ch] = kOutput1[ch] | kOutput2[ch];
-        }
-        else
-        {
-            outputMask[ch] = 0U;
+            outputMask |= (kOutput1[ch] | kOutput2[ch]);
         }
         counterStartMask |= kTimerId[ch];
     }
 
-    /* Cold-start phase-lock settling -- per-channel, individually
-       timed. The force-ACTIVE calls above put every enabled channel's
-       main output HIGH at the same instant, with no regard for their
-       intended even stagger -- necessary (per ST's own guidance,
-       cited above) to avoid an undefined complementary-pair state, but
-       it means the pins do NOT yet reflect each timer's real phase
-       relationship. Channel 0's ResetTrigger=MASTER_PER coincides with
-       its own natural rollover; channels 1..N-1 (ResetTrigger=
-       MASTER_CMP1..CMP(N-1)) only become correctly phase-locked once
-       they've received that first Master-CMPk-triggered reset, at
-       k/N of a period.
-
-       Two real-hardware findings (DSLogic captures, 2026-09-04, back
-       when this was hardcoded to 3 channels -- see docs/changelog.txt)
-       shaped this function:
-         1. Without ANY delay, every channel's first-ever output edges
-            all land on the exact same sample -- a garbled ~1-2 cycles
-            before self-correcting. Fixed by not connecting outputs
-            until phase-lock had settled.
-         2. Waiting for a single event (one full Master period) and
-            connecting all channels together stopped the catastrophic
-            collision, but exposed channels 1..N-1 mid-way through
-            whatever their comparators had been doing since their OWN
-            (earlier, still-hidden) MASTER_CMPk reset -- a real duty
-            cycle, just not starting from a clean edge, and not
-            reliably positioned at the intended phase point either.
-
-       Fix (unchanged by this generalization, just looped instead of
-       named 3 times): wait for and connect each channel SEPARATELY, at
-       ITS OWN reset-trigger event -- channel k (1..N-1) at
-       MASTER_CMPk (k/N of a period), channel 0 LAST, at MASTER_PER/
-       MREP (the full period) -- with channels 1..N-1's output
-       re-forced ACTIVE at that exact moment (see
-       HRTIM1_WaitForPhaseAndConnect()'s `reforceActive`). Each
-       channel's first VISIBLE pulse is therefore a genuine fresh
-       start referenced from ITS OWN phase point.
-
-       All channels' Master flags/interrupts used below are masked and
-       cleared of stale state before the counters start: HRTIM1_Master_
-       IRQn is armed from boot (or a previous shot) for MREP specifically
-       (see HRTIM1_EnableMasterInterrupt()) and must not react until
-       this function is done setting up the current shot --
-       PFM_CycleBoundaryHandler() firing early would silently advance
-       the table before step 0 was ever visible. Channels 1..N-1's
-       MCMPk interrupts are never armed long-term (only MREP is, by
-       HRTIM1_EnableMasterInterrupt()) -- but mask/clear them here
-       anyway, defensively, in case that ever changes. */
-    __HAL_HRTIM_MASTER_DISABLE_IT(&hhrtim1, HRTIM_MASTER_IT_MREP);
-    for (uint8_t ch = 1U; ch < HRTIM_NUM_CHANNELS; ch++)
-    {
-        __HAL_HRTIM_MASTER_DISABLE_IT(&hhrtim1, kMasterIT[ch]);
-        __HAL_HRTIM_MASTER_CLEAR_IT(&hhrtim1, kMasterIT[ch]);
-    }
-    __HAL_HRTIM_MASTER_CLEAR_IT(&hhrtim1, HRTIM_MASTER_IT_MREP);
-
-    /* The Master counter plus every channel 0..N-1's counter always
-       start, regardless of which channels are enabled -- a disabled
-       channel's timer must stay running and synchronized with the
-       Master via its ResetTrigger, or re-enabling it later would not
-       be coherent with the other channels. Only the output pins
-       themselves are gated per-channel below. */
+    /* Master + every active channel's counter start together --
+       Master's own counter drives the PID heartbeat (HRTIM1_Master_IRQn,
+       see HRTIM1_EnableMasterInterrupt()); each channel's counter is
+       independent from here on. A disabled channel's counter still
+       starts (so pid.c can enable it later without a separate
+       re-synchronization step), just never gets its output connected
+       below. */
     if (HAL_HRTIM_WaveformCounterStart(&hhrtim1, counterStartMask) != HAL_OK)
     {
         Error_Handler();
     }
 
-    /* Global interrupts masked for the entire settling sequence below
-       (not just one flag/write): SysTick (priority 0, the HIGHEST in
-       this firmware) or USART2 (priority 2) preempting any one of
-       these latency-sensitive windows would reintroduce exactly the
-       jitter this mechanism exists to remove. Bounded by each call's
-       own 1,000,000-spin ceiling (HRTIM1_WaitForPhaseAndConnect()) --
-       not a wall-clock timeout, since HAL_GetTick() cannot advance
-       while global interrupts are masked (it's SysTick-driven, and
-       SysTick is masked too). Total worst-case masked duration is
-       still bounded by one Master period (~385 us worst case for a
-       uint16_t `per`), same as before -- N sequential sub-waits within
-       that same one-period budget, not N separate one-period waits. */
-    __disable_irq();
+    if (outputMask != 0U)
     {
-        uint8_t timedOut = 0U;
-
-        /* Channels 1..N-1 in ascending order -- MASTER_CMP1 fires
-           before MASTER_CMP2, before MASTER_CMP3, before MASTER_CMP4,
-           each strictly before the full-period MREP channel 0 waits
-           for last, below. */
-        for (uint8_t ch = 1U; ch < HRTIM_NUM_CHANNELS; ch++)
-        {
-            if (HRTIM1_WaitForPhaseAndConnect(kMasterFlag[ch], kTimerIndex[ch],
-                                              outputMask[ch], 1U) != 0U)
-            {
-                timedOut = 1U;
-            }
-        }
-
-        /* Channel 0 at the full period (MASTER_PER/MREP) -- WITH
-           reforceActive, same as channels 1..N-1, since the 2026-09-09
-           SET/RESET-collision fix (see HRTIM1_FullInit()'s own comment)
-           moved channel 0's output SET off TIMPER onto CMP3 too. Its
-           own reset (MASTER_PER) is no longer the same event as its
-           SET source, so it needs the same explicit re-force this
-           function already does for channels 1..N-1 -- without this,
-           the first pulse would not reliably reflect the correct
-           phase, reintroducing the exact garbled-cold-start failure
-           mode HRTIM1_WaitForPhaseAndConnect() was built to prevent
-           (2026-09-04, see docs/changelog.txt). */
-        if (HRTIM1_WaitForPhaseAndConnect(HRTIM_MASTER_FLAG_MREP, kTimerIndex[0],
-                                          outputMask[0], 1U) != 0U)
-        {
-            timedOut = 1U;
-        }
-
-        /* Not time-critical -- the interrupts just need to be back in
-           their normal armed state before this function returns, not
-           before any of the connects above. Restores the always-armed
-           MREP state HRTIM1_EnableMasterInterrupt() established at
-           boot; channels 1..N-1's MCMPk interrupts stay disabled
-           (matching their normal not-armed-long-term state, see the
-           comment above the mask/clear block before the counter
-           start). Also clears whatever flags the waits above just
-           consumed. */
-        __HAL_HRTIM_MASTER_CLEAR_IT(&hhrtim1, HRTIM_MASTER_IT_MREP);
-        __HAL_HRTIM_MASTER_ENABLE_IT(&hhrtim1, HRTIM_MASTER_IT_MREP);
-        for (uint8_t ch = 1U; ch < HRTIM_NUM_CHANNELS; ch++)
-        {
-            __HAL_HRTIM_MASTER_CLEAR_IT(&hhrtim1, kMasterIT[ch]);
-        }
-
-        if (timedOut != 0U)
-        {
-            __enable_irq();
-            Error_Handler();
-        }
+        hhrtim1.Instance->sCommonRegs.OENR |= outputMask;
     }
-    __enable_irq();
     /* If every channel is disabled, no outputs are connected at all --
        counters run but nothing is ever driven. This is a legal, if
        unusual, state; the operator explicitly disabled every channel,
@@ -944,43 +753,64 @@ void HRTIM1_SoftwareUpdate(void)
     hhrtim1.Instance->sCommonRegs.CR2 |= updateMask;
 }
 
-void HRTIM1_ApplyPfmStep(uint16_t per,
-                         const uint16_t *cmp,
-                         const uint16_t *phase)
+void HRTIM1_SetChannelPeriod(uint8_t channel, uint16_t per)
 {
-    /* Master period, shared by every active channel. */
-    *HRTIM1_GetMasterPerRegAddress() = per;
+    if (channel >= HRTIM_NUM_CHANNELS)
+    {
+        return;
+    }
+
+    /* 50% duty, recomputed from THIS write's `per` every time -- not a
+       fixed tick count. Two reasons, both real: (1) a single-ended
+       V-to-F receiver cares about frequency, not duty, so there's no
+       control-relevant reason to make duty do anything other than sit
+       at a clean, boring 50%; (2) `per` varies over pid.c's whole
+       control range every heartbeat -- a FIXED absolute CMP1 tick
+       count would drift far from 50% at the high end of that range
+       (e.g. CMP1=850 is 50% at per=1699 but ~16% at per=5151), and
+       worse, keeps CMP1 close to the reset point (0) exactly when
+       `per` is small/fast, which is precisely the SET/RESET-collision
+       hazard the 2026-09-09 CMP3-based SET-source fix (HRTIM1_FullInit(),
+       still fully in effect here -- that fix is about the OUTPUT
+       crossbar, orthogonal to what resets the counter) exists to keep
+       clear of. Always recomputing per/2 keeps CMP1 at the middle of
+       whatever the current period is, as far from the reset edge as
+       it can possibly be, regardless of how fast `per` is changing. */
+    uint16_t cmp = HRTIM1_ClampCompare((uint16_t)(per / 2U), per);
+
+    /* Writing shadow registers is always safe, at any time -- the
+       whole point of Possibility 3 (see HRTIM1_FullInit()'s own
+       comment on ResetUpdate). This channel's hardware promotes both
+       writes to active atomically enough for this application (see
+       pid.h's own note on PER/CMP coherency) at ITS OWN next
+       roll-over, whenever that is -- no relationship to when this
+       function is called, or to any other channel. */
+    *HRTIM1_GetTimerPerRegAddress(channel) = per;
+    *HRTIM1_GetTimerCmp1RegAddress(channel) = cmp;
+}
+
+void HRTIM1_ApplyPfmStep(uint16_t per, const uint16_t *cmp, const uint16_t *phase)
+{
+    /* Thin COMPATIBILITY shim, 2026-09-09 -- see this function's own
+       declaration comment in hrtim.h. pfm.c's table-engine (inherited
+       from WHAM-PFMG474-V4, not the point of this project, not yet
+       removed -- TABLE:STEP/FIRE still work as a bench-testing fallback)
+       still calls this with one shared `per` and a per-channel phase
+       array built for the old Master-anchored interleave. Neither
+       `cmp[]` (each channel now always gets a recomputed 50% duty, see
+       HRTIM1_SetChannelPeriod()'s own comment) nor `phase[]` (nothing
+       left to offset against -- every channel free-runs independently
+       now) means anything under Possibility 3, so both are ignored;
+       every active channel just gets the same `per`, independently.
+       Not a real phase-locked multiphase output anymore -- if that's
+       ever needed again, see git history (WHAM-PFMG474-V4, this
+       project's own base) for the original. */
+    (void)cmp;
+    (void)phase;
 
     for (uint8_t ch = 0U; ch < HRTIM_NUM_CHANNELS; ch++)
     {
-        uint16_t clampedCmp = HRTIM1_ClampCompare(cmp[ch], per);
-
-        /* Each channel's own period register (all share the same
-           `per`, matching the shared-carrier design this generalizes
-           -- see pfm.h). */
-        *HRTIM1_GetTimerPerRegAddress(ch) = per;
-
-        /* Duty for this channel. */
-        *HRTIM1_GetTimerCmp1RegAddress(ch) = clampedCmp;
-
-        /* Channel 0 has no phase register -- it's the Master-PER 0 deg
-           reference. Channels 1..N-1 get their Master CMPk phase
-           offset, clamped the same way HRTIM1_FullInit()'s cold-start
-           default logic implicitly relies on `per` being sane -- if
-           `phase[ch] >= per`, fall back to this channel's own evenly-
-           spaced default position rather than writing a nonsensical
-           value past the period (mirrors the original 3-channel
-           code's phaseB/phaseC >= per fallback exactly, generalized to
-           any channel/N). */
-        if (ch >= 1U)
-        {
-            uint16_t phaseVal = phase[ch];
-            if (phaseVal >= per)
-            {
-                phaseVal = (uint16_t)(((uint32_t)ch * ((uint32_t)per + 1U)) / HRTIM_NUM_CHANNELS);
-            }
-            *HRTIM1_GetMasterCmpRegAddress(ch) = phaseVal;
-        }
+        HRTIM1_SetChannelPeriod(ch, per);
     }
 }
 

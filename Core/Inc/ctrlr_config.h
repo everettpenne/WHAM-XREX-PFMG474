@@ -40,52 +40,94 @@
 /* --------------------------------------------------------------------------
  * HRTIM channel count
  *
- * docs/pin_mapping_v4.csv wires out all 6 HRTIM1 channel pairs (A-F /
- * U,V,W,X,Y,Z) on this board. HRTIM_NUM_CHANNELS selects how many of
- * them hrtim.c/pfm.c actually drive, phase-locked and evenly spaced
- * around a shared carrier, as a real compile-time setting
- * (2026-09-08) -- fix it here, rebuild, reflash. It is NOT modifiable
- * at runtime, by design: no variable backs this anywhere, only this
- * #define, so "changing it after the firmware is flashed" isn't a
- * thing that can happen short of building and flashing a different
- * firmware image.
+ * REPURPOSED, 2026-09-09, for the closed-loop PID architecture (see
+ * pid.h and docs/changelog.txt's design-decision entry): this used to
+ * mean "how many channels are phase-locked and evenly spaced around a
+ * shared carrier" (WHAM-PFMG474-V4's switching-supply meaning, and
+ * still literally true of the code this was reseeded from). It now
+ * means "how many of the 4 Transrex channels are active" --
+ * HRTIM_NUM_CHANNELS independent PFM output channels (Possibility 3:
+ * per-channel HRTIM update-on-own-rollover, ResetTrigger=NONE,
+ * UpdateTrigger=NONE, ResetUpdate=ENABLED), each running its own PID
+ * loop against its own PFM_Input feedback channel, with NO phase
+ * relationship between them at all. docs/pin_mapping_v4.csv wires out
+ * all 6 HRTIM1 channel pairs (A-F / U,V,W,X,Y,Z) on this board; this
+ * selects how many of them PID.c actually drives, as a real
+ * compile-time setting -- fix it here, rebuild, reflash, same
+ * not-runtime-modifiable reasoning as before.
  *
- * Range is 1-5, not 1-6: the HRTIM Master timer has exactly 4 compare
- * registers (MCMP1R-MCMP4R), giving 5 total trigger points (its own
- * PER event + 4 CMPs) -- enough for channels A-E phase-locked to the
- * Master, but not a 6th (F) without a genuinely different (cross-timer)
- * sync scheme. That scheme is NOT implemented here -- the HAL does
- * expose the register support for it (HRTIM_TIMRESETTRIGGER_OTHERx_
- * CMPy, letting one slave timer's reset trigger chain off another
- * slave's compare event instead of the Master's), but it needs new
- * phase math with no existing pattern in this codebase to build from,
- * and was deliberately left as a follow-up rather than bundled into
- * this change -- see AGENTS.md.
+ * 4, not the sibling project's default of 3 -- the Transrex spec (this
+ * project's whole reason for existing, docs/Transrex/) is 4
+ * independent units. Range kept at 1-5 (unchanged from before): the
+ * HRTIM Master timer's own repetition event is what drives the PID
+ * heartbeat now (see pid.h), so the OLD 1-5 constraint (Master's 4
+ * compare registers, MCMP1R-MCMP4R, phase-locking channels A-E) no
+ * longer actually applies here -- Master has no per-channel phase
+ * relationship left to run out of registers for. Left at 5 anyway
+ * (not widened to 6) simply because nobody has re-verified a 6th
+ * independent channel on this board yet, not because of the old
+ * register-count reason -- raise it if a real need for a 5th/6th
+ * Transrex channel ever shows up, after checking HRTIM1_FullInit()'s
+ * unconditional channels-0..5 loops still make sense at N=6.
  *
  * Channels beyond HRTIM_NUM_CHANNELS (up through Timer F) stay
- * pin/dead-time-reserved but unlocked (ResetTrigger = NONE) and are
- * never started by HRTIM1_PWM_Start() -- exactly how Timers D/E/F
- * behaved before this config existed for the N=3 default. See
- * HRTIM1_FullInit()'s own comments in hrtim.c for the exact mechanism.
- *
- * Raising this value automatically extends the 2026-09-09 HRTIM
- * SET/RESET-collision fix (hrtim.c's HRTIM1_FullInit(), the CMP3-based
- * output SET source) to whichever channels newly become active --
- * verified, not assumed: every place that fix touches (the CMP3
- * compare-register config loop, the per-channel SetSource selector,
- * and HRTIM1_PWM_Start()'s cold-start reforceActive handling) is keyed
- * off this constant, not a hardcoded channel count. No further code
- * changes are needed here when raising N; just re-verify the new
- * channel(s) on real hardware the same way U/V/W were (frequency-ramp
- * table + DSLogic capture -- see docs/changelog.txt), since this fix
- * was derived from real-hardware evidence, not proven in general.
+ * pin/dead-time-reserved but unlocked and are never started -- exactly
+ * as before this repurposing, see HRTIM1_FullInit()'s own comments.
  * -------------------------------------------------------------------------- */
-#define HRTIM_NUM_CHANNELS  (3U)
+#define HRTIM_NUM_CHANNELS  (4U)
 
 #if (HRTIM_NUM_CHANNELS < 1U) || (HRTIM_NUM_CHANNELS > 5U)
 #error "HRTIM_NUM_CHANNELS must be 1-5 -- see the comment above it in " \
-       "ctrlr_config.h for why 6 isn't a simple extension of this scheme."
+       "ctrlr_config.h."
 #endif
+
+/* --------------------------------------------------------------------------
+ * PID control-loop heartbeat rate (compile-time)
+ *
+ * Added 2026-09-09 alongside the closed-loop PID architecture (pid.c,
+ * docs/changelog.txt's design-decision entry) -- the HRTIM Master
+ * repetition interrupt's rate while PID mode is running, DELIBERATELY
+ * decoupled from any channel's own carrier/demand frequency (see that
+ * changelog entry for the full reasoning: fixed PID sample time,
+ * control bandwidth != V-to-F encoding rate). 1 kHz is a first,
+ * conservative starting point -- tens of Hz to low kHz is the normal
+ * range for a magnet-supply current loop; this has NOT been tuned
+ * against real Transrex/magnet electrical time constants yet, revisit
+ * once real bench data exists. Must yield a Master PER that fits
+ * HRTIM's 16-bit register at the prescaler pid.c actually configures
+ * (see HRTIM1_ConfigPidHeartbeat() in hrtim.c) -- 1 kHz at /4 prescale
+ * is exactly 42500 counts (170 MHz / 4 / 1000), comfortably inside
+ * 16 bits with headroom to go slower still.
+ * -------------------------------------------------------------------------- */
+#define PID_LOOP_RATE_HZ   (1000UL)
+
+/* --------------------------------------------------------------------------
+ * PID output frequency bounds (compile-time, hard limit)
+ *
+ * Added 2026-09-09 alongside the closed-loop PID architecture (pid.c)
+ * -- clamps every channel's commanded output frequency (and, via
+ * PID_SetSetpoint(), its setpoint) to a range HRTIM can actually
+ * represent on this hardware, at the /1 prescale each channel's own
+ * timer uses (hrtim.c's HRTIM1_FullInit()).
+ *
+ * PID_OUTPUT_MIN_HZ is a REAL hardware floor, not a tuning choice: at
+ * /1 prescale, PER = HRTIM_TIMER_CLK_HZ/freq - 1 must fit in HRTIM's
+ * 16-bit PER register (max 65535) -- solving for freq gives
+ * 170000000/65536 = ~2594.9 Hz as the absolute lowest representable
+ * frequency. Set to 3000 Hz, comfortably clear of that floor (not
+ * flirting with an off-by-one at the exact boundary).
+ *
+ * PID_OUTPUT_MAX_HZ is NOT a hardware limit at this end (170 kHz would
+ * still fit, PER=999) -- 150 kHz is a conservative starting ceiling,
+ * chosen to sit within the range this exact codebase has already
+ * proven clean on real hardware (its own PFM_MAX_CARRIER_FREQ_HZ,
+ * below, documents 100 kHz tested clean; this is somewhat above that,
+ * unverified for THIS use case -- revisit once real Transrex/magnet
+ * operating-point data exists, per docs/changelog.txt's own
+ * "explicitly NOT yet resolved" list on this exact point).
+ * -------------------------------------------------------------------------- */
+#define PID_OUTPUT_MIN_HZ  (3000UL)
+#define PID_OUTPUT_MAX_HZ  (150000UL)
 
 /* --------------------------------------------------------------------------
  * GateDriverStatus fault polarity (compile-time)

@@ -201,6 +201,54 @@ uint16_t PfmInput_GetOvercaptureCount(uint8_t channel);
  * reliable. */
 uint8_t PfmInput_GetDmaStartStatus(uint8_t channel);
 
+/* --------------------------------------------------------------------------
+ * Continuous ("free-running") capture -- added 2026-09-09 for pid.c's
+ * closed-loop feedback read, a genuinely different consumer than the
+ * bounded bench-diagnostic capture above (PfmInput_Arm()/OnShotStart()/
+ * OnShotEnd(), the PFMIN:CAPTURE/STATus?/DATA? wire commands). That
+ * path captures exactly M periods into an array, then stops -- exactly
+ * right for "pull a bench snapshot and analyze it," wrong for a live
+ * controller that just wants "whatever the most recently measured
+ * period is," indefinitely, with no target count and no array to
+ * overflow past PFM_INPUT_MAX_PERIODS. This is that second, simpler
+ * mode: no accumulation, just one continuously-overwritten scalar per
+ * channel.
+ *
+ * Independent of the shot-lifecycle machinery above -- does not touch
+ * PfmInput_Arm()'s target-count state, is not started by
+ * PFM_Restart()/PfmInput_OnShotStart(), and is not stopped by
+ * PfmInput_OnShotEnd(). Runs until explicitly stopped. Mutually
+ * exclusive with the bench-capture path PER CHANNEL (both ultimately
+ * own the same DMA/timer resource) -- starting one while the other is
+ * already running on the same channel fails cleanly (returns 0 /
+ * no-op) rather than corrupting shared DMA state; a channel not in use
+ * by the PID loop remains fully available for PFMIN:CAPTURE as before.
+ * -------------------------------------------------------------------------- */
+
+/* Starts free-running capture on `channel` (0..5). Returns 1 on
+ * success, 0 if `channel` is out of range, inactive
+ * (PFM_INPUT_ACTIVE_CHANNEL_MASK), already running (continuous OR an
+ * armed bench capture), or the DMA start itself failed. No-op
+ * (returns 0) when disabled. */
+uint8_t PfmInput_StartContinuous(uint8_t channel);
+
+/* Stops free-running capture started by PfmInput_StartContinuous().
+ * Harmless if `channel` is out of range or wasn't running in
+ * continuous mode (a bench capture running on this channel is left
+ * alone -- this only ever stops what PfmInput_StartContinuous()
+ * itself started). No-op when disabled. */
+void PfmInput_StopContinuous(uint8_t channel);
+
+/* Most recently measured period (raw timer ticks, rising-to-rising)
+ * for `channel` -- 0 before at least 2 rising edges have been seen
+ * since capture started (continuous or bench), or if `channel` is out
+ * of range or disabled. Updated by EITHER capture mode (whichever is
+ * currently running on this channel), so it stays meaningful
+ * regardless of which one is active -- only continuous capture runs
+ * indefinitely, though; a bench capture's last-measured value goes
+ * stale once that capture finishes and stops. */
+uint32_t PfmInput_GetLatestPeriod(uint8_t channel);
+
 #ifdef __cplusplus
 }
 #endif

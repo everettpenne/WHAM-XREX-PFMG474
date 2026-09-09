@@ -42,6 +42,10 @@ extern "C" {
  *   10  TABLE:STEP's per implies a carrier frequency above
  *       PFM_MAX_CARRIER_FREQ_HZ (ctrlr_config.h) -- see that file's own
  *       comment for why this hard limit exists
+ *   11  Invalid PID channel -- must be 1-HRTIM_NUM_CHANNELS (see
+ *       CONFig:CHANnels?, pid.h)
+ *   12  Invalid PID:* command arguments (wrong count, or a
+ *       non-numeric/out-of-range value)
  *
  * Mnemonics are SCPI-style hierarchical patterns matched by
  * cmd_parser.c's scpi_match() -- see that file's header for the
@@ -173,6 +177,31 @@ void cmd_pfmin_dmastat(uart_instance_t *inst, char *args); /* PFMIN:DMASTAT? -- 
                                                                 HAL_TIM_IC_Start_DMA()
                                                                 return code per channel */
 #endif
+
+/* --------------------------------------------------------------------------
+ * PID:* -- closed-loop control, added 2026-09-09. See pid.h for the
+ * full architecture (Possibility 3 + fixed-rate Master heartbeat) this
+ * project exists to implement, and docs/changelog.txt's design-decision
+ * entry for the reasoning. Channel numbering matches PFMIN:DATA?'s own
+ * convention: 1..N on the wire (N = HRTIM_NUM_CHANNELS, CONFig:CHANnels?
+ * reports it), 0..N-1 internally. Not gated on a feature-enable flag --
+ * this project's whole point, unlike PFM_Input/QUADSPI/BOOT's opt-in
+ * modules. */
+void cmd_pid_start(uart_instance_t *inst, char *args);    /* PID:START -- OK, begins
+                                                               closed-loop operation on
+                                                               every channel */
+void cmd_pid_stop(uart_instance_t *inst, char *args);     /* PID:STOP -- OK, stops
+                                                               output + feedback capture */
+void cmd_pid_setpoint(uart_instance_t *inst, char *args); /* PID:SETPOINT <ch> <hz> --
+                                                               OK, sets channel ch's
+                                                               target output frequency */
+void cmd_pid_gains(uart_instance_t *inst, char *args);    /* PID:GAINS <ch> <kp> <ki>
+                                                               <kd> -- OK, sets channel
+                                                               ch's PID gains, resets
+                                                               its integrator */
+void cmd_pid_status(uart_instance_t *inst, char *args);   /* PID:STATus? <ch> -- OK
+                                                               <running> <setpointHz>
+                                                               <measuredHz> <outputHz> */
 
 #ifdef __cplusplus
 }
