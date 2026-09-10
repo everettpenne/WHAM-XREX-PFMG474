@@ -380,18 +380,30 @@ cover yet.
   setpoint ramp on channel `ch`, interpolated fresh each tick (exact
   landing on `endHz`, no rounding drift). Superseded outright by an
   active shot profile (below) while one is running.
-- **`PID:LOG <ch> <maxSamples> <decim>`** -- arms waveform logging:
-  every `decim`-th REAL `PID_Update()` tick for channel `ch` (`maxSamples`
+- **`PID:LOG <ch(0=all)> <maxSamples> <decim>`** -- arms waveform
+  logging: every `decim`-th REAL `PID_Update()` tick (`maxSamples`
   clamped to `PID_LOG_MAX_SAMPLES`=1000) appends one
-  `{setpointHz, measuredHz, outputHz}` sample, held-value ticks
-  included (see `pid.h`'s own `PID_ArmLog()` comment for the
-  2026-09-10 timebase-accuracy fix this depends on).
-- **`PID:LOGDATA?`** -- `OK <count> <rateHz> s1 m1 o1 s2 m2 o2 ...`,
-  the armed channel's log so far. `rateHz` = `PID_LOOP_RATE_HZ / decim`
-  -- sample `i` occurred at `i / rateHz` seconds after `PID:LOG` was
-  sent. STREAMED reply (one chunk per sample, not one giant buffer --
-  see `cmd_pid_logdata()`'s own comment on why), so it can take
-  noticeably longer than other commands at 1000 samples; budget a
+  `{setpointHz, measuredHz, outputHz}` sample per logged channel,
+  held-value ticks included (see `pid.h`'s own `PID_ArmLog()` comment
+  for the 2026-09-10 timebase-accuracy fix this depends on). `ch=0`
+  arms EVERY channel at once, from the SAME real ticks
+  (`PID_ArmLogAll()`, added 2026-09-10) -- a genuine simultaneous
+  cross-channel comparison, not N separate runs; `python/
+  wham_console.py`'s `shot` wizard's `all` logging option uses this
+  for its one-PNG-per-shot, one-row-per-channel plot.
+- **`PID:LOGDATA? [ch]`** -- `OK <count> <rateHz> s1 m1 o1 s2 m2 o2 ...`,
+  channel `ch`'s log so far. `rateHz` = `PID_LOOP_RATE_HZ / decim` --
+  sample `i` occurred at `i / rateHz` seconds after `PID:LOG` was sent
+  (the SAME for every channel when `ch=0` was used to arm -- that's
+  the whole point). `[ch]` is optional and its own value defaults to
+  whichever single channel is armed (unchanged, original behavior)
+  ONLY when a single channel (not `ch=0`/all) is currently armed;
+  otherwise a channel argument is required, and any channel
+  1-`HRTIM_NUM_CHANNELS` is valid under all-channels mode (`ERR 12` if
+  omitted then, `ERR 12` if it doesn't match the one single channel
+  actually armed). STREAMED reply (one chunk per sample, not one giant
+  buffer -- see `cmd_pid_logdata()`'s own comment on why), so it can
+  take noticeably longer than other commands at 1000 samples; budget a
   generous read timeout (`wham_console.py` uses 8s).
 - **`PID:LOOPMODE <ch> <0|1>`** -- `0` = open-loop (setpoint/profile
   value written straight to HRTIM, no PID correction; feedback still

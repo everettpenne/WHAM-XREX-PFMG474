@@ -799,18 +799,23 @@ void cmd_pid_status(uart_instance_t *inst, char *args)
     uart_send(inst, buf);
 }
 
+/* channel argument 0 means "log every channel at once" (PID_ArmLogAll(),
+   added 2026-09-10) -- real channels are 1..N on the wire everywhere
+   else in this project, leaving 0 a natural, otherwise-unused sentinel
+   rather than a whole new command. See PID_ArmLogAll()'s own doc
+   comment in pid.h for why this exists (a genuine simultaneous
+   cross-channel comparison, not N separate single-channel runs). */
 void cmd_pid_log(uart_instance_t *inst, char *args)
 {
     char *tok;
     long  chArg;
     long  nArg;
     long  decimArg;
-    uint8_t ch;
 
     tok = (args != NULL) ? strtok(args, " \r\n") : NULL;
     if (tok == NULL)
     {
-        SendErr(inst, 12, "PID:LOG needs three arguments: channel maxSamples decim");
+        SendErr(inst, 12, "PID:LOG needs three arguments: channel(0=all) maxSamples decim");
         return;
     }
     chArg = atol(tok);
@@ -818,7 +823,7 @@ void cmd_pid_log(uart_instance_t *inst, char *args)
     tok = strtok(NULL, " \r\n");
     if (tok == NULL)
     {
-        SendErr(inst, 12, "PID:LOG needs three arguments: channel maxSamples decim");
+        SendErr(inst, 12, "PID:LOG needs three arguments: channel(0=all) maxSamples decim");
         return;
     }
     nArg = atol(tok);
@@ -826,17 +831,16 @@ void cmd_pid_log(uart_instance_t *inst, char *args)
     tok = strtok(NULL, " \r\n");
     if (tok == NULL)
     {
-        SendErr(inst, 12, "PID:LOG needs three arguments: channel maxSamples decim");
+        SendErr(inst, 12, "PID:LOG needs three arguments: channel(0=all) maxSamples decim");
         return;
     }
     decimArg = atol(tok);
 
-    if ((chArg < 1L) || (chArg > (long)HRTIM_NUM_CHANNELS))
+    if ((chArg < 0L) || (chArg > (long)HRTIM_NUM_CHANNELS))
     {
-        SendErr(inst, 11, "Invalid PID channel");
+        SendErr(inst, 11, "Invalid PID channel (0 = all channels)");
         return;
     }
-    ch = (uint8_t)(chArg - 1L);
 
     if ((nArg < 1L) || (nArg > (long)PID_LOG_MAX_SAMPLES) || (decimArg < 1L))
     {
@@ -844,7 +848,14 @@ void cmd_pid_log(uart_instance_t *inst, char *args)
         return;
     }
 
-    (void)PID_ArmLog(ch, (uint16_t)nArg, (uint16_t)decimArg);
+    if (chArg == 0L)
+    {
+        (void)PID_ArmLogAll((uint16_t)nArg, (uint16_t)decimArg);
+    }
+    else
+    {
+        (void)PID_ArmLog((uint8_t)(chArg - 1L), (uint16_t)nArg, (uint16_t)decimArg);
+    }
     uart_send(inst, "OK\r\n");
 }
 
@@ -861,16 +872,65 @@ void cmd_pid_log(uart_instance_t *inst, char *args)
    small stack buffer regardless of how many samples are logged. Costs
    more individual transmit calls (~1000 for a full log) instead of
    one, but at 115200 baud the whole reply takes over a second to
-   clock out either way -- the call overhead is noise against that. */
+   clock out either way -- the call overhead is noise against that.
+
+   OPTIONAL channel argument, added 2026-09-10 alongside PID_ArmLogAll():
+   `PID:LOGDATA?` (no argument) is UNCHANGED, exactly its original
+   behavior -- valid only when a single channel is armed (PID_ArmLog()),
+   fetches that channel's data, ERR 12 if all-channels mode is active
+   (ambiguous without a channel to pick). `PID:LOGDATA? <ch>` works in
+   EITHER mode: under all-channels mode any ch is valid; under
+   single-channel mode ch must equal the one actually armed (ERR 12
+   otherwise -- no data exists for any other channel this run). */
 void cmd_pid_logdata(uart_instance_t *inst, char *args)
 {
-    uint16_t count = PID_GetLogCount();
-    const uint32_t *setpoint = PID_GetLogSetpoint();
-    const uint32_t *measured = PID_GetLogMeasured();
-    const uint32_t *output   = PID_GetLogOutput();
+    char *tok;
+    long  chArg;
+    uint8_t ch;
+    uint16_t count;
+    const uint32_t *setpoint;
+    const uint32_t *measured;
+    const uint32_t *output;
     char chunk[48];
-    (void)args;
 
+    tok = (args != NULL) ? strtok(args, " \r\n") : NULL;
+    if (tok == NULL)
+    {
+        if (PID_IsLogAllChannels() != 0U)
+        {
+            SendErr(inst, 12, "PID:LOGDATA? needs a channel argument while "
+                               "all-channels logging is armed");
+            return;
+        }
+        ch = PID_GetLogChannel();   /* 0xFF (no channel armed) is caught below */
+    }
+    else
+    {
+        chArg = atol(tok);
+        if ((chArg < 1L) || (chArg > (long)HRTIM_NUM_CHANNELS))
+        {
+            SendErr(inst, 11, "Invalid PID channel");
+            return;
+        }
+        ch = (uint8_t)(chArg - 1L);
+        if ((PID_IsLogAllChannels() == 0U) && (ch != PID_GetLogChannel()))
+        {
+            SendErr(inst, 12, "That channel isn't the one currently armed -- "
+                               "see PID:LOG");
+            return;
+        }
+    }
+
+    setpoint = PID_GetLogSetpoint(ch);
+    measured = PID_GetLogMeasured(ch);
+    output   = PID_GetLogOutput(ch);
+    if ((setpoint == NULL) || (measured == NULL) || (output == NULL))
+    {
+        SendErr(inst, 11, "Invalid PID channel");
+        return;
+    }
+
+    count = PID_GetLogCount();
     snprintf(chunk, sizeof(chunk), "OK %u %lu", (unsigned int)count,
              (unsigned long)PID_GetLogSampleRateHz());
     uart_send(inst, chunk);

@@ -1,6 +1,77 @@
 WHAM-XREX-PFMG474 Firmware Changelog
 =====================================
 
+2026-09-10  —  Simultaneous all-channel waveform logging
+               (PID_ArmLogAll()); wham_console.py generates one
+               combined plot across every channel from a single shot
+-----------------------------------------------------------------------
+  Change:  Direct request: "make sure we generate one plot showing the
+        shot data from all 4 channels." The waveform log
+        (PID_ArmLog()/PID:LOG, 2026-09-10) only ever recorded ONE
+        channel at a time -- getting all 4 channels' data meant either
+        4 separate runs of the same shot (real feedback noise means no
+        two runs are bit-for-bit identical, so not a genuinely
+        simultaneous comparison) or a firmware change. Did the latter:
+
+          - g_logSetpoint/g_logMeasured/g_logOutput (pid.c) changed
+            from flat [PID_LOG_MAX_SAMPLES] arrays to
+            [HRTIM_NUM_CHANNELS][PID_LOG_MAX_SAMPLES] -- a row per
+            channel. RAM cost: 48000 bytes total at today's 4
+            channels/1000 samples, up from 12000 -- a real, deliberate
+            trade-off (bss went from 59.6% to 86.7% of this MCU's 128
+            KiB -- confirmed it still links; see docs/memory_report.html
+            for current headroom, worth watching before adding much
+            more RAM-hungry state).
+          - New PID_ArmLogAll(maxSamples, decim) (pid.h/pid.c) arms
+            EVERY channel at once, sharing ONE decimation counter/
+            sample index -- REAL restructure needed in PID_Update():
+            the decimation decision used to happen INSIDE the
+            per-channel loop (once per channel that matched
+            g_logChannel), which would have advanced the counter 4x
+            per real tick under all-channels mode, corrupting the
+            timebase exactly the way the previous PID_ArmLog() timebase
+            bug did. Moved to a single logThisTick decision computed
+            ONCE per PID_Update() call, before the per-channel loop,
+            then applied identically to every armed channel inside it
+            -- every channel's sample `i` now genuinely comes from the
+            same real Master tick.
+          - PID:LOG's `<ch>` argument: `0` now means "arm every
+            channel" (real channels are 1..N everywhere else in this
+            project, leaving 0 a natural unused sentinel rather than a
+            whole new command). PID:LOGDATA? gained an OPTIONAL channel
+            argument -- omitted, it's UNCHANGED, original behavior
+            (valid only when a single channel is armed); given, it
+            works in either mode (any channel under all-channels mode,
+            or the one actually-armed channel under single-channel
+            mode -- ERR 12 for a mismatch in either failure case).
+          - python/wham_console.py: `log`'s channel argument now
+            accepts `all`; the `shot` wizard's log-target prompt offers
+            `all` alongside a channel number or `none`. New
+            generate_multi_channel_plot() -- one PNG, one row of
+            subplots per channel (shared time axis, each channel's own
+            setpoint/output/measured), phase-shaded with the one shared
+            ramp/flat-top/ramp-down timing. `plot all` replots an
+            already-armed all-channels log without a new shot. Saves
+            one combined wide-format CSV (t_s plus 3 columns per
+            channel) + one metadata JSON alongside the PNG, same
+            shots/ convention as the single-channel path.
+
+        Verified on real hardware: a real 4-channel shot (1.0s ramp /
+        1.0s flat-top / 1.0s ramp-down; ch1 3000A closed-loop with real
+        fiber feedback, ch2/3/4 1500A/4000A/800A open-loop with no
+        feedback wired) produced one PNG with all 4 channels correctly
+        shown on the same time axis -- ch1's closed-loop tracking (with
+        its own already-documented occasional feedback glitches,
+        unaffected by this change) alongside ch2/3/4's open-loop output
+        exactly matching their own demand-current trapezoids (AmpsToHz-
+        converted peaks: 1500A->~33.7kHz, 4000A->~81kHz, 800A->~20.2kHz,
+        all correct). Also verified the protocol edge cases directly:
+        `PID:LOGDATA?` with no argument still works exactly as before
+        when a single channel is armed; correctly ERRs when all-
+        channels mode is armed and no channel is given; `PID:LOGDATA?
+        <ch>` correctly ERRs for a channel that isn't the one actually
+        armed in single-channel mode.
+
 2026-09-10  —  PID:GAINS?/LOOPMODE?/PROFile:TIMing?/PROFile:CURRent?
                query commands; a real newlib-nano printf-float bug
                found and fixed getting them working; wham_console.py

@@ -209,14 +209,23 @@ void cmd_pid_status(uart_instance_t *inst, char *args);   /* PID:STATus? <ch> --
 
 /* Waveform logging, added 2026-09-10 -- see pid.h's own comment block
    on PID_ArmLog() for the full design (why polling PID:STATus? isn't
-   enough to actually plot a waveform). */
-void cmd_pid_log(uart_instance_t *inst, char *args);       /* PID:LOG <ch> <maxSamples>
-                                                                <decim> -- OK, arms
-                                                                waveform logging */
-void cmd_pid_logdata(uart_instance_t *inst, char *args);   /* PID:LOGDATA? -- OK <count>
+   enough to actually plot a waveform). <ch>=0 means "log every
+   channel at once" (PID_ArmLogAll(), see its own pid.h comment) --
+   added the same day for a genuine simultaneous cross-channel
+   comparison. */
+void cmd_pid_log(uart_instance_t *inst, char *args);       /* PID:LOG <ch(0=all)>
+                                                                <maxSamples> <decim> -- OK,
+                                                                arms waveform logging */
+void cmd_pid_logdata(uart_instance_t *inst, char *args);   /* PID:LOGDATA? [ch] -- OK <count>
                                                                 <rateHz> s1 m1 o1 s2 m2 o2
                                                                 ..., setpoint/measured/
-                                                                output Hz triples */
+                                                                output Hz triples. [ch]
+                                                                optional if a single
+                                                                channel is armed
+                                                                (unchanged, original
+                                                                behavior); required (and
+                                                                any channel valid) under
+                                                                all-channels mode */
 
 /* Linear setpoint ramp, added 2026-09-10 for trajectory-tracking bench
    tests -- see pid.h's own comment on PID_StartRamp(). */

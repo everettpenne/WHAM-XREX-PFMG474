@@ -81,12 +81,33 @@ static uint32_t g_profileTotalTicks   = 0U;   /* 2*rampTicks + flatTopTicks */
    trajectory -- not just a static setpoint -- shows up in the log
    too; before ramps existed, setpoint was constant for the whole log
    anyway and wasn't worth logging. */
-static uint32_t g_logSetpoint[PID_LOG_MAX_SAMPLES];
-static uint32_t g_logMeasured[PID_LOG_MAX_SAMPLES];
-static uint32_t g_logOutput[PID_LOG_MAX_SAMPLES];
+/* Added 2026-09-10, ROW PER CHANNEL: previously one flat
+   [PID_LOG_MAX_SAMPLES] array, only ever holding the single armed
+   channel's data. Generalized to [HRTIM_NUM_CHANNELS][PID_LOG_MAX_SAMPLES]
+   so PID_ArmLogAll() (below) can log every channel from the SAME
+   shot, on the SAME shared time axis -- the whole point being a
+   direct, simultaneous, apples-to-apples comparison across channels,
+   which running the same shot N separate times (once per channel)
+   can only approximate, not guarantee (real hardware, real feedback
+   noise -- see docs/changelog.txt's glitch-finding entries -- two
+   "identical" runs are never bit-for-bit identical). RAM cost: 4x a
+   single channel's own (3 arrays * HRTIM_NUM_CHANNELS *
+   PID_LOG_MAX_SAMPLES * 4 bytes = 48000 bytes at today's 4
+   channels/1000 samples, up from 12000 -- tracked in the usual
+   memory-footprint commit; a real, deliberate RAM/capability
+   trade-off, not an accident. */
+static uint32_t g_logSetpoint[HRTIM_NUM_CHANNELS][PID_LOG_MAX_SAMPLES];
+static uint32_t g_logMeasured[HRTIM_NUM_CHANNELS][PID_LOG_MAX_SAMPLES];
+static uint32_t g_logOutput[HRTIM_NUM_CHANNELS][PID_LOG_MAX_SAMPLES];
 static uint16_t g_logCount   = 0U;
 static uint16_t g_logCap     = 0U;
-static uint8_t  g_logChannel = 0xFFU;   /* 0xFF = no channel armed */
+static uint8_t  g_logChannel = 0xFFU;   /* 0xFF = no single channel armed
+                                            (either nothing armed at all --
+                                            see g_logAllChannels -- or
+                                            all-channels mode is active) */
+static uint8_t  g_logAllChannels = 0U;  /* 1 = PID_ArmLogAll() armed every
+                                            channel at once; g_logChannel
+                                            is meaningless in this mode */
 static uint16_t g_logDecim   = 1U;
 static uint16_t g_logDecimCounter = 0U;
 
@@ -354,6 +375,30 @@ void PID_Update(void)
         g_profileElapsedTicks++;
     }
 
+    /* Waveform log -- decimation/count bookkeeping moved OUT of the
+       per-channel loop below and decided ONCE per real tick, 2026-09-10,
+       alongside PID_ArmLogAll(): with all-channels logging, every
+       channel "qualifies" every tick, so an increment inside the
+       per-channel loop would advance g_logDecimCounter/g_logCount once
+       PER CHANNEL instead of once per tick, corrupting the decimation
+       timebase (see pid.h's own PID_ArmLog() comment on why an exact
+       timebase matters here -- the 2026-09-10 log-timing bugfix this
+       would otherwise silently reintroduce). Decided here, applied to
+       every armed channel identically inside the loop, so every
+       channel's sample `i` is written from the SAME real tick -- the
+       entire point of PID_ArmLogAll() over running the same shot N
+       separate times. */
+    uint8_t logThisTick = 0U;
+    if (((g_logChannel != 0xFFU) || (g_logAllChannels != 0U)) && (g_logCount < g_logCap))
+    {
+        g_logDecimCounter++;
+        if (g_logDecimCounter >= g_logDecim)
+        {
+            g_logDecimCounter = 0U;
+            logThisTick = 1U;
+        }
+    }
+
     for (uint8_t ch = 0U; ch < HRTIM_NUM_CHANNELS; ch++)
     {
         PidChannelState_t *st = &g_ch[ch];
@@ -563,48 +608,32 @@ void PID_Update(void)
             HRTIM1_SetChannelPeriod(ch, per);
         }
 
-        /* Waveform log -- see pid.h's own comment on PID_ArmLog().
-           REAL BUG, caught reviewing a shot-profile log against the
-           real elapsed shot duration, 2026-09-10: this used to sit
-           INSIDE the "have fresh feedback" branches above and never
-           run at all on a held/skipped tick (see the branch above) --
-           meaning g_logDecimCounter only ever advanced on ticks WITH
-           fresh feedback, so PID_GetLogSampleRateHz()'s reported
-           `PID_LOOP_RATE_HZ / decim` was only actually correct when
-           every tick had fresh feedback. Near PFM_TURNON_FREQ_HZ (see
-           the "no fresh feedback" branch's own comment above) that
-           assumption silently breaks -- several ticks in a row produce
-           no log entry at all, and the *next* logged sample's assumed
-           timestamp (index * decim / rate) ends up compressed relative
-           to when it was actually taken, distorting a plotted time
-           axis without any error being raised. Confirmed on real
-           hardware: a 3.0s shot's log stopped 611 samples short of the
-           armed 1000 (PID:LOG 1 1000 3), i.e. covering only ~1.83s of
-           the log's own claimed timebase for what was actually a full
-           3.0s run.
-
-           Fixed by moving this block OUTSIDE the feedback-freshness
-           branching entirely -- it now runs once per REAL Master tick
-           for the armed channel, unconditionally, logging whatever
-           st->setpointHz/lastMeasuredHz/lastOutputHz currently hold
-           (freshly computed this tick, or still held over from the
-           last tick that had feedback -- see the branches above). This
-           makes a held/stale-feedback stretch show up as a genuine
-           flat/staircase segment in the log, which is the accurate,
-           honest picture of what the control loop is actually doing,
-           rather than silently vanishing from the time axis. */
-        if ((ch == g_logChannel) && (g_logCount < g_logCap))
+        /* Waveform log -- see pid.h's own comment on PID_ArmLog() and
+           this function's own logThisTick comment above (why the
+           decimation decision now happens once per tick, not once per
+           channel). Logs whatever st->setpointHz/lastMeasuredHz/
+           lastOutputHz currently hold (freshly computed this tick, or
+           still held over from the last tick that had feedback -- see
+           the branches above) -- a held/stale-feedback stretch shows
+           up as a genuine flat/staircase segment, the accurate, honest
+           picture of what the control loop is actually doing, rather
+           than silently vanishing from the time axis (a REAL bug,
+           fixed 2026-09-10 -- see docs/changelog.txt). Every currently-
+           armed channel (just g_logChannel, or all of them under
+           PID_ArmLogAll()) is written into the SAME g_logCount slot on
+           a logging tick -- same real tick, same index, directly
+           comparable across channels. */
+        if (logThisTick && (g_logAllChannels || (ch == g_logChannel)))
         {
-            g_logDecimCounter++;
-            if (g_logDecimCounter >= g_logDecim)
-            {
-                g_logDecimCounter = 0U;
-                g_logSetpoint[g_logCount] = st->setpointHz;
-                g_logMeasured[g_logCount] = st->lastMeasuredHz;
-                g_logOutput[g_logCount]   = st->lastOutputHz;
-                g_logCount++;
-            }
+            g_logSetpoint[ch][g_logCount] = st->setpointHz;
+            g_logMeasured[ch][g_logCount] = st->lastMeasuredHz;
+            g_logOutput[ch][g_logCount]   = st->lastOutputHz;
         }
+    }
+
+    if (logThisTick)
+    {
+        g_logCount++;
     }
 }
 
@@ -701,6 +730,28 @@ uint8_t PID_ArmLog(uint8_t channel, uint16_t maxSamples, uint16_t decim)
     }
 
     g_logChannel      = channel;
+    g_logAllChannels  = 0U;
+    g_logCap          = (maxSamples > (uint16_t)PID_LOG_MAX_SAMPLES)
+                             ? (uint16_t)PID_LOG_MAX_SAMPLES : maxSamples;
+    g_logCount        = 0U;
+    g_logDecim        = (decim == 0U) ? 1U : decim;
+    g_logDecimCounter = 0U;
+
+    return 1U;
+}
+
+/* Arms logging for EVERY channel at once, from the SAME real ticks --
+   added 2026-09-10, see this file's own comment on g_logSetpoint/
+   g_logMeasured/g_logOutput's 2D shape and PID_Update()'s logThisTick
+   for why this needed more than just looping PID_ArmLog() once per
+   channel (that would give each channel its OWN decimation timebase,
+   not a shared one -- fine for one channel at a time, wrong for a
+   simultaneous cross-channel comparison, which is the entire point).
+   See pid.h's own comment for the full rationale. */
+uint8_t PID_ArmLogAll(uint16_t maxSamples, uint16_t decim)
+{
+    g_logChannel      = 0xFFU;
+    g_logAllChannels  = 1U;
     g_logCap          = (maxSamples > (uint16_t)PID_LOG_MAX_SAMPLES)
                              ? (uint16_t)PID_LOG_MAX_SAMPLES : maxSamples;
     g_logCount        = 0U;
@@ -720,19 +771,42 @@ uint32_t PID_GetLogSampleRateHz(void)
     return (uint32_t)PID_LOOP_RATE_HZ / g_logDecim;
 }
 
-const uint32_t *PID_GetLogMeasured(void)
+/* channel: 0..HRTIM_NUM_CHANNELS-1, added 2026-09-10 alongside the
+   row-per-channel log storage (see that comment). Returns NULL for an
+   out-of-range channel -- callers (cmd_pid_logdata(), commands.c) are
+   expected to validate the wire-level channel argument themselves
+   before calling, same convention as everywhere else in this file, so
+   this is a defensive backstop, not the primary validation. */
+const uint32_t *PID_GetLogMeasured(uint8_t channel)
 {
-    return g_logMeasured;
+    return (channel < HRTIM_NUM_CHANNELS) ? g_logMeasured[channel] : NULL;
 }
 
-const uint32_t *PID_GetLogOutput(void)
+const uint32_t *PID_GetLogOutput(uint8_t channel)
 {
-    return g_logOutput;
+    return (channel < HRTIM_NUM_CHANNELS) ? g_logOutput[channel] : NULL;
 }
 
-const uint32_t *PID_GetLogSetpoint(void)
+const uint32_t *PID_GetLogSetpoint(uint8_t channel)
 {
-    return g_logSetpoint;
+    return (channel < HRTIM_NUM_CHANNELS) ? g_logSetpoint[channel] : NULL;
+}
+
+/* Which mode the current (or most recently armed) log is in -- added
+   2026-09-10 so cmd_pid_logdata() can apply the right validation rule
+   for its optional channel argument (see that function's own comment):
+   1 = PID_ArmLogAll() (any channel argument 1..HRTIM_NUM_CHANNELS is
+   valid), 0 = PID_ArmLog() (only the single armed channel is valid --
+   use PID_GetLogChannel() to find out which, 0xFF if nothing is armed
+   at all). */
+uint8_t PID_IsLogAllChannels(void)
+{
+    return g_logAllChannels;
+}
+
+uint8_t PID_GetLogChannel(void)
+{
+    return g_logChannel;
 }
 
 uint8_t PID_StartRamp(uint8_t channel, uint32_t startHz, uint32_t endHz, uint32_t durationMs)

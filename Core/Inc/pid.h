@@ -322,24 +322,31 @@ uint8_t PID_IsProfileActive(void);
  * output" can actually be PLOTTED, not just sampled a few times a
  * second over a serial round-trip (PID:STATus? polling, as used for
  * the first bench convergence test -- far too coarse to show the real
- * waveform shape at PID_LOOP_RATE_HZ). Logs ONE channel at a time (RAM
- * is the constraint -- see PID_LOG_MAX_SAMPLES below), both the
- * measured feedback AND the output actually written to HRTIM that same
- * tick, so a host-side plot can overlay "commanded" against "closed-loop
- * measured" on the same time axis with no reconstruction needed.
- * Independent of PID_Start()/PID_Stop() -- arming a log doesn't start
- * or stop the loop, it just decides what PID_Update() also records
- * while running.
+ * waveform shape at PID_LOOP_RATE_HZ). Logs either ONE channel
+ * (PID_ArmLog()) or EVERY channel at once, from the same real ticks
+ * (PID_ArmLogAll(), added later the same day for a genuine
+ * simultaneous cross-channel comparison -- see its own comment), both
+ * the measured feedback AND the output actually written to HRTIM that
+ * same tick, so a host-side plot can overlay "commanded" against
+ * "closed-loop measured" on the same time axis with no reconstruction
+ * needed. Independent of PID_Start()/PID_Stop() -- arming a log
+ * doesn't start or stop the loop, it just decides what PID_Update()
+ * also records while running.
  * -------------------------------------------------------------------------- */
 
-/* Cap on logged samples -- RAM-bounded (2 x uint32_t x this many bytes
- * for the log arrays themselves, plus whatever the wire command's own
- * reply buffer costs, commands.c). 1000 chosen to keep total added RAM
- * comfortably clear of this MCU's 128 KiB while still covering several
- * real seconds of a control-loop transient at a sane decimation (see
- * PID_ArmLog()'s own `decim` parameter) -- e.g. decim=4 covers 4
- * seconds at PID_LOOP_RATE_HZ=1000 with 1000 samples, an effective
- * 250 Hz log rate, plenty to see a convergence curve's real shape. */
+/* Cap on logged samples -- RAM-bounded: 3 arrays (setpoint/measured/
+ * output) x HRTIM_NUM_CHANNELS x this many x 4 bytes for the log
+ * storage itself (pid.c), since PID_ArmLogAll() (added 2026-09-10)
+ * needs a row per channel even though PID_ArmLog() only ever uses one
+ * of them -- at today's 4 channels that's 48000 bytes, a real,
+ * deliberate chunk of this MCU's 128 KiB (see pid.c's own comment on
+ * those arrays). 1000 chosen to still cover several real seconds of a
+ * control-loop transient at a sane decimation (see PID_ArmLog()'s own
+ * `decim` parameter) -- e.g. decim=4 covers 4 seconds at
+ * PID_LOOP_RATE_HZ=1000 with 1000 samples, an effective 250 Hz log
+ * rate, plenty to see a convergence curve's real shape. Revisit
+ * downward if a future RAM-hungry feature needs the headroom back --
+ * see docs/memory_report.html for current utilization. */
 #define PID_LOG_MAX_SAMPLES  (1000U)
 
 /* Arms logging for `channel` (0..HRTIM_NUM_CHANNELS-1): clears any
@@ -369,41 +376,78 @@ uint8_t PID_IsProfileActive(void);
  * own setpoint/gains/state -- arm this before or after starting the
  * loop, either works, logging just records whatever happens on this
  * channel from the moment this is called. Returns 1 on success, 0 if
- * `channel` is out of range. */
+ * `channel` is out of range. Cancels any PID_ArmLogAll() currently
+ * armed (mutually exclusive with it -- the two share the same
+ * underlying storage/index, see that function's own comment). */
 uint8_t PID_ArmLog(uint8_t channel, uint16_t maxSamples, uint16_t decim);
+
+/* Arms logging for EVERY channel at once, from the SAME real ticks --
+ * added 2026-09-10, so a shot's simultaneous behavior across every
+ * channel can be directly compared on one time axis (running the same
+ * shot N separate times, once per channel, can only approximate this:
+ * real feedback noise means no two runs are bit-for-bit identical --
+ * see docs/changelog.txt's glitch-finding entries). Same semantics as
+ * PID_ArmLog() otherwise (decim/maxSamples, independent of
+ * PID_Start()/PID_Stop(), etc.) -- just every channel's
+ * {setpointHz, measuredHz, outputHz} is written into the SAME sample
+ * index each qualifying tick, instead of one channel's. Cancels any
+ * PID_ArmLog() currently armed. RAM cost: this is WHY the log arrays
+ * are 2D (HRTIM_NUM_CHANNELS x PID_LOG_MAX_SAMPLES) even for the
+ * single-channel case above -- see pid.c's own comment on those
+ * arrays for the exact byte count. Always succeeds (no channel
+ * argument to validate). */
+uint8_t PID_ArmLogAll(uint16_t maxSamples, uint16_t decim);
 
 /* How many samples have been logged so far (<= whatever PID_ArmLog()'s
  * maxSamples was, clamped to PID_LOG_MAX_SAMPLES) -- keeps growing
- * (until the cap) as long as the armed channel keeps ticking, whether
- * or not the loop is still running. */
+ * (until the cap) as long as the armed channel(s) keep ticking,
+ * whether or not the loop is still running. Shared across every
+ * logged channel under PID_ArmLogAll() (see pid.c's own comment on
+ * why that has to be a single shared counter, not one per channel). */
 uint16_t PID_GetLogCount(void);
 
 /* The effective sample rate the current log was/is being recorded at,
- * in Hz -- PID_LOOP_RATE_HZ / decim (the `decim` PID_ArmLog() was last
- * called with). A host-side plotter reconstructs the time axis from
- * this and PID_GetLogCount() -- sample i occurred at
- * i / PID_GetLogSampleRateHz() seconds after logging started. EXACT
- * (not approximate) as of the 2026-09-10 fix described in
- * PID_ArmLog()'s own comment -- every real tick is now accounted for,
- * logged or not. */
+ * in Hz -- PID_LOOP_RATE_HZ / decim (the `decim` PID_ArmLog()/
+ * PID_ArmLogAll() was last called with). A host-side plotter
+ * reconstructs the time axis from this and PID_GetLogCount() -- sample
+ * i occurred at i / PID_GetLogSampleRateHz() seconds after logging
+ * started. EXACT (not approximate) as of the 2026-09-10 fix described
+ * in PID_ArmLog()'s own comment -- every real tick is now accounted
+ * for, logged or not. */
 uint32_t PID_GetLogSampleRateHz(void);
 
-/* Raw logged arrays, index 0..PID_GetLogCount()-1, in recording order
- * -- measured feedback and the output actually written to HRTIM that
- * same tick, respectively. Same NULL/out-of-range-safe pointer
- * convention as pfm_input.c's PfmInput_GetPeriods(): always returns a
+/* 1 if PID_ArmLogAll() is the currently-armed mode, 0 if PID_ArmLog()
+ * (a single channel) is, or if nothing is armed at all -- added
+ * 2026-09-10 so a host tool (or cmd_pid_logdata(), commands.c) can
+ * tell which validation rule applies to a channel argument: under
+ * PID_ArmLogAll(), any channel 0..HRTIM_NUM_CHANNELS-1 has real data;
+ * under PID_ArmLog(), only PID_GetLogChannel()'s one channel does. */
+uint8_t PID_IsLogAllChannels(void);
+
+/* The single channel PID_ArmLog() last armed (0..HRTIM_NUM_CHANNELS-1),
+ * or 0xFF if nothing is armed (including while PID_ArmLogAll() is the
+ * active mode -- check PID_IsLogAllChannels() first). Added 2026-09-10. */
+uint8_t PID_GetLogChannel(void);
+
+/* Raw logged arrays for `channel` (0..HRTIM_NUM_CHANNELS-1), index
+ * 0..PID_GetLogCount()-1, in recording order -- measured feedback and
+ * the output actually written to HRTIM that same tick, respectively.
+ * Returns NULL for an out-of-range channel; otherwise always a
  * non-NULL pointer into a fixed static array regardless of how many
  * entries are actually valid -- callers must use PID_GetLogCount() to
- * know how many to read. */
-const uint32_t *PID_GetLogMeasured(void);
-const uint32_t *PID_GetLogOutput(void);
+ * know how many to read, and PID_IsLogAllChannels()/PID_GetLogChannel()
+ * to know whether `channel`'s row actually holds meaningful data (a
+ * channel not currently/previously armed holds stale or zeroed data,
+ * not an error, but not meaningful either). */
+const uint32_t *PID_GetLogMeasured(uint8_t channel);
+const uint32_t *PID_GetLogOutput(uint8_t channel);
 
 /* The setpoint in effect at each logged sample -- added 2026-09-10
  * alongside PID_StartRamp(), so a moving reference trajectory shows
  * up in the log, not just a constant that could be read once via
  * PID_GetStatus(). Same indexing/validity convention as
  * PID_GetLogMeasured()/PID_GetLogOutput() above. */
-const uint32_t *PID_GetLogSetpoint(void);
+const uint32_t *PID_GetLogSetpoint(uint8_t channel);
 
 #ifdef __cplusplus
 }

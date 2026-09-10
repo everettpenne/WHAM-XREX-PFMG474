@@ -397,6 +397,84 @@ def generate_plot(rows, meta, out_path):
     return out_path
 
 
+def generate_multi_channel_plot(channel_rows, metas, out_path):
+    """One figure, one row of subplots per channel (sharing a single
+    time axis), each showing that channel's own setpoint/output/
+    measured in Hz -- for a genuine simultaneous, directly-comparable
+    view across every channel of the SAME shot (see PID_ArmLogAll()'s
+    own doc comment in pid.h for why this needs firmware support, not
+    just running the same shot N times and overlaying the results).
+    channel_rows: {channel: rows} (rows as in generate_plot()).
+    metas: {channel: meta} -- ramp_time_s/flat_top_time_s are expected
+    to be the SAME across every entry (one shared shot profile);
+    demand_current_a/kp/ki/kd/loop_mode are per-channel. Saves one PNG
+    to out_path. Returns out_path."""
+    if not HAVE_MPL:
+        raise WhamError("matplotlib not installed -- run: pip install matplotlib")
+
+    channels = sorted(channel_rows)
+    if not channels:
+        raise WhamError("no channel data to plot")
+
+    any_meta = metas[channels[0]]
+    ramp_s = any_meta.get("ramp_time_s")
+    flat_s = any_meta.get("flat_top_time_s")
+    have_profile = ramp_s is not None and flat_s is not None
+    phase_bounds = []
+    if have_profile:
+        total_s = 2 * ramp_s + flat_s
+        phase_bounds = [(0, ramp_s, "#ffe8b3", "ramp up"),
+                        (ramp_s, ramp_s + flat_s, "#c9f2c7", "flat top"),
+                        (ramp_s + flat_s, total_s, "#ffd6d6", "ramp down")]
+
+    fig, axes = plt.subplots(len(channels), 1, figsize=(11, 2.6 * len(channels)),
+                              sharex=True, squeeze=False)
+    axes = axes[:, 0]
+
+    for ax, ch in zip(axes, channels):
+        rows = channel_rows[ch]
+        meta = metas[ch]
+        t = [r["t_s"] for r in rows]
+        sp = [r["setpoint_hz"] for r in rows]
+        ms = [r["measured_hz"] for r in rows]
+        op = [r["output_hz"] for r in rows]
+
+        for x0, x1, color, label in phase_bounds:
+            ax.axvspan(x0, x1, color=color, alpha=0.4, zorder=0,
+                       label=label if ax is axes[0] else None)
+        ax.step(t, sp, where="post", color="#888888", lw=1.2, ls="--",
+                 label="Setpoint" if ax is axes[0] else None, zorder=3)
+        ax.step(t, op, where="post", color="#2a78d6", lw=1.6,
+                 label="Output" if ax is axes[0] else None, zorder=2)
+        ax.step(t, ms, where="post", color="#eb6834", lw=1.6,
+                 label="Measured" if ax is axes[0] else None, zorder=4)
+
+        demand_a = meta.get("demand_current_a")
+        loop_mode = meta.get("loop_mode") or "?"
+        subtitle = f"Ch{ch}  {loop_mode}-loop"
+        if demand_a is not None:
+            subtitle += f"  demand={demand_a:g}A"
+        ax.set_ylabel("Hz", fontsize=9)
+        ax.set_title(subtitle, fontsize=10, loc="left")
+        ax.grid(True, alpha=0.3)
+        ax.tick_params(labelsize=8)
+
+    axes[0].legend(loc="upper right", fontsize=8, ncol=4)
+    axes[-1].set_xlabel("Time since log armed (s)")
+
+    idn = any_meta.get("idn", "")
+    ts = any_meta.get("timestamp", "")
+    title = f"WHAM-XREX-PFMG474 -- all channels -- {idn}\n{ts}"
+    if have_profile:
+        title += f"   |   Ramp={ramp_s:.2f}s FlatTop={flat_s:.2f}s Total={total_s:.2f}s"
+    fig.suptitle(title, fontsize=11)
+    fig.tight_layout(rect=(0, 0, 1, 0.94))
+
+    fig.savefig(out_path, dpi=150)
+    plt.close(fig)
+    return out_path
+
+
 # --------------------------------------------------------------------------
 # The console itself
 # --------------------------------------------------------------------------
@@ -457,6 +535,8 @@ class WhamConsole(cmd.Cmd):
         self.channel_config = {}   # {ch: {"kp":, "ki":, "kd":, "loop_mode":, "demand_a":}}
         self.profile_timing = None  # {"ramp_s":, "flat_s":}
         self.last_log_channel = None
+        self.last_log_all = False   # True if `log all`/the shot wizard last armed
+                                     # PID:LOG 0 (every channel at once)
         self._update_prompt()
 
         if auto_connect:
@@ -787,26 +867,33 @@ class WhamConsole(cmd.Cmd):
             print(explain_err(reply) if is_err(reply) else reply)
 
     def do_log(self, arg):
-        """log <ch> <maxSamples> <decim>  -- wrapper for PID:LOG (arms
-        waveform logging). Remembers `ch` so a later `plot` with no
-        arguments knows which channel's log to fetch."""
+        """log <ch|all> <maxSamples> <decim>  -- wrapper for PID:LOG
+        (arms waveform logging). `all` arms every channel at once, from
+        the SAME real ticks (PID:LOG 0 ...) -- for a genuine
+        simultaneous cross-channel comparison, see `shot`'s own
+        multi-channel plotting. Remembers the target so a later `plot`
+        with no arguments knows what to fetch."""
         if not self._require_link():
             return
         parts = shlex.split(arg)
         if len(parts) != 3:
-            print("usage: log <ch> <maxSamples> <decim>")
+            print("usage: log <ch|all> <maxSamples> <decim>")
             return
-        reply = self._query_print("PID:LOG " + " ".join(parts))
+        ch_arg, max_samples, decim = parts
+        all_channels = ch_arg.strip().lower() == "all"
+        wire_ch = "0" if all_channels else ch_arg
+        reply = self._query_print(f"PID:LOG {wire_ch} {max_samples} {decim}")
         if reply and not is_err(reply):
-            self.last_log_channel = int(parts[0])
+            self.last_log_all = all_channels
+            self.last_log_channel = None if all_channels else int(ch_arg)
 
     # -- plotting ---------------------------------------------------------
 
-    def _fetch_log(self):
-        """Runs PID:LOGDATA?, returns (rows, rate_hz, count) or raises
-        WhamError. rows: list of dicts with t_s/setpoint_hz/measured_hz/
-        output_hz."""
-        reply = self.link.query("PID:LOGDATA?", timeout=LOGDATA_TIMEOUT)
+    def _fetch_log(self, channel):
+        """Runs PID:LOGDATA? <channel>, returns (rows, rate_hz, count)
+        or raises WhamError. rows: list of dicts with t_s/setpoint_hz/
+        measured_hz/output_hz."""
+        reply = self.link.query(f"PID:LOGDATA? {channel}", timeout=LOGDATA_TIMEOUT)
         if is_err(reply):
             raise WhamError(explain_err(reply))
         parts = reply.split()
@@ -877,22 +964,90 @@ class WhamConsole(cmd.Cmd):
         except WhamError as exc:
             print(f"[error] plotting: {exc}")
 
+    def _fetch_save_plot_all(self):
+        """Fetches PID:LOGDATA? for every channel (all-channels mode
+        must be currently/previously armed -- PID_ArmLogAll()), saves
+        one combined wide-format CSV + one metadata JSON + ONE PNG
+        (generate_multi_channel_plot()) showing every channel on a
+        shared time axis. Used by both `shot` (right after a shot with
+        `all` logging) and `plot all`."""
+        n = self.num_channels or 4
+        channel_rows = {}
+        rate_hz = 0
+        count = 0
+        for ch in range(1, n + 1):
+            try:
+                rows, rate_hz, count = self._fetch_log(ch)
+            except WhamError as exc:
+                print(f"[error] channel {ch}: {exc}")
+                continue
+            channel_rows[ch] = rows
+
+        if not channel_rows or count == 0:
+            print("No data (log empty, or all-channels logging was never armed -- "
+                  "`log all <maxSamples> <decim>` first).")
+            return
+
+        metas = {ch: self._shot_meta(ch) for ch in channel_rows}
+        for ch, meta in metas.items():
+            meta["rate_hz"] = rate_hz
+            meta["log_count"] = count
+
+        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+        base = os.path.join(SHOTS_DIR, f"{ts}_allch")
+
+        # One wide CSV: t_s, then setpoint/measured/output per channel --
+        # all channels share the same t_s (same real ticks), so a wide
+        # format is both more compact and easier to open in one sheet
+        # than N separate files.
+        with open(base + ".csv", "w", newline="") as f:
+            w = csv.writer(f)
+            header = ["t_s"]
+            for ch in channel_rows:
+                header += [f"ch{ch}_setpoint_hz", f"ch{ch}_measured_hz", f"ch{ch}_output_hz"]
+            w.writerow(header)
+            for i in range(count):
+                row = [f"{channel_rows[next(iter(channel_rows))][i]['t_s']:.5f}"]
+                for ch in channel_rows:
+                    r = channel_rows[ch][i]
+                    row += [r["setpoint_hz"], r["measured_hz"], r["output_hz"]]
+                w.writerow(row)
+        with open(base + "_meta.json", "w") as f:
+            json.dump(metas, f, indent=2)
+        print(f"Saved {base}.csv, {base}_meta.json ({len(channel_rows)} channels, "
+              f"{count} samples each)")
+
+        if not HAVE_MPL:
+            print("matplotlib not installed -- skipping plot (data still saved above). "
+                  "Run: pip install matplotlib")
+            return
+        try:
+            png = generate_multi_channel_plot(channel_rows, metas, base + ".png")
+            print(f"Saved {png}")
+        except WhamError as exc:
+            print(f"[error] plotting: {exc}")
+
     def do_plot(self, arg):
-        """plot [channel]  -- fetches whatever waveform log is
-        currently in the controller (PID:LOGDATA?) right now and
-        saves a CSV + metadata JSON + PNG plot under shots/. Channel
-        defaults to whichever channel was last armed with `log` (or
-        by the `shot` wizard) this session; pass one explicitly if you
-        armed logging some other way (e.g. raw `PID:LOG 2 500 1`)."""
+        """plot [channel|all]  -- fetches whatever waveform log is
+        currently in the controller (PID:LOGDATA?) right now and saves
+        a CSV + metadata JSON + PNG plot under shots/. With no
+        argument, uses whatever `log`/`shot` last armed this session
+        (a single channel, or all channels). `all` (or a channel
+        number) overrides that -- pass one explicitly if you armed
+        logging some other way (e.g. raw `PID:LOG 0 500 1`)."""
         if not self._require_link():
+            return
+        want_all = arg.strip().lower() == "all" or (not arg.strip() and self.last_log_all)
+        if want_all:
+            self._fetch_save_plot_all()
             return
         channel = int(arg.strip()) if arg.strip() else self.last_log_channel
         if channel is None:
-            print("No channel known -- pass one: plot <channel>  "
-                  "(or arm logging first with `log <ch> ...`)")
+            print("No channel known -- pass one: plot <channel>  (or `plot all`, "
+                  "or arm logging first with `log <ch|all> ...`)")
             return
         try:
-            rows, rate_hz, count = self._fetch_log()
+            rows, rate_hz, count = self._fetch_log(channel)
         except WhamError as exc:
             print(f"[error] {exc}")
             return
@@ -914,10 +1069,14 @@ class WhamConsole(cmd.Cmd):
         """shot  -- guided wizard to program and run a full shot
         profile (Ramp Time / Flat Top Time / per-channel Demand
         Current, loop mode, gains), then watches it run and
-        automatically fetches + plots the result. Re-running `shot`
-        reuses your previous answers as the new defaults (just press
-        Enter to repeat a shot unchanged). Ctrl-C at any prompt cancels
-        without sending anything."""
+        automatically fetches + plots the result. Logging can target
+        one channel or 'all' -- 'all' arms every channel from the SAME
+        real ticks (PID:LOG 0 ...) and produces ONE combined plot with
+        one row per channel, a genuine simultaneous comparison rather
+        than N separate runs. Re-running `shot` reuses your previous
+        answers as the new defaults (just press Enter to repeat a shot
+        unchanged). Ctrl-C at any prompt cancels without sending
+        anything."""
         if not self._require_link():
             return
         n = self.num_channels or 4
@@ -952,9 +1111,18 @@ class WhamConsole(cmd.Cmd):
                     per_channel[ch] = dict(demand_a=0.0, loop_mode="open", kp=None, ki=None, kd=None)
 
             active = [ch for ch, c in per_channel.items() if c["demand_a"] > 0]
-            default_log_ch = self.last_log_channel or (active[0] if active else 1)
-            raw = input(f"Arm waveform log on channel [{default_log_ch}, or 'none']: ").strip()
-            log_channel = None if raw.lower() == "none" else int(raw) if raw else default_log_ch
+            if self.last_log_all:
+                default_log = "all"
+            elif self.last_log_channel:
+                default_log = str(self.last_log_channel)
+            else:
+                default_log = str(active[0]) if active else "1"
+            raw = input(f"Arm waveform log on channel [{default_log}, 'all', "
+                        f"or 'none']: ").strip().lower()
+            if not raw:
+                raw = default_log
+            log_all = raw == "all"
+            log_channel = None if raw == "none" else (None if log_all else int(raw))
 
             total_s = 2 * ramp_s + flat_s
             total_ticks = total_s * PID_LOOP_RATE_HZ_ASSUMED
@@ -969,7 +1137,13 @@ class WhamConsole(cmd.Cmd):
                 if c["demand_a"] > 0:
                     g = f"Kp={c['kp']:g} Ki={c['ki']:g} Kd={c['kd']:g}" if c["kp"] is not None else "gains unchanged"
                     print(f"  Ch{ch}: {c['demand_a']:g}A, {c['loop_mode']}-loop, {g}")
-            print(f"  Log: {'channel ' + str(log_channel) + f', decim={decim}' if log_channel else 'none'}\n")
+            if log_all:
+                log_desc = f"ALL {n} channels, decim={decim}"
+            elif log_channel:
+                log_desc = f"channel {log_channel}, decim={decim}"
+            else:
+                log_desc = "none"
+            print(f"  Log: {log_desc}\n")
 
             if not self._confirm("Program and START this shot now?"):
                 print("Cancelled.")
@@ -988,8 +1162,13 @@ class WhamConsole(cmd.Cmd):
                 self.link.query(f"PID:GAINS {ch} {c['kp']} {c['ki']} {c['kd']}")
             self.channel_config[ch] = dict(demand_a=c["demand_a"], loop_mode=c["loop_mode"],
                                             kp=c["kp"], ki=c["ki"], kd=c["kd"])
-        if log_channel:
+        if log_all:
+            self.link.query(f"PID:LOG 0 1000 {decim}")
+            self.last_log_all = True
+            self.last_log_channel = None
+        elif log_channel:
             self.link.query(f"PID:LOG {log_channel} 1000 {decim}")
+            self.last_log_all = False
             self.last_log_channel = log_channel
         self.link.query(f"PID:PROFILE:TIMING {ramp_s} {flat_s}")
         self.profile_timing = dict(ramp_s=ramp_s, flat_s=flat_s)
@@ -1002,6 +1181,8 @@ class WhamConsole(cmd.Cmd):
 
         if log_channel:
             watch_ch = log_channel
+        elif log_all and active:
+            watch_ch = active[0]
         elif active:
             watch_ch = active[0]
         else:
@@ -1023,10 +1204,13 @@ class WhamConsole(cmd.Cmd):
         except KeyboardInterrupt:
             print("\n(stopped watching -- shot itself keeps running on the device)")
 
-        if log_channel:
+        if log_all:
+            print("Fetching all-channel log and plotting...")
+            self._fetch_save_plot_all()
+        elif log_channel:
             print("Fetching log and plotting...")
             try:
-                rows, rate_hz, count = self._fetch_log()
+                rows, rate_hz, count = self._fetch_log(log_channel)
             except WhamError as exc:
                 print(f"[error] {exc}")
                 return
