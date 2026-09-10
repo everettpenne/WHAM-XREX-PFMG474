@@ -133,6 +133,9 @@ static const command_t command_table[] = {
     { "PID:SETPOINT",        cmd_pid_setpoint  },
     { "PID:GAINS",           cmd_pid_gains     },
     { "PID:STATus?",         cmd_pid_status    },
+    { "PID:LOG",             cmd_pid_log       },
+    { "PID:LOGDATA?",        cmd_pid_logdata   },
+    { "PID:RAMP",            cmd_pid_ramp      },
 };
 
 #define NUM_COMMANDS  (sizeof(command_table) / sizeof(command_table[0]))

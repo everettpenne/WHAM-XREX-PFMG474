@@ -24,3 +24,6 @@
 ../Core/Src/commands.c:637:6:cmd_pid_setpoint	7
 ../Core/Src/commands.c:681:6:cmd_pid_gains	8
 ../Core/Src/commands.c:733:6:cmd_pid_status	5
+../Core/Src/commands.c:767:6:cmd_pid_log	10
+../Core/Src/commands.c:830:6:cmd_pid_logdata	2
+../Core/Src/commands.c:854:6:cmd_pid_ramp	11

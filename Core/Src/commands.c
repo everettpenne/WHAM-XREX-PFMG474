@@ -763,3 +763,151 @@ void cmd_pid_status(uart_instance_t *inst, char *args)
              (unsigned long)outputHz);
     uart_send(inst, buf);
 }
+
+void cmd_pid_log(uart_instance_t *inst, char *args)
+{
+    char *tok;
+    long  chArg;
+    long  nArg;
+    long  decimArg;
+    uint8_t ch;
+
+    tok = (args != NULL) ? strtok(args, " \r\n") : NULL;
+    if (tok == NULL)
+    {
+        SendErr(inst, 12, "PID:LOG needs three arguments: channel maxSamples decim");
+        return;
+    }
+    chArg = atol(tok);
+
+    tok = strtok(NULL, " \r\n");
+    if (tok == NULL)
+    {
+        SendErr(inst, 12, "PID:LOG needs three arguments: channel maxSamples decim");
+        return;
+    }
+    nArg = atol(tok);
+
+    tok = strtok(NULL, " \r\n");
+    if (tok == NULL)
+    {
+        SendErr(inst, 12, "PID:LOG needs three arguments: channel maxSamples decim");
+        return;
+    }
+    decimArg = atol(tok);
+
+    if ((chArg < 1L) || (chArg > (long)HRTIM_NUM_CHANNELS))
+    {
+        SendErr(inst, 11, "Invalid PID channel");
+        return;
+    }
+    ch = (uint8_t)(chArg - 1L);
+
+    if ((nArg < 1L) || (nArg > (long)PID_LOG_MAX_SAMPLES) || (decimArg < 1L))
+    {
+        SendErr(inst, 12, "maxSamples must be 1-PID_LOG_MAX_SAMPLES, decim >= 1");
+        return;
+    }
+
+    (void)PID_ArmLog(ch, (uint16_t)nArg, (uint16_t)decimArg);
+    uart_send(inst, "OK\r\n");
+}
+
+/* STREAMED, not built into one giant buffer -- with 3 values/sample
+   (setpointHz, measuredHz, outputHz, added 2026-09-10 alongside
+   PID_StartRamp()) at up to PID_LOG_MAX_SAMPLES (1000), a single
+   contiguous reply buffer would need ~40 KB (worst case, all 10-digit
+   values) -- real RAM this project doesn't have to spare (this MCU
+   has 128 KiB total, most of it already spoken for by g_pfmTable[]
+   and friends). uart_send() is just a blocking HAL_UART_Transmit() (see
+   uart.c) with no minimum-call-size requirement, so there's no
+   correctness reason to batch into one large string either -- this
+   sends the header, then one small chunk per sample, reusing one
+   small stack buffer regardless of how many samples are logged. Costs
+   more individual transmit calls (~1000 for a full log) instead of
+   one, but at 115200 baud the whole reply takes over a second to
+   clock out either way -- the call overhead is noise against that. */
+void cmd_pid_logdata(uart_instance_t *inst, char *args)
+{
+    uint16_t count = PID_GetLogCount();
+    const uint32_t *setpoint = PID_GetLogSetpoint();
+    const uint32_t *measured = PID_GetLogMeasured();
+    const uint32_t *output   = PID_GetLogOutput();
+    char chunk[48];
+    (void)args;
+
+    snprintf(chunk, sizeof(chunk), "OK %u %lu", (unsigned int)count,
+             (unsigned long)PID_GetLogSampleRateHz());
+    uart_send(inst, chunk);
+
+    for (uint16_t i = 0U; i < count; i++)
+    {
+        snprintf(chunk, sizeof(chunk), " %lu %lu %lu",
+                 (unsigned long)setpoint[i], (unsigned long)measured[i],
+                 (unsigned long)output[i]);
+        uart_send(inst, chunk);
+    }
+
+    uart_send(inst, "\r\n");
+}
+
+void cmd_pid_ramp(uart_instance_t *inst, char *args)
+{
+    char *tok;
+    long  chArg;
+    long  startArg;
+    long  endArg;
+    long  durationArg;
+    uint8_t ch;
+
+    tok = (args != NULL) ? strtok(args, " \r\n") : NULL;
+    if (tok == NULL)
+    {
+        SendErr(inst, 12, "PID:RAMP needs four arguments: channel startHz endHz durationMs");
+        return;
+    }
+    chArg = atol(tok);
+
+    tok = strtok(NULL, " \r\n");
+    if (tok == NULL)
+    {
+        SendErr(inst, 12, "PID:RAMP needs four arguments: channel startHz endHz durationMs");
+        return;
+    }
+    startArg = atol(tok);
+
+    tok = strtok(NULL, " \r\n");
+    if (tok == NULL)
+    {
+        SendErr(inst, 12, "PID:RAMP needs four arguments: channel startHz endHz durationMs");
+        return;
+    }
+    endArg = atol(tok);
+
+    tok = strtok(NULL, " \r\n");
+    if (tok == NULL)
+    {
+        SendErr(inst, 12, "PID:RAMP needs four arguments: channel startHz endHz durationMs");
+        return;
+    }
+    durationArg = atol(tok);
+
+    if ((chArg < 1L) || (chArg > (long)HRTIM_NUM_CHANNELS))
+    {
+        SendErr(inst, 11, "Invalid PID channel");
+        return;
+    }
+    ch = (uint8_t)(chArg - 1L);
+
+    if ((startArg < 0L) || (endArg < 0L) || (durationArg < 1L))
+    {
+        SendErr(inst, 12, "startHz/endHz must be >= 0, durationMs >= 1");
+        return;
+    }
+
+    /* PID_StartRamp() clamps startHz/endHz into [PID_OUTPUT_MIN_HZ,
+       PID_OUTPUT_MAX_HZ] itself -- matches PID:SETPOINT's own
+       clamp-don't-reject convention. */
+    (void)PID_StartRamp(ch, (uint32_t)startArg, (uint32_t)endArg, (uint32_t)durationArg);
+    uart_send(inst, "OK\r\n");
+}

@@ -203,6 +203,24 @@ void cmd_pid_status(uart_instance_t *inst, char *args);   /* PID:STATus? <ch> --
                                                                <running> <setpointHz>
                                                                <measuredHz> <outputHz> */
 
+/* Waveform logging, added 2026-09-10 -- see pid.h's own comment block
+   on PID_ArmLog() for the full design (why polling PID:STATus? isn't
+   enough to actually plot a waveform). */
+void cmd_pid_log(uart_instance_t *inst, char *args);       /* PID:LOG <ch> <maxSamples>
+                                                                <decim> -- OK, arms
+                                                                waveform logging */
+void cmd_pid_logdata(uart_instance_t *inst, char *args);   /* PID:LOGDATA? -- OK <count>
+                                                                <rateHz> s1 m1 o1 s2 m2 o2
+                                                                ..., setpoint/measured/
+                                                                output Hz triples */
+
+/* Linear setpoint ramp, added 2026-09-10 for trajectory-tracking bench
+   tests -- see pid.h's own comment on PID_StartRamp(). */
+void cmd_pid_ramp(uart_instance_t *inst, char *args);       /* PID:RAMP <ch> <startHz>
+                                                                 <endHz> <durationMs> --
+                                                                 OK, begins a linear
+                                                                 setpoint ramp */
+
 #ifdef __cplusplus
 }
 #endif
