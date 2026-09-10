@@ -112,6 +112,23 @@ extern "C" {
  * and reported (so open- vs. closed-loop behavior can be compared
  * directly against the same profile), just not used to adjust the
  * output. Defaults to closed-loop.
+ *
+ * OUTPUT SLEW-RATE CLAMP (2026-09-10): a real, independently-confirmed
+ * finding -- a 250 MHz DSLogic capture of a real shot's actual HRTIM
+ * output pin showed that a single bad feedback sample can make
+ * PID_Update() genuinely WRITE a wildly wrong output for one tick
+ * (not just log one), before the next tick's clean feedback corrects
+ * it. Harmless on a bench loopback; not acceptable once a real
+ * Transrex/magnet is in the loop. Every tick's actual write to HRTIM
+ * -- open-loop or closed-loop, PID math or a plain setpoint step --
+ * now passes through a hard clamp (ClampOutputSlew(), pid.c) bounding
+ * how much it may differ from the previous tick's actual output, per
+ * ctrlr_config.h's PID_OUTPUT_MAX_SLEW_HZ_PER_TICK. See that macro's
+ * own extensive comment for the full rationale, the accepted trade-off
+ * (it also bounds legitimate fast PID correction -- deliberate, a hard
+ * clamp can't first classify which large jump is "real"), and why its
+ * current value is a placeholder pending real hardware
+ * characterization, same status as PFM_TURNON_FREQ_HZ/PFM_MAX_FREQ_HZ.
  */
 
 /* Called once at boot (main.c) -- zeroes every channel's PID state and

@@ -172,6 +172,46 @@ static uint32_t AmpsToHz(float currentA)
     return (uint32_t)hzF;
 }
 
+/* Hard per-tick output slew-rate clamp -- see ctrlr_config.h's own
+   extensive comment on PID_OUTPUT_MAX_SLEW_HZ_PER_TICK for the full
+   rationale (a REAL, DSLogic-confirmed single-tick output glitch,
+   2026-09-10). Bounds `desiredHz` to within
+   +/-PID_OUTPUT_MAX_SLEW_HZ_PER_TICK of `prevHz` (the previous tick's
+   ACTUAL output, i.e. st->lastOutputHz), then re-clamps to
+   [PID_OUTPUT_MIN_HZ, PID_OUTPUT_MAX_HZ] as defense-in-depth (prevHz
+   is itself always already in that range by construction, so this
+   second clamp should never actually bind -- included anyway since
+   it's nearly free and this is a hardware-safety function). Called
+   from EVERY code path that writes a channel's output, open-loop and
+   closed-loop alike -- a hard clamp protecting real downstream
+   hardware has to apply regardless of which code path computed the
+   number. */
+static float ClampOutputSlew(float desiredHz, float prevHz)
+{
+    float maxDelta = (float)PID_OUTPUT_MAX_SLEW_HZ_PER_TICK;
+    float clampedHz = desiredHz;
+
+    if (clampedHz > (prevHz + maxDelta))
+    {
+        clampedHz = prevHz + maxDelta;
+    }
+    else if (clampedHz < (prevHz - maxDelta))
+    {
+        clampedHz = prevHz - maxDelta;
+    }
+
+    if (clampedHz < (float)PID_OUTPUT_MIN_HZ)
+    {
+        clampedHz = (float)PID_OUTPUT_MIN_HZ;
+    }
+    else if (clampedHz > (float)PID_OUTPUT_MAX_HZ)
+    {
+        clampedHz = (float)PID_OUTPUT_MAX_HZ;
+    }
+
+    return clampedHz;
+}
+
 void PID_Init(void)
 {
     for (uint8_t ch = 0U; ch < HRTIM_NUM_CHANNELS; ch++)
@@ -211,7 +251,16 @@ uint8_t PID_Start(void)
         g_ch[ch].integral         = 0.0f;
         g_ch[ch].haveLastMeasured = 0U;
         g_ch[ch].lastMeasuredHz   = 0U;
-        g_ch[ch].lastOutputHz     = 0U;
+
+        /* lastOutputHz starts at PID_OUTPUT_MIN_HZ, not 0 -- added
+           2026-09-10 alongside the slew-rate clamp (ClampOutputSlew()
+           below): 0 was never a real, physically-achievable output
+           value (the hardware floor is PID_OUTPUT_MIN_HZ), so
+           starting from it would make the very first tick's slew
+           clamp count a fake, oversized "jump" that never actually
+           happened, needlessly slowing this channel's first real
+           response after PID_Start(). */
+        g_ch[ch].lastOutputHz     = (uint32_t)PID_OUTPUT_MIN_HZ;
 
         /* Best-effort -- see this function's own doc comment in pid.h
            on why a channel with nothing physically connected is not
@@ -365,8 +414,18 @@ void PID_Update(void)
                unbounded across ticks) and still recorded into
                lastMeasuredHz whenever fresh, purely for reporting/
                comparison -- it just never influences this channel's
-               output. */
-            uint32_t outputHz = st->setpointHz;
+               output.
+
+               Still passes through the hard slew clamp (ctrlr_config.h's
+               PID_OUTPUT_MAX_SLEW_HZ_PER_TICK) -- added 2026-09-10 --
+               same as the closed-loop path below: a hard clamp
+               protecting real downstream hardware has to apply
+               regardless of loop mode, not just where a PID-math bug
+               happened to be found. Open-loop's own setpoint source
+               (the profile generator, or a plain PID_SetSetpoint())
+               is smooth by construction and won't normally be
+               affected by this in practice. */
+            uint32_t outputHz = (uint32_t)ClampOutputSlew((float)st->setpointHz, (float)st->lastOutputHz);
             st->lastOutputHz  = outputHz;
 
             if (haveFeedback != 0U)
@@ -432,15 +491,24 @@ void PID_Update(void)
 
             float outputHzF = (st->kp * error) + (st->ki * integralNext) + (st->kd * derivativeTerm);
 
-            float clampedHzF = outputHzF;
-            if (clampedHzF < (float)PID_OUTPUT_MIN_HZ)
+            /* Two independent clamp stages, both bounding what
+               actually reaches HRTIM: first the hardware-register
+               range [PID_OUTPUT_MIN_HZ, PID_OUTPUT_MAX_HZ] (unchanged
+               since 2026-09-09), then -- added 2026-09-10 -- the hard
+               per-tick slew clamp (ClampOutputSlew(), ctrlr_config.h's
+               PID_OUTPUT_MAX_SLEW_HZ_PER_TICK). clampedHzF ends up
+               holding the FINAL value actually written this tick,
+               whichever stage (if any) ended up binding. */
+            float rangeClampedHzF = outputHzF;
+            if (rangeClampedHzF < (float)PID_OUTPUT_MIN_HZ)
             {
-                clampedHzF = (float)PID_OUTPUT_MIN_HZ;
+                rangeClampedHzF = (float)PID_OUTPUT_MIN_HZ;
             }
-            else if (clampedHzF > (float)PID_OUTPUT_MAX_HZ)
+            else if (rangeClampedHzF > (float)PID_OUTPUT_MAX_HZ)
             {
-                clampedHzF = (float)PID_OUTPUT_MAX_HZ;
+                rangeClampedHzF = (float)PID_OUTPUT_MAX_HZ;
             }
+            float clampedHzF = ClampOutputSlew(rangeClampedHzF, (float)st->lastOutputHz);
 
             /* Commit the integrator step UNLESS output is clamped AND
                integrating would push it further INTO that same rail --
@@ -465,7 +533,18 @@ void PID_Update(void)
                The fix only blocks integration when it would make the
                saturation WORSE (high-clamped and still-positive error, or
                low-clamped and still-negative error) -- otherwise integrating
-               is exactly what should happen to escape the rail. */
+               is exactly what should happen to escape the rail.
+
+               EXTENDED 2026-09-10 to cover the slew clamp too, for
+               free: this check already compares the FINAL clamped
+               value (clampedHzF, now potentially slew-limited as well
+               as range-limited) against the raw PID output
+               (outputHzF) -- the exact same directional logic
+               correctly protects against slew-clamp windup with no
+               separate case needed, since "clamped" here has always
+               meant "whatever actually got written differs from what
+               the raw math wanted," regardless of which stage caused
+               that difference. */
             {
                 uint8_t blockIntegration =
                     ((clampedHzF > outputHzF) && (error < 0.0f)) ||   /* clamped UP, error wants down */

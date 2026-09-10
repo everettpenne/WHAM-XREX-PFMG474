@@ -175,6 +175,62 @@
 #define PFM_MAX_CURRENT_A     (5000.0f)   /* 5 kA nominal, placeholder */
 
 /* --------------------------------------------------------------------------
+ * PID_OUTPUT_MAX_SLEW_HZ_PER_TICK -- hard per-tick output slew-rate
+ * clamp (compile-time, PLACEHOLDER pending real hardware
+ * characterization)
+ *
+ * Added 2026-09-10, in direct response to a REAL finding: an
+ * independent 250 MHz DSLogic capture of channel 1's actual HRTIM
+ * output pin during a real shot CONFIRMED (not just self-reported by
+ * the firmware's own log) that a single bad feedback sample can make
+ * PID_Update() compute and WRITE a wildly wrong output for exactly
+ * one tick -- e.g. commanding ~89 kHz when the setpoint was 62 kHz --
+ * before the next tick's clean feedback corrects it. Harmless on a
+ * bench loopback; NOT acceptable to leave unguarded once a real
+ * Transrex supply/magnet is in the loop, where a real winding/supply
+ * has no reason to expect (or survive) an instantaneous multi-tens-
+ * of-kHz command excursion.
+ *
+ * This is a HARD clamp: PID_Update() bounds every tick's actual write
+ * to HRTIM1_SetChannelPeriod() to at most this many Hz of change from
+ * the PREVIOUS tick's actual output, in either direction -- applied
+ * to every channel, every tick, regardless of open- or closed-loop
+ * mode or which code path computed the desired value (PID math, a
+ * plain PID_SetSetpoint() step, PID_StartRamp(), or the shot-profile
+ * generator). It sits AFTER [PID_OUTPUT_MIN_HZ, PID_OUTPUT_MAX_HZ]
+ * range-clamping, as a second, independent stage -- see pid.c's
+ * ClampOutputSlew(). The existing directional anti-windup logic
+ * (pid.c, PID_Update()) treats slew-clamping exactly like range-
+ * clamping: integration is blocked only when it would push further
+ * into whichever limit actually bound the output that tick.
+ *
+ * TRADE-OFF, understood and accepted, not accidental: this also
+ * bounds LEGITIMATE fast PID correction (e.g. a large first-tick
+ * proportional response to a big initial error) -- the clamp cannot
+ * distinguish "the PID is correctly reacting hard to a real error"
+ * from "the PID is reacting to one bad sample." That's the whole
+ * point of a HARD clamp per direct instruction: it protects real
+ * downstream hardware from the failure mode directly, rather than
+ * trying to first correctly classify every possible bad sample (the
+ * other option discussed -- outlier-rejecting PfmInput_
+ * ConsumeAveragePeriod()'s result before it ever reaches PID math --
+ * remains a reasonable complementary addition later, not a
+ * replacement for this).
+ *
+ * VALUE IS A PLACEHOLDER: chosen to sit comfortably above this
+ * project's own real shot-tracking needs observed on the bench
+ * loopback (normal PID correction during an actual 1s-ramp shot ran
+ * on the order of a few hundred to low thousands of Hz/tick -- see
+ * docs/changelog.txt's 2026-09-10 entries) while meaningfully
+ * suppressing the observed ~20000-90000 Hz single-tick glitch
+ * magnitude -- NOT derived from any real Transrex/magnet slew
+ * tolerance, which is unknown from here. Revisit once real hardware
+ * characterization exists, same status as PFM_TURNON_FREQ_HZ/
+ * PFM_MAX_FREQ_HZ above. In Hz per PID_Update() tick (one Master
+ * heartbeat, PID_DT_SEC = 1/PID_LOOP_RATE_HZ) -- NOT Hz/second. */
+#define PID_OUTPUT_MAX_SLEW_HZ_PER_TICK  (2000UL)
+
+/* --------------------------------------------------------------------------
  * GateDriverStatus fault polarity (compile-time)
  *
  * GDS_NORMALLY_HIGH -- pins read HIGH in good operation;

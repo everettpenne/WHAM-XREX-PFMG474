@@ -1,6 +1,73 @@
 WHAM-XREX-PFMG474 Firmware Changelog
 =====================================
 
+2026-09-10  —  Hard per-tick output slew-rate clamp, configurable in
+               ctrlr_config.h; CONFIRMED on real hardware it stops the
+               DSLogic-verified output glitch from reaching HRTIM
+-----------------------------------------------------------------------
+  Change:  Direct response to the previous entry's DSLogic-confirmed
+        finding (a single bad feedback sample could make PID_Update()
+        genuinely WRITE a wildly wrong value to HRTIM for one tick,
+        not just log one). Added PID_OUTPUT_MAX_SLEW_HZ_PER_TICK
+        (ctrlr_config.h, default 2000 Hz/tick, PLACEHOLDER pending
+        real Transrex/magnet slew-tolerance characterization -- same
+        status as PFM_TURNON_FREQ_HZ/PFM_MAX_FREQ_HZ) and a new
+        ClampOutputSlew() (pid.c): bounds how much ANY channel's
+        actual output-to-HRTIM write may differ from the PREVIOUS
+        tick's actual output, in either direction. Applied
+        UNCONDITIONALLY -- open-loop and closed-loop alike, whether
+        the desired value came from PID math, a plain PID_SetSetpoint()
+        step, PID_StartRamp(), or the shot-profile generator -- since a
+        hard clamp meant to protect real downstream hardware has to
+        apply regardless of which code path computed the number. Sits
+        as a second, independent stage after the existing
+        [PID_OUTPUT_MIN_HZ, PID_OUTPUT_MAX_HZ] range clamp. The
+        existing directional anti-windup check (2026-09-09) needed no
+        new logic to cover it -- it already compares the FINAL written
+        value against the raw PID output and blocks integration only
+        when that difference would worsen the same-direction
+        saturation, which is exactly correct whether range-clamping or
+        slew-clamping (or both) caused the difference.
+
+        Also fixed a small related correctness issue while in this
+        code: PID_Start() used to reset lastOutputHz to 0 -- an
+        artificial value 0 was never actually a real, physically-
+        achievable output (the hardware floor is PID_OUTPUT_MIN_HZ,
+        3000 Hz), so the very first tick after every PID_Start() would
+        have had the slew clamp count a fake, oversized "jump" from a
+        starting point that never really existed, needlessly slowing
+        the first real response. Now initializes to PID_OUTPUT_MIN_HZ.
+
+        NOTE, understood trade-off, not accidental: a hard clamp
+        cannot distinguish "PID reacting correctly to a large real
+        error" from "PID reacting to one bad sample" -- both produce a
+        big desired jump, and this clamp bounds both equally. That's
+        the whole point of a HARD clamp (per direct instruction): it
+        protects real hardware from the failure mode directly, rather
+        than first trying to correctly classify every possible bad
+        sample. Outlier-rejecting PfmInput_ConsumeAveragePeriod()'s
+        result before it reaches PID math (the other option raised in
+        the previous entry) remains a reasonable COMPLEMENTARY future
+        addition, not a replacement -- not implemented this round.
+
+        CONFIRMED on real hardware: re-ran the identical 1.0s/1.0s/1.0s,
+        3000A, channel-1 shot from the previous two entries. The
+        logged Output trace is now completely clean -- largest
+        consecutive-logged-sample delta across the whole shot was 2613
+        Hz (log decimation is 3 ticks/sample, so up to 3x
+        PID_OUTPUT_MAX_SLEW_HZ_PER_TICK=2000 is physically possible
+        between logged samples; 2613 is comfortably under that, and
+        nowhere close to the previous ~20000-90000 Hz spike
+        magnitudes). The underlying feedback-measurement anomaly this
+        clamp works around is UNCHANGED and still visible in the same
+        shot's logged Measured column (raw, unfiltered feedback, by
+        design, so the anomaly stays diagnosable) -- exactly the
+        intended split: the clamp protects what reaches real hardware,
+        it doesn't hide or fix the root cause in the measurement path.
+        Plots (scratchpad only, sent to the user) show this precisely:
+        Output is glitch-free, Measured still shows the same spikes as
+        before.
+
 2026-09-10  —  Independent DSLogic capture CONFIRMS the shot profile
                against ground truth, AND upgrades the single-tick
                "feedback dropout" finding to a confirmed REAL output
