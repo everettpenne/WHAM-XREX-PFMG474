@@ -363,9 +363,9 @@ void PID_Update(void)
                correction at all. Feedback is still consumed above (so
                the averaging accumulator doesn't silently build up
                unbounded across ticks) and still recorded into
-               lastMeasuredHz/the waveform log whenever fresh, purely
-               for reporting/comparison -- it just never influences
-               this channel's output. */
+               lastMeasuredHz whenever fresh, purely for reporting/
+               comparison -- it just never influences this channel's
+               output. */
             uint32_t outputHz = st->setpointHz;
             st->lastOutputHz  = outputHz;
 
@@ -377,120 +377,143 @@ void PID_Update(void)
 
             uint16_t per = (uint16_t)((HRTIM_TIMER_CLK_HZ / outputHz) - 1U);
             HRTIM1_SetChannelPeriod(ch, per);
-
-            if ((ch == g_logChannel) && (g_logCount < g_logCap))
-            {
-                g_logDecimCounter++;
-                if (g_logDecimCounter >= g_logDecim)
-                {
-                    g_logDecimCounter = 0U;
-                    g_logSetpoint[g_logCount] = st->setpointHz;
-                    g_logMeasured[g_logCount] = st->lastMeasuredHz;
-                    g_logOutput[g_logCount]   = outputHz;
-                    g_logCount++;
-                }
-            }
-
-            continue;
         }
-
-        if (haveFeedback == 0U)
+        else if (haveFeedback == 0U)
         {
             /* Closed-loop, no fresh feedback yet this window -- hold
                whatever HRTIM last had rather than dividing by zero or
                treating "no data" as "zero Hz," which would slam this
                channel's integrator toward the setpoint's full error
                every tick. Per direct instruction (the zero-edges
-               failure mode): just skip this channel's update for the
-               tick, same as before this feature -- there can be real
-               millisecond-scale delay in the supply's own response. */
-            continue;
+               failure mode): just skip this channel's PID math/output
+               write for the tick -- there can be real millisecond-
+               scale delay in the supply's own response.
+
+               REAL, EXPECTED cause on THIS hardware, confirmed
+               2026-09-10: PfmInput's continuous capture only drains
+               edges out of its raw DMA buffer into the averaging
+               accumulator on a half/full-transfer interrupt
+               (PFM_DMA_BUF_LEN=32, so every 16 edges -- see
+               pfm_input.c). Near PFM_TURNON_FREQ_HZ (~5kHz, ~200us
+               period), 16 edges take ~3.2ms to arrive -- slower than
+               this 1ms heartbeat -- so several consecutive ticks
+               legitimately see zero fresh samples there before the
+               next chunk lands all at once. Nothing to "fix" in the
+               control loop for this -- it's a real measurement-
+               granularity floor at low frequency, not a bug; see
+               PID_ArmLog()'s own comment for how the waveform log
+               represents it (a genuine held/staircase segment, not a
+               skipped one). */
         }
-
-        float error = (float)st->setpointHz - (float)measuredHz;
-
-        /* Provisional integral step -- only actually committed below
-           if this update's output isn't saturated (simple clamp
-           anti-windup: cheap, robust, easy to reason about -- good
-           enough for a first working version; revisit with
-           back-calculation anti-windup only if real bench tuning shows
-           a real need). */
-        float integralNext = st->integral + (error * PID_DT_SEC);
-
-        /* Derivative ON MEASUREMENT, not on error -- avoids "derivative
-           kick" (a huge transient D term) the instant a setpoint
-           changes, standard practice for exactly that reason. Zero on
-           this channel's very first update (no prior measurement to
-           take a derivative of yet). */
-        float derivativeTerm = 0.0f;
-        if (st->haveLastMeasured != 0U)
+        else
         {
-            derivativeTerm = -((float)measuredHz - (float)st->lastMeasuredHz) / PID_DT_SEC;
-        }
-        st->lastMeasuredHz   = measuredHz;
-        st->haveLastMeasured = 1U;
+            float error = (float)st->setpointHz - (float)measuredHz;
 
-        float outputHzF = (st->kp * error) + (st->ki * integralNext) + (st->kd * derivativeTerm);
+            /* Provisional integral step -- only actually committed below
+               if this update's output isn't saturated (simple clamp
+               anti-windup: cheap, robust, easy to reason about -- good
+               enough for a first working version; revisit with
+               back-calculation anti-windup only if real bench tuning shows
+               a real need). */
+            float integralNext = st->integral + (error * PID_DT_SEC);
 
-        float clampedHzF = outputHzF;
-        if (clampedHzF < (float)PID_OUTPUT_MIN_HZ)
-        {
-            clampedHzF = (float)PID_OUTPUT_MIN_HZ;
-        }
-        else if (clampedHzF > (float)PID_OUTPUT_MAX_HZ)
-        {
-            clampedHzF = (float)PID_OUTPUT_MAX_HZ;
-        }
-
-        /* Commit the integrator step UNLESS output is clamped AND
-           integrating would push it further INTO that same rail --
-           the real, directional form of simple-clamp anti-windup.
-           REAL BUG, caught on the bench, 2026-09-09: an earlier version
-           of this check was `if (clampedHzF == outputHzF)` -- freeze
-           the integrator any time output is clamped AT ALL, regardless
-           of direction. That deadlocks exactly the common case of
-           starting near PID_OUTPUT_MIN_HZ with a setpoint well above
-           it: output computes small (Kp*error alone, before the
-           integral has had any chance to build, is nowhere near enough
-           to clear MIN_HZ on its own), gets clamped UP to MIN_HZ, and
-           the old check then REFUSED to integrate because output was
-           "clamped" -- even though integrating was exactly what would
-           have pushed it up and out of the clamp. Confirmed on real
-           hardware: output and measured both sat frozen at exactly
-           PID_OUTPUT_MIN_HZ indefinitely with a real loopback wired
-           (this board's own PFM_Input_01<->HRTIM channel-0 bench
-           loopback, still connected from earlier testing) and a
-           setpoint/gains combination that should have climbed steadily
-           -- error stayed large and positive, integral never moved.
-           The fix only blocks integration when it would make the
-           saturation WORSE (high-clamped and still-positive error, or
-           low-clamped and still-negative error) -- otherwise integrating
-           is exactly what should happen to escape the rail. */
-        {
-            uint8_t blockIntegration =
-                ((clampedHzF > outputHzF) && (error < 0.0f)) ||   /* clamped UP, error wants down */
-                ((clampedHzF < outputHzF) && (error > 0.0f));     /* clamped DOWN, error wants up */
-
-            if (blockIntegration == 0U)
+            /* Derivative ON MEASUREMENT, not on error -- avoids "derivative
+               kick" (a huge transient D term) the instant a setpoint
+               changes, standard practice for exactly that reason. Zero on
+               this channel's very first update (no prior measurement to
+               take a derivative of yet). */
+            float derivativeTerm = 0.0f;
+            if (st->haveLastMeasured != 0U)
             {
-                st->integral = integralNext;
+                derivativeTerm = -((float)measuredHz - (float)st->lastMeasuredHz) / PID_DT_SEC;
             }
+            st->lastMeasuredHz   = measuredHz;
+            st->haveLastMeasured = 1U;
+
+            float outputHzF = (st->kp * error) + (st->ki * integralNext) + (st->kd * derivativeTerm);
+
+            float clampedHzF = outputHzF;
+            if (clampedHzF < (float)PID_OUTPUT_MIN_HZ)
+            {
+                clampedHzF = (float)PID_OUTPUT_MIN_HZ;
+            }
+            else if (clampedHzF > (float)PID_OUTPUT_MAX_HZ)
+            {
+                clampedHzF = (float)PID_OUTPUT_MAX_HZ;
+            }
+
+            /* Commit the integrator step UNLESS output is clamped AND
+               integrating would push it further INTO that same rail --
+               the real, directional form of simple-clamp anti-windup.
+               REAL BUG, caught on the bench, 2026-09-09: an earlier version
+               of this check was `if (clampedHzF == outputHzF)` -- freeze
+               the integrator any time output is clamped AT ALL, regardless
+               of direction. That deadlocks exactly the common case of
+               starting near PID_OUTPUT_MIN_HZ with a setpoint well above
+               it: output computes small (Kp*error alone, before the
+               integral has had any chance to build, is nowhere near enough
+               to clear MIN_HZ on its own), gets clamped UP to MIN_HZ, and
+               the old check then REFUSED to integrate because output was
+               "clamped" -- even though integrating was exactly what would
+               have pushed it up and out of the clamp. Confirmed on real
+               hardware: output and measured both sat frozen at exactly
+               PID_OUTPUT_MIN_HZ indefinitely with a real loopback wired
+               (this board's own PFM_Input_01<->HRTIM channel-0 bench
+               loopback, still connected from earlier testing) and a
+               setpoint/gains combination that should have climbed steadily
+               -- error stayed large and positive, integral never moved.
+               The fix only blocks integration when it would make the
+               saturation WORSE (high-clamped and still-positive error, or
+               low-clamped and still-negative error) -- otherwise integrating
+               is exactly what should happen to escape the rail. */
+            {
+                uint8_t blockIntegration =
+                    ((clampedHzF > outputHzF) && (error < 0.0f)) ||   /* clamped UP, error wants down */
+                    ((clampedHzF < outputHzF) && (error > 0.0f));     /* clamped DOWN, error wants up */
+
+                if (blockIntegration == 0U)
+                {
+                    st->integral = integralNext;
+                }
+            }
+
+            uint32_t outputHz = (uint32_t)clampedHzF;
+            st->lastOutputHz  = outputHz;
+
+            uint16_t per = (uint16_t)((HRTIM_TIMER_CLK_HZ / outputHz) - 1U);
+            HRTIM1_SetChannelPeriod(ch, per);
         }
 
-        uint32_t outputHz = (uint32_t)clampedHzF;
-        st->lastOutputHz  = outputHz;
+        /* Waveform log -- see pid.h's own comment on PID_ArmLog().
+           REAL BUG, caught reviewing a shot-profile log against the
+           real elapsed shot duration, 2026-09-10: this used to sit
+           INSIDE the "have fresh feedback" branches above and never
+           run at all on a held/skipped tick (see the branch above) --
+           meaning g_logDecimCounter only ever advanced on ticks WITH
+           fresh feedback, so PID_GetLogSampleRateHz()'s reported
+           `PID_LOOP_RATE_HZ / decim` was only actually correct when
+           every tick had fresh feedback. Near PFM_TURNON_FREQ_HZ (see
+           the "no fresh feedback" branch's own comment above) that
+           assumption silently breaks -- several ticks in a row produce
+           no log entry at all, and the *next* logged sample's assumed
+           timestamp (index * decim / rate) ends up compressed relative
+           to when it was actually taken, distorting a plotted time
+           axis without any error being raised. Confirmed on real
+           hardware: a 3.0s shot's log stopped 611 samples short of the
+           armed 1000 (PID:LOG 1 1000 3), i.e. covering only ~1.83s of
+           the log's own claimed timebase for what was actually a full
+           3.0s run.
 
-        uint16_t per = (uint16_t)((HRTIM_TIMER_CLK_HZ / outputHz) - 1U);
-        HRTIM1_SetChannelPeriod(ch, per);
-
-        /* Waveform log -- see pid.h's own comment on PID_ArmLog(). Only
-           the armed channel, only once every `decim`-th qualifying
-           tick (a tick with no fresh feedback already `continue`d
-           above, before reaching here, so it never counts toward
-           decimation or gets logged -- see that early-return's own
-           comment). Logs the SAME measuredHz/outputHz this tick just
-           computed and wrote, so "demanded" and "measured" are always
-           exactly co-timed, one pair per logged sample. */
+           Fixed by moving this block OUTSIDE the feedback-freshness
+           branching entirely -- it now runs once per REAL Master tick
+           for the armed channel, unconditionally, logging whatever
+           st->setpointHz/lastMeasuredHz/lastOutputHz currently hold
+           (freshly computed this tick, or still held over from the
+           last tick that had feedback -- see the branches above). This
+           makes a held/stale-feedback stretch show up as a genuine
+           flat/staircase segment in the log, which is the accurate,
+           honest picture of what the control loop is actually doing,
+           rather than silently vanishing from the time axis. */
         if ((ch == g_logChannel) && (g_logCount < g_logCap))
         {
             g_logDecimCounter++;
@@ -498,8 +521,8 @@ void PID_Update(void)
             {
                 g_logDecimCounter = 0U;
                 g_logSetpoint[g_logCount] = st->setpointHz;
-                g_logMeasured[g_logCount] = measuredHz;
-                g_logOutput[g_logCount]   = outputHz;
+                g_logMeasured[g_logCount] = st->lastMeasuredHz;
+                g_logOutput[g_logCount]   = st->lastOutputHz;
                 g_logCount++;
             }
         }

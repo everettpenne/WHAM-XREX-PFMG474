@@ -1,6 +1,100 @@
 WHAM-XREX-PFMG474 Firmware Changelog
 =====================================
 
+2026-09-10  —  Shot-profile CONFIRMED end-to-end on real hardware; a
+               real waveform-log timebase bug found and fixed; gains
+               re-tuned for the shot's own timescale; a real single-
+               tick feedback-dropout characteristic documented
+-----------------------------------------------------------------------
+  Change:  Demonstrated the shot-profile feature (previous entry,
+        below) end-to-end on real hardware: programmed a real 1.0s
+        ramp-up / 1.0s flat-top / 1.0s ramp-down shot at 3000A demand
+        current on channel 1 (the channel with a real fiber feedback
+        loopback wired), ran it closed-loop, logged setpoint/output/
+        measured at 333 Hz for the whole 3.0s shot, and plotted the
+        result (scratchpad only, not part of the repo -- static PNGs
+        sent directly to the user). Two real, hardware-confirmed
+        issues surfaced doing this and were fixed/documented before
+        calling the demonstration valid:
+
+        1. REAL BUG, waveform-log timebase: PID_ArmLog()'s logging
+           block sat INSIDE the "closed-loop, have fresh feedback"
+           and "open-loop" branches of PID_Update()'s per-channel
+           loop -- a tick with no fresh feedback (see below) never
+           reached it, so it didn't count toward `decim` or get
+           logged. PID_GetLogSampleRateHz() reports a fixed
+           PID_LOOP_RATE_HZ/decim rate that a host-side plotter uses
+           to reconstruct each sample's timestamp from its index --
+           an assumption that silently breaks whenever any ticks are
+           skipped this way, compressing the reported time axis.
+           Confirmed on real hardware before the fix: a 3.0s shot's
+           log (PID:LOG 1 1000 3, nominally 1000 samples over the
+           whole 3.0s) stopped 611 samples short, covering only
+           ~1.83s of its own claimed timebase. Fixed (Core/Src/pid.c)
+           by moving the logging block OUTSIDE all the feedback-
+           freshness branching -- it now runs once per REAL Master
+           tick for the armed channel unconditionally, logging
+           whatever setpoint/measured/output currently hold (freshly
+           computed, or held over from the last tick that had
+           feedback). A stale-feedback stretch now shows up as a
+           genuine flat/staircase segment in the log -- the honest
+           picture of what the loop is actually doing -- instead of
+           silently vanishing from the time axis. Verified: the same
+           3.0s shot logged the full 1000/1000 samples, covering
+           exactly 3.003s.
+
+        2. Gains re-tuned for THIS shot's timescale: the 2026-09-09
+           gains (Kp=0.02, Ki=0.5) were tuned for a 10ms micro-ramp
+           and took 1.8+ SECONDS to converge on a full-scale step --
+           far too slow for a 1s shot-profile ramp segment (confirmed
+           by re-running the original shot with these old gains
+           first: measured never got within half of setpoint before
+           the shot ended). A bench step-response sweep (scratchpad
+           gain_tune.py/gain_tune2.py, both directions -- up AND down,
+           since the real shot ramps both ways) found Kp=1.5/Ki=15
+           starts oscillating and Kp=2.5/Ki=25 is fully unstable
+           (rail-to-rail between PID_OUTPUT_MIN_HZ/MAX_HZ) -- settled
+           on Kp=1.0/Ki=10/Kd=0, a comfortable stability margin with
+           full-scale step convergence to >99% within ~1s and no
+           overshoot in either direction. With these gains the actual
+           shot tracked its own setpoint closely throughout (within
+           the DMA-chunk feedback lag described below) and converged
+           essentially exactly during the 1s flat-top hold. NOTE:
+           these gains are specific to this bench loopback (a near-
+           unity-gain "plant" -- HRTIM output looped straight back via
+           fiber to PFM_Input, no real physical inertia) and will need
+           re-tuning again against a real Transrex supply, whose own
+           physical response time constant is unknown and was
+           explicitly flagged as a real possibility during the
+           original shot-profile design discussion ("There could be a
+           lot of time delay in the response of our supply to the
+           demand (on the order of milliseconds)").
+
+        A real, DOCUMENTED-NOT-FIXED characteristic of the existing
+        (pre-dating this session) capture pipeline, observed clearly
+        for the first time under this demonstration's continuous
+        multi-second frequency sweep (earlier tests were either a
+        static hold or one 10ms ramp, neither exercised this): roughly
+        once every ~500ms, a single PID_Update() tick's
+        PfmInput_ConsumeAveragePeriod() read back a period read almost
+        exactly DOUBLE the true value (i.e. ~half the true frequency)
+        -- the classic signature of one missed capture edge -- causing
+        the PID to react to a fake large error for exactly that one
+        tick (a momentary output spike, e.g. ~89kHz against a 62kHz
+        setpoint) before the next tick's clean data corrected it within
+        2-3 ticks (~6-9ms). Confirmed via the raw log (shot_demo_parsed
+        .csv, scratchpad only): every occurrence is a single isolated
+        sample, immediately preceded and followed by clean, consistent
+        readings -- not a sustained divergence, and it did not disturb
+        the shot's overall shape, convergence, or auto-stop timing.
+        Root cause not yet investigated (candidates: fiber/optical
+        noise, or a genuine edge case in PFM_DMA_BUF_LEN=32's half-
+        buffer chunk boundary) -- flagged as a real follow-up (e.g.
+        outlier rejection in the averaging, or instrumenting the DMA
+        capture path directly) but explicitly NOT blocking, since the
+        shot-profile feature itself is now proven correct independent
+        of this pre-existing capture-pipeline characteristic.
+
 2026-09-10  —  Windowed-average feedback + real production shot
                profile (Ramp/Flat-Top/Demand Current) + Amps<->Hz +
                open/closed-loop mode, CONFIRMED on real hardware

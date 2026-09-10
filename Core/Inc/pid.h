@@ -291,14 +291,28 @@ uint8_t PID_IsProfileActive(void);
 #define PID_LOG_MAX_SAMPLES  (1000U)
 
 /* Arms logging for `channel` (0..HRTIM_NUM_CHANNELS-1): clears any
- * previous log, starts fresh. Every `decim`-th PID_Update() tick FOR
- * THIS CHANNEL that actually has fresh feedback (periodTicks != 0 --
- * see PID_Update()'s own comment; a tick with no fresh measurement
- * yet doesn't count toward decimation OR get logged) appends one
- * {measuredHz, outputHz} sample, until `maxSamples` (clamped to
- * PID_LOG_MAX_SAMPLES) is reached, after which logging simply stops
- * appending -- the control loop itself is entirely unaffected either
- * way. `decim` clamped to at least 1 (log every qualifying tick).
+ * previous log, starts fresh. Every `decim`-th REAL PID_Update() tick
+ * FOR THIS CHANNEL -- one entry per elapsed Master heartbeat, always,
+ * regardless of whether that tick had fresh feedback -- appends one
+ * {setpointHz, measuredHz, outputHz} sample, until `maxSamples`
+ * (clamped to PID_LOG_MAX_SAMPLES) is reached, after which logging
+ * simply stops appending -- the control loop itself is entirely
+ * unaffected either way. `decim` clamped to at least 1 (log every
+ * tick).
+ *
+ * FIXED 2026-09-10 (was previously wrong): a tick with no fresh
+ * feedback yet (see PID_Update()'s own comment on the zero-samples
+ * case, and pfm_input.c's PFM_DMA_BUF_LEN comment for why this is
+ * common near PFM_TURNON_FREQ_HZ) used to be skipped entirely --
+ * didn't count toward decimation, didn't get logged -- which silently
+ * compressed the reported time axis (PID_GetLogSampleRateHz() assumes
+ * a fixed decim*DT spacing between samples) whenever any ticks lacked
+ * fresh feedback. Now every real tick logs -- a held-over
+ * setpoint/measured/output value on a no-fresh-feedback tick shows up
+ * as a genuine flat/staircase segment, an honest picture of "the
+ * control loop had nothing new to act on this tick," not a gap that
+ * silently vanishes from the timeline.
+ *
  * Independent of PID_Start()/PID_Stop() and of any other channel's
  * own setpoint/gains/state -- arm this before or after starting the
  * loop, either works, logging just records whatever happens on this
@@ -316,10 +330,10 @@ uint16_t PID_GetLogCount(void);
  * in Hz -- PID_LOOP_RATE_HZ / decim (the `decim` PID_ArmLog() was last
  * called with). A host-side plotter reconstructs the time axis from
  * this and PID_GetLogCount() -- sample i occurred at
- * i / PID_GetLogSampleRateHz() seconds after logging started (only
- * approximately true if any ticks were skipped for having no fresh
- * feedback yet -- see PID_ArmLog()'s own comment -- close enough once
- * the loop is past its first couple of ticks). */
+ * i / PID_GetLogSampleRateHz() seconds after logging started. EXACT
+ * (not approximate) as of the 2026-09-10 fix described in
+ * PID_ArmLog()'s own comment -- every real tick is now accounted for,
+ * logged or not. */
 uint32_t PID_GetLogSampleRateHz(void);
 
 /* Raw logged arrays, index 0..PID_GetLogCount()-1, in recording order
