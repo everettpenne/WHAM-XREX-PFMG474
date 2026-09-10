@@ -220,7 +220,7 @@
     <div class="eyebrow">WHAM-XREX-PFMG474 &middot; STM32G474QET6</div>
     <h1>Memory footprint</h1>
     <div class="subtitle">
-      As of <span class="mono">6cb03f50db</span> &mdash; Implement closed-loop PID; fix a real anti-windup deadlock bug
+      As of <span class="mono">5467d36752</span> &mdash; Add waveform logging (PID:LOG) and a linear setpoint ramp (PID:RAMP)
       &middot; tracked every commit since 2026-09-09
     </div>
   </header>
@@ -229,26 +229,26 @@
     <div class="card tile">
       <div class="tile-top">
         <div class="tile-label"><span class="dot" style="background:var(--flash)"></span>Flash (512 KiB)</div>
-        <div class="tile-pct">12.2%</div>
+        <div class="tile-pct">12.6%</div>
       </div>
-      <div class="tile-value">62.6<span class="unit">KB used</span></div>
-      <div class="tile-of">64,140 / 524,288 bytes</div>
-      <div class="meter-track"><div class="meter-fill" style="width:12.2%;background:var(--flash)"></div></div>
+      <div class="tile-value">64.6<span class="unit">KB used</span></div>
+      <div class="tile-of">66,156 / 524,288 bytes</div>
+      <div class="meter-track"><div class="meter-fill" style="width:12.6%;background:var(--flash)"></div></div>
       <div class="tile-foot">
-        <span>449.4 KB remaining</span>
+        <span>447.4 KB remaining</span>
         <svg class="spark" width="96" height="24" viewBox="0 0 96 24" id="spark-flash"></svg>
       </div>
     </div>
     <div class="card tile">
       <div class="tile-top">
         <div class="tile-label"><span class="dot" style="background:var(--ram)"></span>RAM (128 KiB)</div>
-        <div class="tile-pct">50.3%</div>
+        <div class="tile-pct">59.5%</div>
       </div>
-      <div class="tile-value">64.4<span class="unit">KB used</span></div>
-      <div class="tile-of">65,912 / 131,072 bytes</div>
-      <div class="meter-track"><div class="meter-fill" style="width:50.3%;background:var(--ram)"></div></div>
+      <div class="tile-value">76.2<span class="unit">KB used</span></div>
+      <div class="tile-of">77,984 / 131,072 bytes</div>
+      <div class="meter-track"><div class="meter-fill" style="width:59.5%;background:var(--ram)"></div></div>
       <div class="tile-foot">
-        <span>63.6 KB remaining</span>
+        <span>51.8 KB remaining</span>
         <svg class="spark" width="96" height="24" viewBox="0 0 96 24" id="spark-ram"></svg>
       </div>
     </div>
@@ -258,7 +258,7 @@
     <div class="card">
       <div class="card-head">
         <div class="chart-title">Utilization over project lifetime</div>
-        <div class="chart-note">2 commits &middot; 2026-09-09 &ndash; 2026-09-09</div>
+        <div class="chart-note">3 commits &middot; 2026-09-09 &ndash; 2026-09-10</div>
       </div>
       <div class="legend">
         <div class="legend-item"><span class="legend-swatch" style="background:var(--flash)"></span>Flash</div>
@@ -275,11 +275,11 @@
     <h2>Current breakdown by module</h2>
     <div class="breakdown-grid">
       <div class="card">
-        <div class="chart-title" style="margin-bottom:12px">Flash &mdash; 62.6 KB</div>
+        <div class="chart-title" style="margin-bottom:12px">Flash &mdash; 64.6 KB</div>
         <div id="flash-bars"></div>
       </div>
       <div class="card">
-        <div class="chart-title" style="margin-bottom:12px">RAM &mdash; 64.4 KB</div>
+        <div class="chart-title" style="margin-bottom:12px">RAM &mdash; 76.2 KB</div>
         <div id="ram-bars"></div>
       </div>
     </div>
@@ -320,7 +320,7 @@
 
 </div>
 
-<script id="report-data" type="application/json">{"history": [{"commit": "72e5a1d6ea", "date": "2026-09-09T14:51:09-05:00", "subject": "Initial commit: reseeded from WHAM-PFMG474-V4 at de83324", "flash_used": 51316, "flash_total": 524288, "ram_used": 55368, "ram_total": 131072}, {"commit": "6cb03f50db", "date": "2026-09-09T15:20:15-05:00", "subject": "Implement closed-loop PID; fix a real anti-windup deadlock bug", "flash_used": 64140, "flash_total": 524288, "ram_used": 65912, "ram_total": 131072}], "flash_modules": [{"name": "ST HAL library", "bytes": 28052}, {"name": "Toolchain (libc/libm/startup)", "bytes": 18545}, {"name": "Serial commands", "bytes": 4412}, {"name": "PFM_Input capture", "bytes": 3948}, {"name": "HRTIM driver", "bytes": 2418}, {"name": "Padding / unattributed (alignment, vector table, anon symbols)", "bytes": 1272}, {"name": "Other", "bytes": 1236}, {"name": "PFM table engine", "bytes": 811}, {"name": "IRQ vector dispatch", "bytes": 726}, {"name": "main() / init", "bytes": 694}, {"name": "CMSIS", "bytes": 458}, {"name": "QUADSPI test", "bytes": 448}, {"name": "Newlib syscalls", "bytes": 396}, {"name": "HAL MSP config", "bytes": 248}, {"name": "Bootloader jump", "bytes": 216}, {"name": "Gate driver / faults", "bytes": 136}, {"name": "CMSIS system init", "bytes": 64}, {"name": "Startup/vector table", "bytes": 60}], "ram_modules": [{"name": "PFM table engine", "bytes": 50836}, {"name": "PFM_Input capture", "bytes": 6610}, {"name": "Serial commands", "bytes": 5465}, {"name": "Padding / unattributed (alignment, vector table, anon symbols)", "bytes": 1560}, {"name": "Toolchain (libc/libm/startup)", "bytes": 811}, {"name": "HRTIM driver", "bytes": 252}, {"name": "main() / init", "bytes": 148}, {"name": "Other", "bytes": 129}, {"name": "QUADSPI test", "bytes": 76}, {"name": "ST HAL library", "bytes": 12}, {"name": "Bootloader jump", "bytes": 4}, {"name": "CMSIS system init", "bytes": 4}, {"name": "Newlib syscalls", "bytes": 4}, {"name": "Gate driver / faults", "bytes": 1}]}</script>
+<script id="report-data" type="application/json">{"history": [{"commit": "72e5a1d6ea", "date": "2026-09-09T14:51:09-05:00", "subject": "Initial commit: reseeded from WHAM-PFMG474-V4 at de83324", "flash_used": 51316, "flash_total": 524288, "ram_used": 55368, "ram_total": 131072}, {"commit": "6cb03f50db", "date": "2026-09-09T15:20:15-05:00", "subject": "Implement closed-loop PID; fix a real anti-windup deadlock bug", "flash_used": 64140, "flash_total": 524288, "ram_used": 65912, "ram_total": 131072}, {"commit": "5467d36752", "date": "2026-09-10T09:39:20-05:00", "subject": "Add waveform logging (PID:LOG) and a linear setpoint ramp (PID:RAMP)", "flash_used": 66156, "flash_total": 524288, "ram_used": 77984, "ram_total": 131072}], "flash_modules": [{"name": "ST HAL library", "bytes": 28052}, {"name": "Toolchain (libc/libm/startup)", "bytes": 18545}, {"name": "Serial commands", "bytes": 5156}, {"name": "PFM_Input capture", "bytes": 3948}, {"name": "HRTIM driver", "bytes": 2418}, {"name": "Other", "bytes": 2231}, {"name": "Padding / unattributed (alignment, vector table, anon symbols)", "bytes": 1549}, {"name": "PFM table engine", "bytes": 811}, {"name": "IRQ vector dispatch", "bytes": 726}, {"name": "main() / init", "bytes": 694}, {"name": "CMSIS", "bytes": 458}, {"name": "QUADSPI test", "bytes": 448}, {"name": "Newlib syscalls", "bytes": 396}, {"name": "HAL MSP config", "bytes": 248}, {"name": "Bootloader jump", "bytes": 216}, {"name": "Gate driver / faults", "bytes": 136}, {"name": "CMSIS system init", "bytes": 64}, {"name": "Startup/vector table", "bytes": 60}], "ram_modules": [{"name": "PFM table engine", "bytes": 50836}, {"name": "Other", "bytes": 12202}, {"name": "PFM_Input capture", "bytes": 6610}, {"name": "Serial commands", "bytes": 5465}, {"name": "Padding / unattributed (alignment, vector table, anon symbols)", "bytes": 1559}, {"name": "Toolchain (libc/libm/startup)", "bytes": 811}, {"name": "HRTIM driver", "bytes": 252}, {"name": "main() / init", "bytes": 148}, {"name": "QUADSPI test", "bytes": 76}, {"name": "ST HAL library", "bytes": 12}, {"name": "Bootloader jump", "bytes": 4}, {"name": "CMSIS system init", "bytes": 4}, {"name": "Newlib syscalls", "bytes": 4}, {"name": "Gate driver / faults", "bytes": 1}]}</script>
 <script>
 (function () {
   "use strict";
