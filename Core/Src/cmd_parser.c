@@ -132,6 +132,7 @@ static const command_t command_table[] = {
     { "PID:STOP",            cmd_pid_stop      },
     { "PID:SETPOINT",        cmd_pid_setpoint  },
     { "PID:GAINS",           cmd_pid_gains     },
+    { "PID:GAINS?",          cmd_pid_gains_query },
     { "PID:STATus?",         cmd_pid_status    },
     { "PID:LOG",             cmd_pid_log       },
     { "PID:LOGDATA?",        cmd_pid_logdata   },
@@ -142,8 +143,11 @@ static const command_t command_table[] = {
        handlers and pid.h's "DEMAND PROFILE"/"OPEN-LOOP MODE" doc
        sections for the full design. */
     { "PID:LOOPMODE",        cmd_pid_loopmode        },
+    { "PID:LOOPMODE?",       cmd_pid_loopmode_query        },
     { "PID:PROFile:TIMing",  cmd_pid_profile_timing  },
+    { "PID:PROFile:TIMing?", cmd_pid_profile_timing_query  },
     { "PID:PROFile:CURRent", cmd_pid_profile_current },
+    { "PID:PROFile:CURRent?", cmd_pid_profile_current_query },
     { "PID:PROFile:STARt",   cmd_pid_profile_start   },
 };
 

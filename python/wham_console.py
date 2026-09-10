@@ -300,10 +300,10 @@ def generate_plot(rows, meta, out_path):
     (float/int already converted). meta: see WhamConsole's own
     _shot_meta() for the exact keys: channel, timestamp, idn,
     ramp_time_s, flat_top_time_s, demand_current_a (any of the last
-    three may be None -- ad-hoc test, not a profiled shot), kp, ki, kd,
-    loop_mode (all may be None -- 'not known this session', see
-    do_config's own comment on why gains/loop-mode can't be read back
-    from the device). Saves a PNG to out_path. Returns out_path."""
+    three may be None -- ad-hoc test, not a profiled shot; or a query
+    failure right at plot time), kp, ki, kd, loop_mode (normally read
+    live from the device via _refresh_config(), may be None if that
+    readback failed). Saves a PNG to out_path. Returns out_path."""
     if not HAVE_MPL:
         raise WhamError("matplotlib not installed -- run: pip install matplotlib")
 
@@ -446,11 +446,14 @@ class WhamConsole(cmd.Cmd):
         self.link = WhamLink(port=port, baud=baud, log_fh=self._log_fh)
         self.confirm_dangerous = True
         self.num_channels = None
-        # Session-local memory of what's been PROGRAMMED this session --
-        # NOT a device readback (there is currently no PID:GAINS?/
-        # PID:LOOPMODE?/PID:PROFILE:*? query command in the firmware --
-        # see do_config's own comment). Cleared on disconnect/reconnect
-        # since it no longer reflects a specific device's real state.
+        # Cache of the device's own gains/loop-mode/demand-current/
+        # profile-timing -- refreshed from a live PID:GAINS?/
+        # PID:LOOPMODE?/PID:PROFILE:TIMING?/PID:PROFILE:CURRENT? readback
+        # on every connect and on demand via `config` (see
+        # _refresh_config()), and kept up to date incrementally by the
+        # gains/loopmode/shot wrapper commands as they send new values.
+        # Used to pre-fill `shot` wizard prompts with real current
+        # values rather than guessed ones.
         self.channel_config = {}   # {ch: {"kp":, "ki":, "kd":, "loop_mode":, "demand_a":}}
         self.profile_timing = None  # {"ramp_s":, "flat_s":}
         self.last_log_channel = None
@@ -485,6 +488,68 @@ class WhamConsole(cmd.Cmd):
                 print(f"CONFig:CHANnels? -> {self.num_channels}")
         except (WhamError, ValueError, IndexError) as exc:
             print(f"[warn] connected, but couldn't query *IDN?/CONFig:CHANnels?: {exc}")
+            return
+        self._refresh_config()
+
+    # -- live device readback for gains/loopmode/profile timing/current --
+    # (added 2026-09-10, once PID:GAINS?/PID:LOOPMODE?/PID:PROFile:TIMing?/
+    # PID:PROFile:CURRent? existed on the firmware side -- see docs/
+    # changelog.txt. Before this, channel_config/profile_timing could only
+    # be POPULATED by this console's own setter wrappers remembering what
+    # THEY sent; now every value is read straight from the device, so it's
+    # correct even after a reconnect or after another tool/operator changed
+    # something. do_config's own docstring still explains this history.)
+
+    def _query_gains(self, ch):
+        reply = self.link.query(f"PID:GAINS? {ch}")
+        if is_err(reply):
+            return None
+        parts = reply.split()
+        return dict(kp=float(parts[1]), ki=float(parts[2]), kd=float(parts[3]))
+
+    def _query_loopmode(self, ch):
+        reply = self.link.query(f"PID:LOOPMODE? {ch}")
+        if is_err(reply):
+            return None
+        return "closed" if reply.split()[1] == "1" else "open"
+
+    def _query_profile_current(self, ch):
+        reply = self.link.query(f"PID:PROFILE:CURRENT? {ch}")
+        if is_err(reply):
+            return None
+        return float(reply.split()[1])
+
+    def _query_profile_timing(self):
+        reply = self.link.query("PID:PROFILE:TIMING?")
+        if is_err(reply):
+            return None  # not set yet on the device -- a real, distinct state
+        parts = reply.split()
+        return dict(ramp_s=float(parts[1]), flat_s=float(parts[2]))
+
+    def _refresh_config(self):
+        """Repopulates self.channel_config / self.profile_timing from the
+        device itself (not this console's own memory of what it sent) --
+        called on connect, and available on demand via `config`."""
+        n = self.num_channels or 4
+        for ch in range(1, n + 1):
+            entry = self.channel_config.setdefault(ch, {})
+            try:
+                gains = self._query_gains(ch)
+                if gains:
+                    entry.update(gains)
+                loop_mode = self._query_loopmode(ch)
+                if loop_mode:
+                    entry["loop_mode"] = loop_mode
+                demand_a = self._query_profile_current(ch)
+                if demand_a is not None:
+                    entry["demand_a"] = demand_a
+            except WhamError:
+                pass
+        try:
+            timing = self._query_profile_timing()
+            self.profile_timing = timing
+        except WhamError:
+            pass
 
     def _require_link(self):
         if not self.link.connected:
@@ -632,27 +697,30 @@ class WhamConsole(cmd.Cmd):
             print("\nStopped.")
 
     def do_config(self, arg):
-        """config  -- shows this console's SESSION-LOCAL memory of
-        gains/loop-mode/demand-current/profile-timing programmed so
-        far. NOT a device readback: the firmware currently has no
-        PID:GAINS?/PID:LOOPMODE?/PID:PROFILE:*? query commands, so
-        after a reconnect (or if another tool/operator touched the
-        device) this may not reflect the device's real state. Useful
-        as a session summary / sanity check, not a source of truth."""
+        """config  -- live readback of gains/loop-mode/demand-current/
+        profile-timing for every channel, straight from the device
+        (PID:GAINS?/PID:LOOPMODE?/PID:PROFILE:TIMING?/PID:PROFILE:CURRENT?,
+        added 2026-09-10) -- always current, including after a
+        reconnect or after another tool/operator changed something.
+        Also refreshes this console's own local cache (used to
+        pre-fill `shot` wizard defaults) as a side effect."""
+        if not self._require_link():
+            return
+        self._refresh_config()
         if self.profile_timing:
             print(f"Profile timing: ramp={self.profile_timing['ramp_s']:g}s "
                   f"flat-top={self.profile_timing['flat_s']:g}s")
         else:
-            print("Profile timing: not set this session")
+            print("Profile timing: not set on the device (PID:PROFILE:TIMING never sent)")
         if not self.channel_config:
-            print("No per-channel config set this session.")
+            print("No per-channel config readable.")
             return
         for ch in sorted(self.channel_config):
             c = self.channel_config[ch]
             gains = (f"Kp={c['kp']:g} Ki={c['ki']:g} Kd={c['kd']:g}"
-                     if c.get("kp") is not None else "gains: unset this session")
-            print(f"  ch{ch}: loop_mode={c.get('loop_mode', 'unknown')}  "
-                  f"demand={c.get('demand_a', 'unset')}A  {gains}")
+                     if c.get("kp") is not None else "gains: unavailable")
+            print(f"  ch{ch}: loop_mode={c.get('loop_mode', 'unavailable')}  "
+                  f"demand={c.get('demand_a', 'unavailable')}A  {gains}")
 
     # -- direct wrappers (safe: no first-token collision, see module header) --
 

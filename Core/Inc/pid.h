@@ -219,6 +219,20 @@ uint8_t PID_StartRamp(uint8_t channel, uint32_t startHz, uint32_t endHz, uint32_
  * something this function tries to guess is wrong. */
 uint8_t PID_SetGains(uint8_t channel, float kp, float ki, float kd);
 
+/* Reads back channel `channel`'s CURRENT gains, via `*kp`/`*ki`/`*kd`
+ * (any may be NULL to skip that one) -- added 2026-09-10, alongside
+ * PID:GAINS? (commands.c), specifically so a host tool (or an
+ * operator reconnecting mid-session) can find out what's actually
+ * programmed on the device instead of only being able to remember
+ * what it itself last sent (see python/wham_console.py's `config`
+ * command, whose whole reason for existing was this exact gap).
+ * Returns 1 on success, 0 if `channel` is out of range (outputs left
+ * unwritten in that case). Always succeeds otherwise -- gains default
+ * to 0/0/0 from PID_Init(), not an "unset" sentinel, so this has
+ * nothing to report as missing the way PID_GetProfileTiming() below
+ * does. */
+uint8_t PID_GetGains(uint8_t channel, float *kp, float *ki, float *kd);
+
 /* Current setpoint/measured/output (Hz) for `channel`, via `*setpointHz`/
  * `*measuredHz`/`*outputHz` (any may be NULL to skip that one) --
  * valid whether or not the loop is running (measured/output simply
@@ -257,11 +271,32 @@ uint8_t PID_GetLoopMode(uint8_t channel);
  * success, 0 if either duration is 0. */
 uint8_t PID_SetProfileTiming(uint32_t rampTimeMs, uint32_t flatTopTimeMs);
 
+/* Reads back the SHARED ramp/flat-top durations, in milliseconds
+ * (same unit as the setter -- an operator-facing wire command
+ * converts to/from seconds), via `*rampTimeMs`/`*flatTopTimeMs` (either
+ * may be NULL to skip). Added 2026-09-10 alongside PID:PROFile:TIMing?
+ * -- same host-tool-readback motivation as PID_GetGains() above.
+ * Returns 1 if timing has ever been successfully set this boot
+ * (both outputs written), 0 if PID_SetProfileTiming() was never
+ * called or was last rejected (both would-be durations are 0,
+ * outputs left unwritten) -- distinct from PID_GetGains()'s always-
+ * succeeds behavior because "never configured" is a real, meaningful
+ * state here (PID_ProfileStart() itself refuses to run in it). */
+uint8_t PID_GetProfileTiming(uint32_t *rampTimeMs, uint32_t *flatTopTimeMs);
+
 /* Sets channel `channel`'s peak demand current for the profile, in
  * Amps -- clamped to [0, PFM_MAX_CURRENT_A] (ctrlr_config.h). Takes
  * effect on this channel's next PID_ProfileStart(). Returns 1 on
  * success, 0 if `channel` is out of range. */
 uint8_t PID_SetProfileCurrent(uint8_t channel, float demandCurrentA);
+
+/* Reads back channel `channel`'s current peak demand current (Amps),
+ * via `*demandCurrentA` (may be NULL). Added 2026-09-10, same
+ * host-tool-readback motivation as PID_GetGains() above. Returns 1 on
+ * success, 0 if `channel` is out of range. Always succeeds otherwise
+ * -- demandCurrentA defaults to 0.0f from PID_Init(), not an "unset"
+ * sentinel, same reasoning as PID_GetGains(). */
+uint8_t PID_GetProfileCurrent(uint8_t channel, float *demandCurrentA);
 
 /* Begins a profiled shot on every channel at once, from the SAME
  * synchronized instant: zeroes the one shared elapsed-tick clock,

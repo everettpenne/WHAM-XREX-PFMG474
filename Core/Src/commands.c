@@ -730,6 +730,41 @@ void cmd_pid_gains(uart_instance_t *inst, char *args)
     uart_send(inst, "OK\r\n");
 }
 
+/* Added 2026-09-10, alongside python/wham_console.py -- PID:GAINS was
+   write-only until now, forcing any host tool to remember what it
+   itself last sent rather than being able to ask the device (see
+   PID_GetGains()'s own doc comment in pid.h). */
+void cmd_pid_gains_query(uart_instance_t *inst, char *args)
+{
+    char buf[64];
+    char *tok;
+    long  chArg;
+    uint8_t ch;
+    float kp;
+    float ki;
+    float kd;
+
+    tok = (args != NULL) ? strtok(args, " \r\n") : NULL;
+    if (tok == NULL)
+    {
+        SendErr(inst, 12, "PID:GAINS? needs one argument: channel");
+        return;
+    }
+    chArg = atol(tok);
+
+    if ((chArg < 1L) || (chArg > (long)HRTIM_NUM_CHANNELS))
+    {
+        SendErr(inst, 11, "Invalid PID channel");
+        return;
+    }
+    ch = (uint8_t)(chArg - 1L);
+
+    (void)PID_GetGains(ch, &kp, &ki, &kd);
+
+    snprintf(buf, sizeof(buf), "OK %g %g %g\r\n", (double)kp, (double)ki, (double)kd);
+    uart_send(inst, buf);
+}
+
 void cmd_pid_status(uart_instance_t *inst, char *args)
 {
     char buf[96];
@@ -951,6 +986,34 @@ void cmd_pid_loopmode(uart_instance_t *inst, char *args)
     uart_send(inst, "OK\r\n");
 }
 
+/* Added 2026-09-10 -- see cmd_pid_gains_query()'s own comment on why
+   (PID:LOOPMODE was write-only until now). */
+void cmd_pid_loopmode_query(uart_instance_t *inst, char *args)
+{
+    char buf[32];
+    char *tok;
+    long  chArg;
+    uint8_t ch;
+
+    tok = (args != NULL) ? strtok(args, " \r\n") : NULL;
+    if (tok == NULL)
+    {
+        SendErr(inst, 12, "PID:LOOPMODE? needs one argument: channel");
+        return;
+    }
+    chArg = atol(tok);
+
+    if ((chArg < 1L) || (chArg > (long)HRTIM_NUM_CHANNELS))
+    {
+        SendErr(inst, 11, "Invalid PID channel");
+        return;
+    }
+    ch = (uint8_t)(chArg - 1L);
+
+    snprintf(buf, sizeof(buf), "OK %u\r\n", (unsigned int)PID_GetLoopMode(ch));
+    uart_send(inst, buf);
+}
+
 void cmd_pid_profile_timing(uart_instance_t *inst, char *args)
 {
     char *tok;
@@ -988,6 +1051,33 @@ void cmd_pid_profile_timing(uart_instance_t *inst, char *args)
         return;
     }
     uart_send(inst, "OK\r\n");
+}
+
+/* Added 2026-09-10 -- see cmd_pid_gains_query()'s own comment on why
+   (PID:PROFILE:TIMING was write-only until now). ERR 12 (not just an
+   empty/zero OK reply) if timing was never successfully set -- a real,
+   meaningful "not configured yet" state (PID_ProfileStart() itself
+   refuses to run in it), worth a distinct reply rather than silently
+   reporting 0 0 as if that were a real value. */
+void cmd_pid_profile_timing_query(uart_instance_t *inst, char *args)
+{
+    char buf[48];
+    uint32_t rampTimeMs;
+    uint32_t flatTopTimeMs;
+    (void)args;
+
+    if (PID_GetProfileTiming(&rampTimeMs, &flatTopTimeMs) == 0U)
+    {
+        SendErr(inst, 12, "Profile timing not set -- send PID:PROFILE:TIMING first");
+        return;
+    }
+
+    /* ms -> seconds, the operator-facing unit (matches the setter's
+       own convention) -- %g rather than integer division so a
+       sub-second value (e.g. 500 ms -> "0.5") round-trips cleanly. */
+    snprintf(buf, sizeof(buf), "OK %g %g\r\n",
+             (double)rampTimeMs / 1000.0, (double)flatTopTimeMs / 1000.0);
+    uart_send(inst, buf);
 }
 
 void cmd_pid_profile_current(uart_instance_t *inst, char *args)
@@ -1030,6 +1120,40 @@ void cmd_pid_profile_current(uart_instance_t *inst, char *args)
        -- matches PID:SETPOINT's own clamp-don't-reject convention. */
     (void)PID_SetProfileCurrent(ch, (float)currentA);
     uart_send(inst, "OK\r\n");
+}
+
+/* Added 2026-09-10 -- see cmd_pid_gains_query()'s own comment on why
+   (PID:PROFILE:CURRENT was write-only until now). Always succeeds for
+   a valid channel (demandCurrentA defaults to 0.0f, a real value, not
+   an "unset" sentinel -- unlike profile timing there's no distinct
+   "never configured" state worth a separate ERR here). */
+void cmd_pid_profile_current_query(uart_instance_t *inst, char *args)
+{
+    char buf[32];
+    char *tok;
+    long  chArg;
+    uint8_t ch;
+    float demandCurrentA;
+
+    tok = (args != NULL) ? strtok(args, " \r\n") : NULL;
+    if (tok == NULL)
+    {
+        SendErr(inst, 12, "PID:PROFILE:CURRENT? needs one argument: channel");
+        return;
+    }
+    chArg = atol(tok);
+
+    if ((chArg < 1L) || (chArg > (long)HRTIM_NUM_CHANNELS))
+    {
+        SendErr(inst, 11, "Invalid PID channel");
+        return;
+    }
+    ch = (uint8_t)(chArg - 1L);
+
+    (void)PID_GetProfileCurrent(ch, &demandCurrentA);
+
+    snprintf(buf, sizeof(buf), "OK %g\r\n", (double)demandCurrentA);
+    uart_send(inst, buf);
 }
 
 void cmd_pid_profile_start(uart_instance_t *inst, char *args)

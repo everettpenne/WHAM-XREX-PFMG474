@@ -455,10 +455,14 @@ cd Debug && make all -j4
 
 then, since this project's `.cproject` does **not** have the "Convert to
 binary file (.bin)" post-build step enabled (confirmed; unlike the
-sibling project, which does), generate the `.bin` by hand:
+sibling project, which does), generate the `.bin` by hand -- EVERY
+time, after every rebuild, before flashing (a stale `.bin` flashes
+"successfully" -- verified even -- while silently NOT containing your
+latest changes; see `docs/changelog.txt`'s 2026-09-10 entry for exactly
+this happening):
 
 ```bash
-arm-none-eabi-objcopy -O binary Debug/WHAM-PFMG474-V4.elf Debug/WHAM-PFMG474-V4.bin
+arm-none-eabi-objcopy -O binary Debug/WHAM-XREX-PFMG474.elf Debug/WHAM-XREX-PFMG474.bin
 ```
 
 **Adding a new source file from outside CubeIDE (e.g. this agent
@@ -479,6 +483,26 @@ CubeIDE itself, `F5` (Refresh) + a normal Build regenerates these
 correctly, no hand-patching needed -- the manual patching is only
 necessary when
 building from the command line without going through the IDE first.
+
+**`%f`/`%g` in a `snprintf()` reply silently prints nothing** (not a
+crash, not a build warning -- just empty output where the number
+should be) unless the link includes `-Wl,-u,_printf_float`. This
+project links against newlib-nano (`--specs=nano.specs`), which strips
+floating-point support out of `printf`/`snprintf` by default to save
+flash. Confirmed on real hardware, 2026-09-10: the first version of
+`PID:GAINS?`/`PID:PROFILE:CURRENT?`/`PID:PROFILE:TIMING?` (see
+`docs/changelog.txt`) built and linked cleanly, then replied `OK   `
+(spaces where the numbers should be) on real hardware -- traced to
+this exact missing flag. Fixed by hand-adding `-Wl,-u,_printf_float`
+to `Debug/makefile`'s link line (adds ~6 KB flash -- worth tracking,
+see "Host-side tooling" below). Like the `subdir.mk`/`objects.list`
+gotcha above, this is a project (`.cproject`) setting CubeIDE would
+normally manage -- in the IDE itself it's Project Properties -> C/C++
+Build -> Settings -> MCU Settings -> "Use float with printf from
+newlib-nano (`-u _printf_float`)" -- and a full CubeIDE-driven
+regeneration of `Debug/makefile` could silently drop the hand-added
+flag again; re-check `PID:GAINS?` (or any other `%f`/`%g` reply) after
+any such regeneration.
 
 - No on-host test suite. Verification so far = clean build (zero
   warnings) + real hardware round trips over the serial link (see

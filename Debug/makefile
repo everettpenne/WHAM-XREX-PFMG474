@@ -61,7 +61,7 @@ main-build: WHAM-XREX-PFMG474.elf secondary-outputs
 
 # Tool invocations
 WHAM-XREX-PFMG474.elf WHAM-XREX-PFMG474.map: $(OBJS) $(USER_OBJS) /Users/everettpenne/STM32CubeIDE/workspace_hvps/WHAM-XREX-PFMG474/STM32G474QETX_FLASH.ld makefile objects.list $(OPTIONAL_TOOL_DEPS)
-	arm-none-eabi-gcc -o "WHAM-XREX-PFMG474.elf" @"objects.list" $(USER_OBJS) $(LIBS) -mcpu=cortex-m4 -T"/Users/everettpenne/STM32CubeIDE/workspace_hvps/WHAM-XREX-PFMG474/STM32G474QETX_FLASH.ld" --specs=nosys.specs -Wl,-Map="WHAM-XREX-PFMG474.map" -Wl,--gc-sections -static --specs=nano.specs -mfpu=fpv4-sp-d16 -mfloat-abi=hard -mthumb -Wl,--start-group -lc -lm -Wl,--end-group
+	arm-none-eabi-gcc -o "WHAM-XREX-PFMG474.elf" @"objects.list" $(USER_OBJS) $(LIBS) -mcpu=cortex-m4 -T"/Users/everettpenne/STM32CubeIDE/workspace_hvps/WHAM-XREX-PFMG474/STM32G474QETX_FLASH.ld" --specs=nosys.specs -Wl,-Map="WHAM-XREX-PFMG474.map" -Wl,--gc-sections -static --specs=nano.specs -Wl,-u,_printf_float -mfpu=fpv4-sp-d16 -mfloat-abi=hard -mthumb -Wl,--start-group -lc -lm -Wl,--end-group
 	@echo 'Finished building target: $@'
 	@echo ' '
 

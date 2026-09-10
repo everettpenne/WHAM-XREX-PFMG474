@@ -199,6 +199,10 @@ void cmd_pid_gains(uart_instance_t *inst, char *args);    /* PID:GAINS <ch> <kp>
                                                                <kd> -- OK, sets channel
                                                                ch's PID gains, resets
                                                                its integrator */
+void cmd_pid_gains_query(uart_instance_t *inst, char *args); /* PID:GAINS? <ch> -- OK
+                                                                  <kp> <ki> <kd> -- added
+                                                                  2026-09-10, see
+                                                                  PID_GetGains() */
 void cmd_pid_status(uart_instance_t *inst, char *args);   /* PID:STATus? <ch> -- OK
                                                                <running> <setpointHz>
                                                                <measuredHz> <outputHz> */
@@ -230,17 +234,34 @@ void cmd_pid_loopmode(uart_instance_t *inst, char *args);       /* PID:LOOPMODE 
                                                                      open-loop, 1 =
                                                                      closed-loop
                                                                      (default) */
+void cmd_pid_loopmode_query(uart_instance_t *inst, char *args); /* PID:LOOPMODE? <ch>
+                                                                     -- OK <0|1> --
+                                                                     added 2026-09-10,
+                                                                     see PID_GetLoopMode() */
 void cmd_pid_profile_timing(uart_instance_t *inst, char *args);  /* PID:PROFILE:TIMING
                                                                       <rampTimeS>
                                                                       <flatTopTimeS> --
                                                                       OK, sets the SHARED
                                                                       shot timing (every
                                                                       channel) */
+void cmd_pid_profile_timing_query(uart_instance_t *inst, char *args); /* PID:PROFILE:TIMING?
+                                                                           -- OK <rampTimeS>
+                                                                           <flatTopTimeS> --
+                                                                           added 2026-09-10,
+                                                                           see
+                                                                           PID_GetProfileTiming();
+                                                                           ERR 12 if never set */
 void cmd_pid_profile_current(uart_instance_t *inst, char *args); /* PID:PROFILE:CURRENT
                                                                       <ch> <demandCurrentA>
                                                                       -- OK, sets channel
                                                                       ch's peak current
                                                                       for the next shot */
+void cmd_pid_profile_current_query(uart_instance_t *inst, char *args); /* PID:PROFILE:CURRENT?
+                                                                            <ch> -- OK
+                                                                            <demandCurrentA>
+                                                                            -- added 2026-09-10,
+                                                                            see
+                                                                            PID_GetProfileCurrent() */
 void cmd_pid_profile_start(uart_instance_t *inst, char *args);   /* PID:PROFILE:START --
                                                                       OK, begins a
                                                                       profiled shot on

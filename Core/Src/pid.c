@@ -657,6 +657,19 @@ uint8_t PID_SetGains(uint8_t channel, float kp, float ki, float kd)
     return 1U;
 }
 
+uint8_t PID_GetGains(uint8_t channel, float *kp, float *ki, float *kd)
+{
+    if (channel >= HRTIM_NUM_CHANNELS)
+    {
+        return 0U;
+    }
+
+    if (kp != NULL) { *kp = g_ch[channel].kp; }
+    if (ki != NULL) { *ki = g_ch[channel].ki; }
+    if (kd != NULL) { *kd = g_ch[channel].kd; }
+    return 1U;
+}
+
 uint8_t PID_GetStatus(uint8_t channel, uint32_t *setpointHz,
                       uint32_t *measuredHz, uint32_t *outputHz)
 {
@@ -799,6 +812,31 @@ uint8_t PID_SetProfileTiming(uint32_t rampTimeMs, uint32_t flatTopTimeMs)
     return 1U;
 }
 
+uint8_t PID_GetProfileTiming(uint32_t *rampTimeMs, uint32_t *flatTopTimeMs)
+{
+    if ((g_profileRampTicks == 0U) && (g_profileFlatTopTicks == 0U))
+    {
+        return 0U;   /* never successfully set -- see this function's own
+                        doc comment in pid.h */
+    }
+
+    /* Ticks -> ms, the inverse of PID_SetProfileTiming()'s own
+       rounding -- reports the ACTUAL internal tick counts converted
+       back, not necessarily bit-exact to whatever fractional-ms value
+       an operator originally sent (that rounding already happened
+       once, at set time; this is an honest readback of what's really
+       active, not a replay of the original input). */
+    if (rampTimeMs != NULL)
+    {
+        *rampTimeMs = (g_profileRampTicks * 1000U) / (uint32_t)PID_LOOP_RATE_HZ;
+    }
+    if (flatTopTimeMs != NULL)
+    {
+        *flatTopTimeMs = (g_profileFlatTopTicks * 1000U) / (uint32_t)PID_LOOP_RATE_HZ;
+    }
+    return 1U;
+}
+
 uint8_t PID_SetProfileCurrent(uint8_t channel, float demandCurrentA)
 {
     if (channel >= HRTIM_NUM_CHANNELS)
@@ -816,6 +854,20 @@ uint8_t PID_SetProfileCurrent(uint8_t channel, float demandCurrentA)
     }
 
     g_ch[channel].demandCurrentA = demandCurrentA;
+    return 1U;
+}
+
+uint8_t PID_GetProfileCurrent(uint8_t channel, float *demandCurrentA)
+{
+    if (channel >= HRTIM_NUM_CHANNELS)
+    {
+        return 0U;
+    }
+
+    if (demandCurrentA != NULL)
+    {
+        *demandCurrentA = g_ch[channel].demandCurrentA;
+    }
     return 1U;
 }
 

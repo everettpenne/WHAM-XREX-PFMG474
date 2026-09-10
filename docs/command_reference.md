@@ -369,9 +369,10 @@ cover yet.
   `ctrlr_config.h`). Cancels any in-progress `PID:RAMP` on that channel.
 - **`PID:GAINS <ch> <kp> <ki> <kd>`** -- sets channel `ch`'s PID gains
   and resets its integrator (avoids a discontinuous output jump from
-  an integral accumulated under the old gains). No corresponding query
-  -- gains are write-only over the wire; a host tool must remember what
-  it last sent (see `wham_console.py`'s `config`/session-memory).
+  an integral accumulated under the old gains).
+- **`PID:GAINS? <ch>`** -- `OK <kp> <ki> <kd>` -- added 2026-09-10 (see
+  `PID_GetGains()`); `wham_console.py`'s `config` command uses this for
+  a live readback rather than only remembering what it itself last sent.
 - **`PID:STATus? <ch>`** -- `OK <running> <setpointHz> <measuredHz>
   <outputHz>`. `running` reflects the whole loop (`PID_IsRunning()`),
   not just this channel.
@@ -394,15 +395,23 @@ cover yet.
   generous read timeout (`wham_console.py` uses 8s).
 - **`PID:LOOPMODE <ch> <0|1>`** -- `0` = open-loop (setpoint/profile
   value written straight to HRTIM, no PID correction; feedback still
-  read/reported for comparison), `1` = closed-loop (default). No
-  corresponding query.
+  read/reported for comparison), `1` = closed-loop (default).
+- **`PID:LOOPMODE? <ch>`** -- `OK <0|1>` -- added 2026-09-10 (see
+  `PID_GetLoopMode()`).
 - **`PID:PROFile:TIMing <rampTimeS> <flatTopTimeS>`** -- sets the
   SHARED ramp/flat-top durations (seconds) for the next
   `PID:PROFile:STARt`, applied to every channel at once (each channel
-  keeps its own peak current, below). Both must be `> 0`. No query.
+  keeps its own peak current, below). Both must be `> 0`.
+- **`PID:PROFile:TIMing?`** -- `OK <rampTimeS> <flatTopTimeS>` -- added
+  2026-09-10 (see `PID_GetProfileTiming()`). `ERR 12` if never
+  successfully set this boot -- a real, distinct "not configured" state
+  (`PID:PROFile:STARt` itself refuses to run in it), not reported as a
+  bogus `0 0`.
 - **`PID:PROFile:CURRent <ch> <demandCurrentA>`** -- sets channel
   `ch`'s peak demand current (Amps, clamped to `[0, PFM_MAX_CURRENT_A]`)
-  for the next shot. No query.
+  for the next shot.
+- **`PID:PROFile:CURRent? <ch>`** -- `OK <demandCurrentA>` -- added
+  2026-09-10 (see `PID_GetProfileCurrent()`).
 - **`PID:PROFile:STARt`** -- begins a profiled shot on every channel at
   once, from the same synchronized instant: 0A -> linear ramp up ->
   `demandCurrentA` -> flat-top -> linear ramp down -> 0A, per channel's

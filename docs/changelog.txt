@@ -1,6 +1,76 @@
 WHAM-XREX-PFMG474 Firmware Changelog
 =====================================
 
+2026-09-10  —  PID:GAINS?/LOOPMODE?/PROFile:TIMing?/PROFile:CURRent?
+               query commands; a real newlib-nano printf-float bug
+               found and fixed getting them working; wham_console.py
+               now does a live device readback instead of guessing
+-----------------------------------------------------------------------
+  Change:  Direct response to a gap flagged while building
+        wham_console.py (previous entry): PID:GAINS/PID:LOOPMODE/
+        PID:PROFILE:TIMING/PID:PROFILE:CURRENT were write-only over
+        the wire, forcing any host tool to remember what it itself
+        last sent rather than being able to ask the device -- exactly
+        the kind of thing that goes stale after a reconnect or if
+        another tool/operator touches the board. Added the missing
+        query variants:
+
+          - PID_GetGains()/PID_GetLoopMode() (existed already, just
+            never wired to a command)/PID_GetProfileTiming()/
+            PID_GetProfileCurrent() (pid.h/pid.c) -- straightforward
+            readbacks of the same per-channel/shared state the
+            setters already maintain. PID_GetProfileTiming() returns
+            0 (mapped to ERR 12) when timing was never successfully
+            set this boot -- a real, distinct "not configured" state
+            (PID_ProfileStart() itself refuses to run in it), not
+            silently reported as a bogus "0 0".
+          - PID:GAINS? <ch>, PID:LOOPMODE? <ch>, PID:PROFile:TIMing?,
+            PID:PROFile:CURRent? <ch> (commands.c/commands.h/
+            cmd_parser.c) -- see docs/command_reference.md for exact
+            reply formats.
+
+        REAL BUG, caught on real hardware before calling this done:
+        the first working build compiled and linked with zero
+        warnings, but every one of these new query replies came back
+        as "OK   " -- literally blank where the numbers should be
+        (e.g. "PID:GAINS? 1" -> "OK   " instead of "OK 1.5 12.5
+        0.25"). Root cause: this project links against newlib-nano
+        (--specs=nano.specs), which strips floating-point conversion
+        support out of printf/snprintf by default to save flash --
+        %f/%g silently produce NOTHING (not a crash, not a build
+        warning) unless the link also includes -Wl,-u,_printf_float.
+        Every existing OK reply in this firmware happened to be
+        integer-only (%u/%lu) until these four commands, so this gap
+        was invisible until now. Fixed by hand-adding
+        -Wl,-u,_printf_float to Debug/makefile's link line (+~6KB
+        flash -- tracked in the usual memory-footprint commit).
+        Documented in AGENTS.md's build-gotchas section alongside the
+        existing subdir.mk/objects.list one, including the
+        CubeIDE-UI-equivalent project setting (Project Properties ->
+        C/C++ Build -> Settings -> MCU Settings -> "Use float with
+        printf from newlib-nano") in case a full IDE-driven makefile
+        regeneration ever silently drops the hand-added flag again.
+        Confirmed fixed on real hardware: all four query commands
+        round-trip exactly what was set (PID:GAINS 1 1.5 12.5 0.25 ->
+        PID:GAINS? 1 -> "OK 1.5 12.5 0.25"; PID:PROFILE:CURRENT 1
+        2750.5 -> PID:PROFILE:CURRENT? 1 -> "OK 2750.5"), and
+        PID:PROFILE:TIMING? correctly returns ERR 12 before any
+        PID:PROFILE:TIMING has ever been sent.
+
+        wham_console.py updated to match: a new _refresh_config()
+        queries all four live from the device (on every connect, and
+        on demand via `config`), replacing the session-local-memory-
+        only approach documented (and explicitly caveated as such) in
+        the previous entry. `config`'s own docstring and the
+        channel_config cache's comment updated to describe what they
+        actually are now -- a live device readback, not a guess.
+
+        Verified end to end: full `shot` wizard run (unchanged from
+        the previous entry's test) still works correctly after these
+        changes -- programmed, watched to auto-stop, logged, and
+        plotted with no regressions from either the new commands or
+        the printf-float linker change.
+
 2026-09-10  —  wham_console.py: interactive operator console, the new
                maintained front end for this board
 -----------------------------------------------------------------------
