@@ -23,6 +23,11 @@ Ported from the sibling PFM-STM32G474 project, per project decision:
 | 5 | Table is empty — `FIRE` has nothing to play back |
 | 6 | Fault latched — either PC10/HRTIM1_FLT6 (native HRTIM hardware fault input) or the GateDriverStatus_01..12 EXTI interrupt (`PE0`-`PE11`) — `FAULT:CLEAR` required before `FIRE` will work again |
 | 7 | QUADSPI command failed or timed out (see `QSPI:ID?`) |
+| 8 | Invalid `PFM_Input` channel (1-6) |
+| 9 | `M` out of range for `PFMIN:CAPTURE` (1-`PFM_INPUT_MAX_PERIODS`) |
+| 10 | `TABLE:STEP` `per` value implies a carrier frequency above `PFM_MAX_CARRIER_FREQ_HZ` |
+| 11 | Invalid `PID` channel |
+| 12 | Invalid `PID:*` argument count/value -- see the specific command's own usage |
 
 Codes are never renumbered or reused once assigned, matching the
 sibling project's convention.
@@ -312,6 +317,134 @@ instead, traced to a QUADSPI sample-timing setting
 (`SampleShifting`) — see `docs/changelog.txt` and `qspi_test.c`'s own
 bugfix comment for the full diagnosis (an exact 1-bit shift of the
 correct value, not random noise) and fix.
+
+### `PFMIN:CAPTURE`, `PFMIN:STATus?`, `PFMIN:DATA?`, `PFMIN:DMASTAT?`
+
+Bounded-count period/duty capture on the 6 `PFM_Input_01`..`_06` pins
+(`Core/Src/pfm_input.c`) -- distinct from the continuous/free-running
+capture mode `PID:*` uses internally (`PfmInput_StartContinuous()`),
+which has no wire command of its own; these four are for standalone
+bench capture. Present only when `PFM_INPUT_FEATURE_ENABLED` is
+nonzero (the default).
+
+- **`PFMIN:CAPTURE <M>`** -- arms all 6 channels for the *next* `FIRE`
+  (`M` = target period count per channel, 1-`PFM_INPUT_MAX_PERIODS`).
+  Returns `OK` immediately; does not touch hardware or block. Consumed
+  (cleared) by the next `FIRE`, whether or not it reached `M`.
+- **`PFMIN:STATus?`** -- `OK <n1> <n2> <n3> <n4> <n5> <n6>`, each
+  channel's current captured-period count -- poll this to know when an
+  armed capture has finished.
+- **`PFMIN:DATA? <ch>`** (`ch` = 1-6) -- `OK <count> OVERCAP=<n> <per1>
+  <per2> ...`, raw tick periods in capture order (no duty -- see
+  `pfm_input.h`'s own "raw ticks" philosophy note). `python/pfm_input_plot.py`
+  is the reference host-side consumer (fetch + plot, both
+  ticks and converted Hz).
+- **`PFMIN:DMASTAT?`** -- TEMPORARY diagnostic, `OK <s1> .. <s6>`, the
+  last `HAL_TIM_IC_Start_DMA()` return code per channel.
+- `ERR 8` invalid channel, `ERR 9` `M` out of range.
+
+### `PID:*` -- closed-loop control
+
+This project's whole point (`Core/Inc/pid.h`/`Core/Src/pid.c` --
+Possibility 3 + fixed-rate Master heartbeat, see `docs/changelog.txt`'s
+2026-09-09 design-decision entry). Not gated on a feature-enable flag.
+Channel numbering matches `PFMIN:DATA?`'s own convention: `1..N` on the
+wire (`N` = `HRTIM_NUM_CHANNELS`, `CONFig:CHANnels?` reports it),
+`0..N-1` internally. `ERR 11` invalid channel, `ERR 12` invalid
+argument count/value throughout.
+
+`python/wham_console.py` is the reference host-side front end for all
+of the below -- an interactive operator console with a guided
+shot-profile wizard, live status, and automatic plotting. Use it
+rather than hand-typing these for routine bench work; the raw commands
+below remain available for scripting or anything the console doesn't
+cover yet.
+
+- **`PID:START`** -- begins closed-loop operation on every channel
+  (starts free-running `PFM_Input` capture + PWM output together).
+- **`PID:STOP`** -- stops output + feedback capture on every channel,
+  also ends any profile in progress (see `PID:PROFILE:STARt` below).
+- **`PID:SETPOINT <ch> <hz>`** -- sets channel `ch`'s target output
+  frequency (clamped into `[PID_OUTPUT_MIN_HZ, PID_OUTPUT_MAX_HZ]`,
+  `ctrlr_config.h`). Cancels any in-progress `PID:RAMP` on that channel.
+- **`PID:GAINS <ch> <kp> <ki> <kd>`** -- sets channel `ch`'s PID gains
+  and resets its integrator (avoids a discontinuous output jump from
+  an integral accumulated under the old gains). No corresponding query
+  -- gains are write-only over the wire; a host tool must remember what
+  it last sent (see `wham_console.py`'s `config`/session-memory).
+- **`PID:STATus? <ch>`** -- `OK <running> <setpointHz> <measuredHz>
+  <outputHz>`. `running` reflects the whole loop (`PID_IsRunning()`),
+  not just this channel.
+- **`PID:RAMP <ch> <startHz> <endHz> <durationMs>`** -- begins a linear
+  setpoint ramp on channel `ch`, interpolated fresh each tick (exact
+  landing on `endHz`, no rounding drift). Superseded outright by an
+  active shot profile (below) while one is running.
+- **`PID:LOG <ch> <maxSamples> <decim>`** -- arms waveform logging:
+  every `decim`-th REAL `PID_Update()` tick for channel `ch` (`maxSamples`
+  clamped to `PID_LOG_MAX_SAMPLES`=1000) appends one
+  `{setpointHz, measuredHz, outputHz}` sample, held-value ticks
+  included (see `pid.h`'s own `PID_ArmLog()` comment for the
+  2026-09-10 timebase-accuracy fix this depends on).
+- **`PID:LOGDATA?`** -- `OK <count> <rateHz> s1 m1 o1 s2 m2 o2 ...`,
+  the armed channel's log so far. `rateHz` = `PID_LOOP_RATE_HZ / decim`
+  -- sample `i` occurred at `i / rateHz` seconds after `PID:LOG` was
+  sent. STREAMED reply (one chunk per sample, not one giant buffer --
+  see `cmd_pid_logdata()`'s own comment on why), so it can take
+  noticeably longer than other commands at 1000 samples; budget a
+  generous read timeout (`wham_console.py` uses 8s).
+- **`PID:LOOPMODE <ch> <0|1>`** -- `0` = open-loop (setpoint/profile
+  value written straight to HRTIM, no PID correction; feedback still
+  read/reported for comparison), `1` = closed-loop (default). No
+  corresponding query.
+- **`PID:PROFile:TIMing <rampTimeS> <flatTopTimeS>`** -- sets the
+  SHARED ramp/flat-top durations (seconds) for the next
+  `PID:PROFile:STARt`, applied to every channel at once (each channel
+  keeps its own peak current, below). Both must be `> 0`. No query.
+- **`PID:PROFile:CURRent <ch> <demandCurrentA>`** -- sets channel
+  `ch`'s peak demand current (Amps, clamped to `[0, PFM_MAX_CURRENT_A]`)
+  for the next shot. No query.
+- **`PID:PROFile:STARt`** -- begins a profiled shot on every channel at
+  once, from the same synchronized instant: 0A -> linear ramp up ->
+  `demandCurrentA` -> flat-top -> linear ramp down -> 0A, per channel's
+  own timing-shared/current-independent trapezoid (see `pid.h`'s
+  "DEMAND PROFILE" section). Amps -> Hz is a LINEAR PLACEHOLDER mapping
+  (`ctrlr_config.h`'s `PFM_TURNON_FREQ_HZ`/`PFM_MAX_FREQ_HZ`/
+  `PFM_MAX_CURRENT_A`) pending real hardware characterization. Ends
+  automatically (full `PID:STOP`-equivalent, not hold-at-floor) when
+  the shared clock reaches the shot's total duration -- send
+  `PID:PROFile:STARt` again for another shot, nothing resumes on its
+  own. `ERR 12` if `PID:PROFile:TIMing` was never (successfully) sent.
+
+```
+> PID:LOOPMODE 1 1
+< OK
+> PID:GAINS 1 1.0 10.0 0.0
+< OK
+> PID:PROFILE:CURRENT 1 3000
+< OK
+> PID:LOG 1 1000 3
+< OK
+> PID:PROFILE:TIMING 1.0 1.0
+< OK
+> PID:PROFILE:START
+< OK
+> PID:STATus? 1
+< OK 1 40568 34700 34774
+  ... (shot runs -- 1.0s ramp up, 1.0s flat-top, 1.0s ramp down) ...
+> PID:STATus? 1
+< OK 0 5056 11114 11013
+  (running=0 -- shot auto-stopped, no PID:STOP needed)
+> PID:LOGDATA?
+< OK 1000 333 5741 3000 3000 6653 3000 3000 ...
+```
+
+**Hard output slew-rate clamp** (2026-09-10, `ctrlr_config.h`'s
+`PID_OUTPUT_MAX_SLEW_HZ_PER_TICK`): every tick's actual write to HRTIM
+-- from any of the commands above -- is bounded to at most that many Hz
+of change from the previous tick's actual output, in either direction.
+Compile-time only, no wire command; see that macro's own extensive
+comment for why (a real, DSLogic-confirmed single-tick output glitch)
+and its current placeholder status.
 
 ## Adding a command
 

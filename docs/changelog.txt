@@ -1,6 +1,111 @@
 WHAM-XREX-PFMG474 Firmware Changelog
 =====================================
 
+2026-09-10  —  wham_console.py: interactive operator console, the new
+               maintained front end for this board
+-----------------------------------------------------------------------
+  Change:  New `python/wham_console.py` -- a `cmd.Cmd`-based REPL
+        meant to be THE day-to-day way a human operator works with a
+        real board, superseding hand-typed raw SCPI sessions
+        (`python/scpi.py`, still present, now a minimal fallback) for
+        routine use. Per direct instruction, this is a MAINTAINED
+        front end -- extend it as new commands land, rather than
+        leaving operators to fall back on raw SCPI for everything new
+        (see the file's own "Adding a new console command" section at
+        the bottom).
+
+        Capabilities:
+          - Raw SCPI passthrough for ANY command -- typing something
+            not recognized as a console command (see `help`) sends it
+            to the controller verbatim and prints the reply, ERR
+            replies decorated with their known meaning
+            (docs/command_reference.md's error-code table, duplicated
+            here for inline lookup).
+          - `shot` -- a guided wizard for the full production shot
+            profile: prompts for Ramp Time/Flat Top Time and, per
+            channel, Demand Current/loop mode/gains, shows a summary,
+            confirms, programs every PID:* command in the right order,
+            watches the shot live (PID:STATus? polling), then
+            automatically fetches PID:LOGDATA? and saves a CSV +
+            JSON metadata + PNG plot under shots/ (gitignored --
+            operator-session output, not source). Re-running `shot`
+            defaults every prompt to the previous answer, so repeating
+            an unchanged shot is just pressing Enter through it. Also
+            auto-sizes the log decim so ~1000 samples cover the whole
+            programmed shot duration -- encodes the exact lesson
+            learned the hard way in the 2026-09-10 shot-demo entries
+            above (a mismatched decim silently under-covers a shot).
+          - `plot [channel]` -- fetches whatever's currently logged
+            (PID:LOGDATA?) right now and saves the same CSV/JSON/PNG,
+            without running a new shot -- for replotting after an
+            ad-hoc bench test done via raw PID:LOG/PID:RAMP/
+            PID:SETPOINT commands.
+          - `status [channel]` / `monitor [interval]` -- live,
+            multi-channel PID:STATus? tables (monitor loops until
+            Ctrl-C).
+          - `gains`/`loopmode`/`setpoint`/`ramp`/`start`/`stop`/`log`
+            -- friendlier wrappers over the equivalent PID:* commands
+            (argument validation, open/closed instead of raw 0/1, and
+            -- gains/loopmode/profile current -- remembered in a
+            session-local `config` summary, SINCE THE FIRMWARE HAS NO
+            QUERY COMMAND for any of PID:GAINS/PID:LOOPMODE/
+            PID:PROFILE:TIMING/PID:PROFILE:CURRENT -- explicitly
+            labeled as session memory, not a device readback, and
+            cleared on reconnect, so the console never claims to know
+            something it can't actually verify. A real, flagged gap
+            worth a future firmware fix (add the missing `?` query
+            variants) but not implemented this round -- out of scope
+            for a host-tooling change.
+          - A hard-per-tick safety-confirmation gate before anything
+            that starts real PWM output (FIRE, PID:START,
+            PID:PROFILE:START in any valid SCPI short/long form, BOOT)
+            -- `confirm off` to disable for scripted use. Documented as
+            a best-effort heuristic, not a clone of cmd_parser.c's own
+            short/long-form matcher -- see `_is_dangerous()`'s own
+            comment on the exact limitation and how to extend it.
+          - `connect`/`disconnect`/`ports`/`reflash` (shells out to
+            the existing `wham_serial_flash.py`, closing/reopening
+            this console's own link around it) -- connection/firmware-
+            lifecycle management without leaving the tool.
+          - Every command sent and reply received is timestamped into
+            a per-session transcript under logs/ (gitignored)
+            automatically -- an audit trail with zero operator effort,
+            matching how a real control-room console logs everything.
+
+        Design note worth recording: console meta-command names
+        (connect, status, shot, plot, gains, ...) were chosen
+        specifically so NONE of them can ever be typed (in any case)
+        as the leading identchar token of a real SCPI mnemonic --
+        cmd.Cmd dispatches on an exact, case-sensitive match against
+        `do_<token>`, so a name like `fault` or `pid` would silently
+        SHADOW raw passthrough for that whole command family whenever
+        an operator happened to type it in matching case (e.g. a
+        lowercase "fault?" would hit a hypothetical `do_fault` instead
+        of reaching the device, while "FAULT?" would still pass
+        through -- a real, confusing inconsistency, caught during
+        design rather than left for an operator to discover). Documented
+        explicitly in the file's own header comment and "Adding a new
+        console command" section so this constraint survives future
+        edits.
+
+        docs/command_reference.md was also stale (documented only
+        through QSPI:ID?, missing the entire PFMIN:*/PID:* command
+        families added across the last several sessions) -- brought
+        up to date alongside this tool, including the error-code table
+        (was missing codes 8-12) and a note on the new hard output
+        slew-rate clamp.
+
+        Verified on real hardware: full `shot` wizard run (1.0s ramp /
+        1.0s flat-top / 1.0s ramp-down, 3000A, channel 1, closed-loop)
+        -- programmed correctly, watched live to completion (auto-stop
+        detected, no PID:STOP needed), fetched the log, and produced a
+        correct plot showing the output slew-rate clamp's effect (clean
+        Output trace, glitches only in raw Measured) automatically,
+        with zero hand-written one-off script code. Also verified:
+        `plot` re-fetching an already-armed log without a new shot,
+        disconnect/reconnect, and the danger-confirmation gate
+        correctly blocking a raw `PID:START` until confirmed.
+
 2026-09-10  —  Hard per-tick output slew-rate clamp, configurable in
                ctrlr_config.h; CONFIRMED on real hardware it stops the
                DSLogic-verified output glitch from reaching HRTIM

@@ -16,3 +16,10 @@ __pycache__/
 
 # NOTE: Debug/ build artifacts are NOT ignored here, matching the
 # sibling project's convention -- if that changes, update this file.
+
+# python/wham_console.py's own generated output -- per-shot CSV/PNG/
+# JSON (shots/) and session transcripts (logs/), created on demand via
+# os.makedirs(); pure operator-session data, not source, and would
+# grow unbounded if tracked. See that script's own header comment.
+shots/
+logs/
