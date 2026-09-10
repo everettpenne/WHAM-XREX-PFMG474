@@ -1,6 +1,85 @@
 WHAM-XREX-PFMG474 Firmware Changelog
 =====================================
 
+2026-09-10  —  Independent DSLogic capture CONFIRMS the shot profile
+               against ground truth, AND upgrades the single-tick
+               "feedback dropout" finding to a confirmed REAL output
+               glitch, not a measurement artifact
+-----------------------------------------------------------------------
+  Change:  User captured the same 1.0s/1.0s/1.0s, 3000A, channel-1
+        shot (previous entry, above) with a DSLogic U3Pro32 logic
+        analyzer (250 MHz, probing channel 1's real HRTIM output pin
+        directly) as an independent, firmware-blind ground truth,
+        specifically to cross-check the firmware's own self-reported
+        PID:LOGDATA? trace against reality. Decoded the .dsl capture
+        (a zip archive; libsigrok/DSView's native per-channel bit-
+        packed raw format -- 8 channels, 75x ~2MB chunks each,
+        concatenated in filename order = that channel's full 1-bit/
+        sample stream at the session's sample rate) with a one-off
+        numpy script (scratchpad only, not part of the repo):
+        rising-edge-to-rising-edge period -> instantaneous frequency,
+        then a 1ms windowed average of RAW PERIODS (deliberately
+        matching PfmInput_ConsumeAveragePeriod()'s own averaging
+        convention, for a genuinely apples-to-apples comparison, not
+        just a similar-looking one).
+
+        Two of the capture's 8 channels (edge count ~253k over the
+        3.0s window, vs. the other 6 channels' ~30k -- which matches a
+        CONSTANT PFM_TURNON_FREQ_HZ=5000 idle signal exactly: 5000 Hz
+        x 3.0s x 2 edges/period = 30000) carried channel 1's real
+        signal -- almost certainly two probe points on the same
+        physical path (e.g. either side of the fiber link): distinct
+        files, but identical edge counts and an essentially identical
+        frequency-vs-time shape throughout.
+
+        RESULT: excellent agreement. Interpolating the DSLogic ground
+        truth onto the firmware's own logged timestamps and comparing
+        against the firmware's self-reported Output: median absolute
+        residual 109.8 Hz over a 3000-62000 Hz signal (well under
+        0.5%), mean residual -150 Hz (no systematic bias). The full-
+        shot and ramp-up-detail overlay plots (scratchpad only --
+        dslogic_vs_firmware.png/dslogic_vs_firmware_rampup.png, sent
+        to the user) show the DSLogic trace tracking the firmware's
+        self-reported Output essentially exactly, everywhere, at every
+        visible timescale.
+
+        UPGRADED FINDING, real and worth flagging clearly: the
+        isolated single-tick spikes documented in the previous entry
+        were hypothesized there as a feedback-measurement artifact
+        (PfmInput's averaging window seeing stale/incomplete data).
+        DSLogic's independent, firmware-blind capture shows the EXACT
+        SAME spikes, at the same times, at the same magnitudes, on the
+        real HRTIM output pin -- which means the firmware's self-
+        reported "Output" value during those ticks was NOT a logging
+        or measurement artifact: the PID controller genuinely computed
+        and wrote a wildly wrong PER value to HRTIM for that one tick
+        (e.g. ~89 kHz against a 62 kHz setpoint, confirmed physically
+        present on the wire), not just claimed to. The most likely
+        mechanism is unchanged (a single missed/delayed capture edge
+        feeding one bad "measured" sample into that tick's PID math,
+        which then computes and WRITES a real bad output before the
+        next tick's clean feedback corrects it within 2-3 ticks) --
+        what's upgraded is the confidence that this is a real, externally-
+        verified physical event, not a self-consistent bug confined to
+        the firmware's own reporting.
+
+        Practical implication, flagged for the user's decision, not
+        acted on unprompted: on a bench loopback this is harmless (a
+        ~1ms-long correction), but a real Transrex supply/magnet
+        wouldn't have a firmware-level guard against a one-tick command
+        excursion like this today. Two independent, complementary
+        hardening options worth considering before real hardware is in
+        the loop: (1) outlier-reject PfmInput_ConsumeAveragePeriod()'s
+        result before it reaches PID_Update()'s error calculation
+        (e.g. reject a period more than ~2x/0.5x the previous tick's),
+        or (2) a maximum per-tick output slew-rate clamp in
+        PID_Update() independent of the PID math entirely (a hard
+        ceiling on how much outputHz can change tick-to-tick,
+        regardless of what the raw PID computation says) -- the second
+        is more robust since it bounds the failure mode directly
+        rather than relying on correctly classifying every possible
+        bad sample. Neither implemented this round.
+
 2026-09-10  —  Shot-profile CONFIRMED end-to-end on real hardware; a
                real waveform-log timebase bug found and fixed; gains
                re-tuned for the shot's own timescale; a real single-
