@@ -911,3 +911,135 @@ void cmd_pid_ramp(uart_instance_t *inst, char *args)
     (void)PID_StartRamp(ch, (uint32_t)startArg, (uint32_t)endArg, (uint32_t)durationArg);
     uart_send(inst, "OK\r\n");
 }
+
+/* --------------------------------------------------------------------------
+ * Production shot profile + open/closed-loop mode -- added 2026-09-10.
+ * See pid.h's "DEMAND PROFILE"/"OPEN-LOOP MODE" doc sections.
+ * -------------------------------------------------------------------------- */
+
+void cmd_pid_loopmode(uart_instance_t *inst, char *args)
+{
+    char *tok;
+    long  chArg;
+    long  modeArg;
+    uint8_t ch;
+
+    tok = (args != NULL) ? strtok(args, " \r\n") : NULL;
+    if (tok == NULL)
+    {
+        SendErr(inst, 12, "PID:LOOPMODE needs two arguments: channel 0|1");
+        return;
+    }
+    chArg = atol(tok);
+
+    tok = strtok(NULL, " \r\n");
+    if (tok == NULL)
+    {
+        SendErr(inst, 12, "PID:LOOPMODE needs two arguments: channel 0|1");
+        return;
+    }
+    modeArg = atol(tok);
+
+    if ((chArg < 1L) || (chArg > (long)HRTIM_NUM_CHANNELS))
+    {
+        SendErr(inst, 11, "Invalid PID channel");
+        return;
+    }
+    ch = (uint8_t)(chArg - 1L);
+
+    (void)PID_SetLoopMode(ch, (modeArg != 0L) ? 1U : 0U);
+    uart_send(inst, "OK\r\n");
+}
+
+void cmd_pid_profile_timing(uart_instance_t *inst, char *args)
+{
+    char *tok;
+    double rampTimeS;
+    double flatTopTimeS;
+
+    tok = (args != NULL) ? strtok(args, " \r\n") : NULL;
+    if (tok == NULL)
+    {
+        SendErr(inst, 12, "PID:PROFILE:TIMING needs two arguments: rampTimeS flatTopTimeS");
+        return;
+    }
+    rampTimeS = atof(tok);
+
+    tok = strtok(NULL, " \r\n");
+    if (tok == NULL)
+    {
+        SendErr(inst, 12, "PID:PROFILE:TIMING needs two arguments: rampTimeS flatTopTimeS");
+        return;
+    }
+    flatTopTimeS = atof(tok);
+
+    if ((rampTimeS <= 0.0) || (flatTopTimeS <= 0.0))
+    {
+        SendErr(inst, 12, "rampTimeS/flatTopTimeS must be > 0");
+        return;
+    }
+
+    /* Operator-facing unit is seconds (5-15s ramp, 1-15s flat-top
+       nominal, per the real shot profile) -- PID_SetProfileTiming()'s
+       own unit is milliseconds, matching PID:RAMP's durationMs. */
+    if (PID_SetProfileTiming((uint32_t)(rampTimeS * 1000.0), (uint32_t)(flatTopTimeS * 1000.0)) == 0U)
+    {
+        SendErr(inst, 12, "rampTimeS/flatTopTimeS too small");
+        return;
+    }
+    uart_send(inst, "OK\r\n");
+}
+
+void cmd_pid_profile_current(uart_instance_t *inst, char *args)
+{
+    char *tok;
+    long  chArg;
+    double currentA;
+    uint8_t ch;
+
+    tok = (args != NULL) ? strtok(args, " \r\n") : NULL;
+    if (tok == NULL)
+    {
+        SendErr(inst, 12, "PID:PROFILE:CURRENT needs two arguments: channel demandCurrentA");
+        return;
+    }
+    chArg = atol(tok);
+
+    tok = strtok(NULL, " \r\n");
+    if (tok == NULL)
+    {
+        SendErr(inst, 12, "PID:PROFILE:CURRENT needs two arguments: channel demandCurrentA");
+        return;
+    }
+    currentA = atof(tok);
+
+    if ((chArg < 1L) || (chArg > (long)HRTIM_NUM_CHANNELS))
+    {
+        SendErr(inst, 11, "Invalid PID channel");
+        return;
+    }
+    ch = (uint8_t)(chArg - 1L);
+
+    if (currentA < 0.0)
+    {
+        SendErr(inst, 12, "demandCurrentA must be >= 0");
+        return;
+    }
+
+    /* PID_SetProfileCurrent() clamps into [0, PFM_MAX_CURRENT_A] itself
+       -- matches PID:SETPOINT's own clamp-don't-reject convention. */
+    (void)PID_SetProfileCurrent(ch, (float)currentA);
+    uart_send(inst, "OK\r\n");
+}
+
+void cmd_pid_profile_start(uart_instance_t *inst, char *args)
+{
+    (void)args;
+
+    if (PID_ProfileStart() == 0U)
+    {
+        SendErr(inst, 12, "PID:PROFILE:TIMING must be set before PID:PROFILE:START");
+        return;
+    }
+    uart_send(inst, "OK\r\n");
+}

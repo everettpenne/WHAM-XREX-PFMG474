@@ -38,10 +38,35 @@ typedef struct
     uint32_t rampEndHz;
     uint32_t rampTotalTicks;
     uint32_t rampTicksLeft;
+
+    /* Demand profile / open-loop mode -- added 2026-09-10, see pid.h's
+       header comment ("DEMAND PROFILE" / "OPEN-LOOP MODE" sections)
+       and PID_ProfileStart()/PID_SetLoopMode()'s own doc comments.
+       demandCurrentA is this channel's own peak (Amps) for the SHARED
+       trapezoidal shot profile below -- meaningless unless g_profileActive.
+       closedLoopEnabled defaults to 1 (closed-loop, today's only prior
+       behavior) so existing PID_SetSetpoint()/PID_StartRamp()-driven
+       use keeps working unchanged unless a channel is explicitly
+       switched to open-loop. */
+    float    demandCurrentA;
+    uint8_t  closedLoopEnabled;
 } PidChannelState_t;
 
 static PidChannelState_t g_ch[HRTIM_NUM_CHANNELS];
 static uint8_t g_running = 0U;
+
+/* --------------------------------------------------------------------------
+ * Demand profile -- SHARED shot clock. Deliberately ONE global elapsed-
+ * tick counter, not one per channel, so every channel's ramp/flat-top/
+ * ramp shape stays perfectly synchronized in time even though each
+ * channel has its own peak demandCurrentA (see pid.h). Ticks, not ms,
+ * same convention as the pre-existing rampTicksLeft feature above.
+ * -------------------------------------------------------------------------- */
+static uint8_t  g_profileActive       = 0U;
+static uint32_t g_profileElapsedTicks = 0U;
+static uint32_t g_profileRampTicks    = 0U;   /* one ramp's length (up == down) */
+static uint32_t g_profileFlatTopTicks = 0U;
+static uint32_t g_profileTotalTicks   = 0U;   /* 2*rampTicks + flatTopTicks */
 
 /* Fixed control-loop sample interval, in seconds -- the whole point of
    keeping Master as a fixed-rate heartbeat instead of a self-clocked
@@ -65,6 +90,88 @@ static uint8_t  g_logChannel = 0xFFU;   /* 0xFF = no channel armed */
 static uint16_t g_logDecim   = 1U;
 static uint16_t g_logDecimCounter = 0U;
 
+/* --------------------------------------------------------------------------
+ * Demand profile helpers -- see pid.h's "DEMAND PROFILE" doc section.
+ * -------------------------------------------------------------------------- */
+
+/* This channel's target current (Amps), on the shared trapezoidal
+   shot shape, at `elapsedTicks` into the shot -- 0 -> linear up-ramp
+   -> demandCurrentA -> flat-top -> linear down-ramp -> 0. Only ever
+   called with elapsedTicks < g_profileTotalTicks (PID_Update() checks
+   shot completion BEFORE calling this, see there) -- g_profileRampTicks
+   is guaranteed nonzero whenever g_profileActive, since
+   PID_SetProfileTiming() refuses a zero ramp, so the divisions below
+   are safe. Interpolated from elapsed/total each call (not a fixed
+   per-tick increment accumulated forward), matching the existing
+   PID_StartRamp() convention just above -- lands exactly on the
+   flat-top/zero boundaries regardless of how evenly the durations
+   divide into whole ticks. */
+static float TrapezoidalCurrentA(uint32_t elapsedTicks, float demandCurrentA)
+{
+    if (elapsedTicks < g_profileRampTicks)
+    {
+        float frac = (float)elapsedTicks / (float)g_profileRampTicks;
+        return demandCurrentA * frac;
+    }
+
+    uint32_t flatEndTicks = g_profileRampTicks + g_profileFlatTopTicks;
+    if (elapsedTicks < flatEndTicks)
+    {
+        return demandCurrentA;
+    }
+
+    /* Down-ramp. */
+    uint32_t downElapsed = elapsedTicks - flatEndTicks;
+    float frac = (float)downElapsed / (float)g_profileRampTicks;
+    if (frac > 1.0f)
+    {
+        frac = 1.0f;   /* defensive only -- PID_Update()'s completion
+                           check should always catch this first */
+    }
+    return demandCurrentA * (1.0f - frac);
+}
+
+/* Amps -> Hz, LINEAR PLACEHOLDER -- see ctrlr_config.h's own extensive
+   comment on PFM_TURNON_FREQ_HZ/PFM_MAX_FREQ_HZ/PFM_MAX_CURRENT_A for
+   why this is flagged as provisional (real Transrex SCR/phase-control
+   physics may not be linear) and left for post-characterization
+   revisit. Per direct instruction, 0A maps to EXACTLY
+   PFM_TURNON_FREQ_HZ (not some frequency below it -- there is no
+   "off but nonzero" output state between 0A and turn-on). Clamps
+   currentA to [0, PFM_MAX_CURRENT_A] first (a profile's own math
+   should never produce outside that range, but this is the last line
+   of defense before a value reaches hardware) and the resulting Hz to
+   [PID_OUTPUT_MIN_HZ, PID_OUTPUT_MAX_HZ] (the hardware-register safety
+   clamp -- PFM_TURNON_FREQ_HZ/PFM_MAX_FREQ_HZ are documented to nest
+   inside that range, this is defense-in-depth, not expected to ever
+   actually bind). */
+static uint32_t AmpsToHz(float currentA)
+{
+    if (currentA < 0.0f)
+    {
+        currentA = 0.0f;
+    }
+    else if (currentA > (float)PFM_MAX_CURRENT_A)
+    {
+        currentA = (float)PFM_MAX_CURRENT_A;
+    }
+
+    float frac = currentA / (float)PFM_MAX_CURRENT_A;
+    float hzF = (float)PFM_TURNON_FREQ_HZ +
+                frac * ((float)PFM_MAX_FREQ_HZ - (float)PFM_TURNON_FREQ_HZ);
+
+    if (hzF < (float)PID_OUTPUT_MIN_HZ)
+    {
+        hzF = (float)PID_OUTPUT_MIN_HZ;
+    }
+    else if (hzF > (float)PID_OUTPUT_MAX_HZ)
+    {
+        hzF = (float)PID_OUTPUT_MAX_HZ;
+    }
+
+    return (uint32_t)hzF;
+}
+
 void PID_Init(void)
 {
     for (uint8_t ch = 0U; ch < HRTIM_NUM_CHANNELS; ch++)
@@ -81,8 +188,15 @@ void PID_Init(void)
         g_ch[ch].rampEndHz          = 0U;
         g_ch[ch].rampTotalTicks     = 0U;
         g_ch[ch].rampTicksLeft      = 0U;
+        g_ch[ch].demandCurrentA     = 0.0f;
+        g_ch[ch].closedLoopEnabled  = 1U;   /* default: closed-loop, prior-only behavior */
     }
-    g_running = 0U;
+    g_running               = 0U;
+    g_profileActive          = 0U;
+    g_profileElapsedTicks    = 0U;
+    g_profileRampTicks       = 0U;
+    g_profileFlatTopTicks    = 0U;
+    g_profileTotalTicks      = 0U;
 }
 
 uint8_t PID_Start(void)
@@ -132,7 +246,11 @@ void PID_Stop(void)
         PfmInput_StopContinuous(ch);
     }
 
-    g_running = 0U;
+    g_running      = 0U;
+    g_profileActive = 0U;   /* a stop -- fault, PID:STOP, or shot completion
+                                (see PID_Update()) -- always ends any
+                                profile in progress too; an operator
+                                must send PID:PROFILE:START again */
 }
 
 uint8_t PID_IsRunning(void)
@@ -168,39 +286,49 @@ void PID_Update(void)
         return;
     }
 
+    /* Demand profile -- shared shot clock, one elapsed value for every
+       channel this tick (see pid.h's "DEMAND PROFILE" section and the
+       g_profile* globals' own comment above). Completion is checked
+       FIRST, before any channel is touched: per direct instruction,
+       end-of-shot means a full stop (PID_Stop(), output off entirely),
+       not hold-at-floor -- so this tick does no further work at all
+       once the shot's total duration has elapsed. */
+    uint32_t profileElapsedThisTick = 0U;
+    if (g_profileActive != 0U)
+    {
+        if (g_profileElapsedTicks >= g_profileTotalTicks)
+        {
+            PID_Stop();
+            return;
+        }
+        profileElapsedThisTick = g_profileElapsedTicks;
+        g_profileElapsedTicks++;
+    }
+
     for (uint8_t ch = 0U; ch < HRTIM_NUM_CHANNELS; ch++)
     {
         PidChannelState_t *st = &g_ch[ch];
 
-        uint32_t periodTicks = PfmInput_GetLatestPeriod(ch);
-        if (periodTicks == 0U)
+        /* Setpoint: either this tick's profile-computed demand (shared
+           timing, this channel's own peak demandCurrentA), or -- when
+           no profile is active -- the pre-existing static-setpoint/
+           linear-ramp behavior, completely unchanged. The profile
+           supersedes PID_StartRamp()'s own ramp outright while active;
+           they're mutually exclusive ways of driving setpointHz, never
+           combined. */
+        if (g_profileActive != 0U)
         {
-            /* No fresh feedback yet (capture just started, or nothing
-               physically connected to this channel) -- hold whatever
-               HRTIM last had rather than dividing by zero or treating
-               "no data" as "zero Hz," which would slam this channel's
-               integrator toward the setpoint's full error every tick.
-               See PID_Start()'s own doc comment. */
-            continue;
+            float demandA = TrapezoidalCurrentA(profileElapsedThisTick, st->demandCurrentA);
+            st->setpointHz = AmpsToHz(demandA);
         }
-
-        uint32_t measuredHz = HRTIM_TIMER_CLK_HZ / periodTicks;
-
-        /* Linear setpoint ramp -- see pid.h's own comment on
-           PID_StartRamp(). Interpolated from elapsed/total ticks each
-           time (not a fixed per-tick increment accumulated forward),
-           so rounding never compounds over the ramp -- lands exactly
-           on rampEndHz on the final tick regardless of how evenly
-           (endHz-startHz) divides by the tick count. Advances only on
-           a tick with fresh feedback (this function's own `continue`
-           above already skipped anything else) -- fine for this
-           project's current use (a channel with a ramp armed has
-           feedback connected, that's the whole point of running one),
-           but worth knowing if a ramp on a feedback-less channel is
-           ever wanted: it would stall at rampStartHz until feedback
-           arrives, not march forward on the heartbeat alone. */
-        if (st->rampTicksLeft > 0U)
+        else if (st->rampTicksLeft > 0U)
         {
+            /* Linear setpoint ramp -- see pid.h's own comment on
+               PID_StartRamp(). Interpolated from elapsed/total ticks
+               each time (not a fixed per-tick increment accumulated
+               forward), so rounding never compounds over the ramp --
+               lands exactly on rampEndHz on the final tick regardless
+               of how evenly (endHz-startHz) divides by the tick count. */
             uint32_t elapsed = st->rampTotalTicks - st->rampTicksLeft;
             float frac = (float)elapsed / (float)st->rampTotalTicks;
             float interpHz = (float)st->rampStartHz +
@@ -212,6 +340,71 @@ void PID_Update(void)
             {
                 st->setpointHz = st->rampEndHz;   /* exact landing, no rounding drift */
             }
+        }
+
+        /* Feedback -- windowed average over everything captured since
+           this channel's last consume, not a single latest-period
+           sample (see pfm_input.h's own doc comment on
+           PfmInput_ConsumeAveragePeriod() for the averaging/atomicity
+           rationale). Zero samples this window (capture just started,
+           nothing physically connected, or -- per direct instruction --
+           a genuine zero-edges-this-period failure mode, e.g. a slow-
+           responding supply) is reported the same way regardless of
+           cause: no fresh measurement to act on. */
+        uint32_t avgPeriodTicks = 0U;
+        uint16_t sampleCount    = 0U;
+        uint8_t  haveFeedback   = PfmInput_ConsumeAveragePeriod(ch, &avgPeriodTicks, &sampleCount);
+        uint32_t measuredHz     = haveFeedback ? (HRTIM_TIMER_CLK_HZ / avgPeriodTicks) : 0U;
+
+        if (st->closedLoopEnabled == 0U)
+        {
+            /* Open-loop -- per direct instruction: write the profile/
+               setpoint value straight to HRTIM, NO PID error
+               correction at all. Feedback is still consumed above (so
+               the averaging accumulator doesn't silently build up
+               unbounded across ticks) and still recorded into
+               lastMeasuredHz/the waveform log whenever fresh, purely
+               for reporting/comparison -- it just never influences
+               this channel's output. */
+            uint32_t outputHz = st->setpointHz;
+            st->lastOutputHz  = outputHz;
+
+            if (haveFeedback != 0U)
+            {
+                st->lastMeasuredHz   = measuredHz;
+                st->haveLastMeasured = 1U;
+            }
+
+            uint16_t per = (uint16_t)((HRTIM_TIMER_CLK_HZ / outputHz) - 1U);
+            HRTIM1_SetChannelPeriod(ch, per);
+
+            if ((ch == g_logChannel) && (g_logCount < g_logCap))
+            {
+                g_logDecimCounter++;
+                if (g_logDecimCounter >= g_logDecim)
+                {
+                    g_logDecimCounter = 0U;
+                    g_logSetpoint[g_logCount] = st->setpointHz;
+                    g_logMeasured[g_logCount] = st->lastMeasuredHz;
+                    g_logOutput[g_logCount]   = outputHz;
+                    g_logCount++;
+                }
+            }
+
+            continue;
+        }
+
+        if (haveFeedback == 0U)
+        {
+            /* Closed-loop, no fresh feedback yet this window -- hold
+               whatever HRTIM last had rather than dividing by zero or
+               treating "no data" as "zero Hz," which would slam this
+               channel's integrator toward the setpoint's full error
+               every tick. Per direct instruction (the zero-edges
+               failure mode): just skip this channel's update for the
+               tick, same as before this feature -- there can be real
+               millisecond-scale delay in the supply's own response. */
+            continue;
         }
 
         float error = (float)st->setpointHz - (float)measuredHz;
@@ -458,4 +651,93 @@ uint8_t PID_StartRamp(uint8_t channel, uint32_t startHz, uint32_t endHz, uint32_
     g_ch[channel].rampTicksLeft  = ticks;
 
     return 1U;
+}
+
+uint8_t PID_SetLoopMode(uint8_t channel, uint8_t closedLoop)
+{
+    if (channel >= HRTIM_NUM_CHANNELS)
+    {
+        return 0U;
+    }
+
+    g_ch[channel].closedLoopEnabled = (closedLoop != 0U) ? 1U : 0U;
+    return 1U;
+}
+
+uint8_t PID_GetLoopMode(uint8_t channel)
+{
+    if (channel >= HRTIM_NUM_CHANNELS)
+    {
+        return 1U;   /* safe default (closed-loop) for an out-of-range channel */
+    }
+
+    return g_ch[channel].closedLoopEnabled;
+}
+
+uint8_t PID_SetProfileTiming(uint32_t rampTimeMs, uint32_t flatTopTimeMs)
+{
+    if ((rampTimeMs == 0U) || (flatTopTimeMs == 0U))
+    {
+        return 0U;
+    }
+
+    /* Ticks, not ms -- same rounding convention as PID_StartRamp()
+       above; at least 1 each, so a very short duration never produces
+       a zero-tick phase (TrapezoidalCurrentA()'s own division would
+       divide-by-zero on a zero g_profileRampTicks). */
+    uint32_t rampTicks    = (rampTimeMs    * (uint32_t)PID_LOOP_RATE_HZ) / 1000U;
+    uint32_t flatTopTicks = (flatTopTimeMs * (uint32_t)PID_LOOP_RATE_HZ) / 1000U;
+    if (rampTicks == 0U)    { rampTicks    = 1U; }
+    if (flatTopTicks == 0U) { flatTopTicks = 1U; }
+
+    g_profileRampTicks    = rampTicks;
+    g_profileFlatTopTicks = flatTopTicks;
+    g_profileTotalTicks   = (2U * rampTicks) + flatTopTicks;   /* up-ramp + flat-top + down-ramp */
+
+    return 1U;
+}
+
+uint8_t PID_SetProfileCurrent(uint8_t channel, float demandCurrentA)
+{
+    if (channel >= HRTIM_NUM_CHANNELS)
+    {
+        return 0U;
+    }
+
+    if (demandCurrentA < 0.0f)
+    {
+        demandCurrentA = 0.0f;
+    }
+    else if (demandCurrentA > (float)PFM_MAX_CURRENT_A)
+    {
+        demandCurrentA = (float)PFM_MAX_CURRENT_A;
+    }
+
+    g_ch[channel].demandCurrentA = demandCurrentA;
+    return 1U;
+}
+
+uint8_t PID_ProfileStart(void)
+{
+    if ((g_profileRampTicks == 0U) && (g_profileFlatTopTicks == 0U))
+    {
+        /* PID_SetProfileTiming() never called (or it was rejected) --
+           refuse rather than run a degenerate zero-length shot. */
+        return 0U;
+    }
+
+    g_profileElapsedTicks = 0U;
+    g_profileActive       = 1U;
+
+    /* Per direct instruction: closed-loop operation (for channels not
+       explicitly switched to open-loop, see PID_SetLoopMode()) starts
+       the instant PFM output does -- PID_Start() both begins the PFM
+       output AND is what makes PID_Update() actually run each
+       heartbeat, so there is no separate "now start correcting" step. */
+    return PID_Start();
+}
+
+uint8_t PID_IsProfileActive(void)
+{
+    return g_profileActive;
 }

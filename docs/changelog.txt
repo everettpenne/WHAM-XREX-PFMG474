@@ -1,6 +1,158 @@
 WHAM-XREX-PFMG474 Firmware Changelog
 =====================================
 
+2026-09-10  —  Windowed-average feedback + real production shot
+               profile (Ramp/Flat-Top/Demand Current) + Amps<->Hz +
+               open/closed-loop mode, CONFIRMED on real hardware
+-----------------------------------------------------------------------
+  Change:  Replaces the single-latest-sample feedback and the ad hoc
+        static-setpoint/PID:RAMP-only demand of 2026-09-09 with the
+        real production architecture, fully specified across a design
+        discussion before any code was written (see this project's own
+        session notes for the back-and-forth; summarized here as the
+        final, implemented design):
+
+          - Core/Src/pfm_input.c, Core/Inc/pfm_input.h: new
+            PfmInput_ConsumeAveragePeriod(channel, &avgPeriodTicks,
+            &sampleCount) -- averages RAW periods (not frequencies,
+            per direct instruction: convert to Hz only after
+            averaging) over everything captured since the last
+            consume, then resets the accumulator ("reciprocal
+            frequency counting", standard practice for this kind of
+            feedback). The averaging window's boundary is NOT synced
+            to the Master heartbeat exactly -- doesn't need to be, per
+            direct instruction, since the goal is a solid measurement
+            of actual supply output, not exact period alignment.
+            Lock-free by construction, not by an added critical
+            section: HRTIM1_Master_IRQn (priority 1) can always
+            preempt the DMA capture ISR (priority 3) but never the
+            reverse, so a read+reset from Master's context can never
+            race a concurrent accumulate from the DMA ISR.
+
+          - Core/Inc/ctrlr_config.h: PFM_TURNON_FREQ_HZ (5000,
+            placeholder pending bench characterization) /
+            PFM_MAX_FREQ_HZ (100000) / PFM_MAX_CURRENT_A (5000.0f, ~5kA
+            nominal) -- the Amps<->Hz calibration layer, nested inside
+            the existing hardware-register safety clamp
+            (PID_OUTPUT_MIN_HZ/MAX_HZ, 3000/150000). Below
+            PFM_TURNON_FREQ_HZ the Transrex supply outputs 0A; above
+            PFM_MAX_FREQ_HZ its output saturates around
+            PFM_MAX_CURRENT_A.
+
+          - Core/Inc/pid.h, Core/Src/pid.c: the real shot-profile
+            engine.
+              * TrapezoidalCurrentA(elapsedTicks, demandCurrentA):
+                0A -> linear up-ramp -> demandCurrentA -> flat-top ->
+                linear down-ramp -> 0A, computed ON THE FLY once per
+                Master heartbeat from a compact {rampTicks,
+                flatTopTicks, demandCurrentA} state -- NOT a stored
+                per-period table (not enough RAM for one, per direct
+                instruction; this is the entire reason the profile is
+                parametric rather than tabulated).
+              * AmpsToHz(currentA): LINEAR PLACEHOLDER mapping
+                [0, PFM_MAX_CURRENT_A] -> [PFM_TURNON_FREQ_HZ,
+                PFM_MAX_FREQ_HZ], with 0A landing EXACTLY on
+                PFM_TURNON_FREQ_HZ (no "off but nonzero" output state
+                between 0A and turn-on), per direct instruction. Real
+                Transrex SCR/phase-controlled-rectifier physics may
+                not be linear (a cosine-like relationship between
+                firing angle and output current is a real possibility)
+                -- flagged in both ctrlr_config.h and pid.c as
+                provisional, explicitly deferred to post-hardware-
+                characterization, not silently assumed correct.
+              * ONE shared/synchronized shot clock (g_profileElapsedTicks
+                et al.), not one per channel -- per direct instruction,
+                every channel's ramp/flat-top/ramp shape must stay
+                perfectly synchronized in time even though each
+                channel has its own peak demandCurrentA. Checked for
+                completion BEFORE any channel is touched each tick.
+              * PID_SetProfileTiming(rampTimeMs, flatTopTimeMs) /
+                PID_SetProfileCurrent(channel, demandCurrentA) /
+                PID_ProfileStart() / PID_IsProfileActive(): the new
+                public API. PID_ProfileStart() both zeroes the shared
+                clock and calls PID_Start() -- per direct instruction,
+                closed-loop correction begins the instant PFM output
+                does, not as a separate step.
+              * End of shot (shared clock reaches total duration):
+                FULL STOP via PID_Stop() -- PFM output off entirely on
+                every channel -- per direct instruction, not
+                hold-at-floor. An operator must send
+                PID:PROFILE:START again for another shot; nothing
+                resumes on its own.
+              * Per-channel open/closed-loop mode
+                (PID_SetLoopMode()/PID_GetLoopMode(), default
+                closed-loop): open-loop writes the profile/setpoint
+                value straight to HRTIM every tick with NO PID error
+                correction at all; feedback is still consumed and
+                still recorded (lastMeasuredHz, the waveform log) for
+                reporting/comparison, it just never influences that
+                channel's output. Raised as a good idea during design
+                and confirmed wanted, per direct instruction.
+              * Zero-samples-this-window handling (a channel's
+                PfmInput_ConsumeAveragePeriod() returns no fresh data):
+                per direct instruction, hold the previous output and
+                skip that channel's update for the tick -- there can
+                be real millisecond-scale delay in the Transrex
+                supply's own response to a demand change, so this is a
+                legitimate operating condition, not necessarily a
+                fault.
+              * PID_Update() restructured around all of the above: a
+                once-per-tick shared-clock completion check, then per
+                channel -- profile-or-ramp setpoint, windowed-average
+                feedback consume, open-loop branch (write straight
+                through) OR closed-loop branch (existing PID math,
+                unchanged, including the 2026-09-09 directional
+                anti-windup fix) gated on fresh feedback.
+
+          - Core/Src/commands.c, Core/Inc/commands.h, Core/Src/
+            cmd_parser.c: four new wire commands -- PID:LOOPMODE <ch>
+            <0|1>, PID:PROFile:TIMing <rampTimeS> <flatTopTimeS>
+            (operator-facing unit is seconds, matching the real
+            5-15s/1-15s nominal ranges; converted to PID_Update()'s own
+            millisecond/tick units internally), PID:PROFile:CURRent
+            <ch> <demandCurrentA>, PID:PROFile:STARt. Error codes 11
+            (invalid channel)/12 (invalid argument), matching every
+            existing PID:* command's convention.
+
+        CONFIRMED on real hardware (bench, fiber-link feedback on one
+        channel, none on another): armed PID:LOOPMODE 1 0 (ch1
+        open-loop) / PID:PROFILE:TIMING 1 0.5 (1s ramp, 0.5s flat-top,
+        2.5s total) / PID:PROFILE:CURRENT on two channels, then
+        PID:PROFILE:START and polled PID:STATus? through the whole
+        shot. Channel 1's setpoint/output climbed through the up-ramp
+        (~38.5kHz), held near the top through flat-top (~51.5kHz),
+        descended through the down-ramp (~12.8kHz), and landed at
+        PFM_TURNON_FREQ_HZ (5047, i.e. the trapezoid's 0A floor) right
+        as the shot ended -- exactly the commanded shape. Channel 2 (no
+        feedback physically connected on this channel this bench run)
+        correctly held its output at the closed-loop "no fresh
+        feedback" default (never wrote a first sample) rather than
+        diverging or erroring, confirming the zero-samples handling.
+        `running` (PID_IsRunning(), reported by PID:STATus?) flipped
+        1 -> 0 automatically right around the shot's own 2.5s total
+        duration, with no PID:STOP sent -- confirms the shared clock
+        and auto-stop-at-completion both work as designed.
+
+        A real process gotcha, not a firmware bug: Debug/
+        WHAM-XREX-PFMG474.bin is NOT produced by `make all` (grep of
+        Makefile/objects.mk/sources.mk turns up no .bin rule at all --
+        only the .elf/.list) -- it has to be regenerated by hand
+        (arm-none-eabi-objcopy -O binary WHAM-XREX-PFMG474.elf
+        WHAM-XREX-PFMG474.bin) after every rebuild before
+        wham_serial_flash.py's default --bin path is valid. The very
+        first flash attempt this round silently flashed a STALE .bin
+        (from before this round's source changes) that verified fine
+        (its own bytes matched what was written) while every new
+        PID:LOOPMODE/PID:PROFile:* command still reported "ERR 1
+        Unknown command" -- confusing at first because the flash
+        itself reported success. Caught by comparing the .bin's
+        mtime against the freshly-rebuilt .o files' mtimes (.bin was
+        over an hour older); fixed by regenerating it and reflashing,
+        confirmed by the command tests above then passing. Worth a
+        real fix (a Makefile post-build rule, or teaching
+        wham_serial_flash.py to invoke objcopy itself) -- not done in
+        this round, flagged for follow-up.
+
 2026-09-09  —  Closed-loop PID controller implemented, a real
                anti-windup bug found and fixed, CONFIRMED converging
                on real hardware

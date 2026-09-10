@@ -130,6 +130,51 @@
 #define PID_OUTPUT_MAX_HZ  (150000UL)
 
 /* --------------------------------------------------------------------------
+ * Transrex Amps<->Hz mapping (compile-time, PLACEHOLDER pending real
+ * hardware characterization)
+ *
+ * Added 2026-09-10, the real production shot-profile design: an
+ * operator programs Ramp Time / Flat Top Time / Demand Current
+ * (Amps) -- see pid.h's PID_SetProfileTiming()/PID_SetProfileCurrent()
+ * -- and pid.c converts that trapezoidal CURRENT trajectory to a
+ * target FREQUENCY each Master tick via these two calibration points:
+ *
+ *   PFM_TURNON_FREQ_HZ  -- the Transrex's own "turn-on" threshold: at
+ *                          or below this frequency, the supply outputs
+ *                          ZERO current (a genuine hardware dead zone,
+ *                          not just "small current"). Maps to exactly
+ *                          0 A, per direct confirmation -- the ramp
+ *                          never commands anything below this value.
+ *   PFM_MAX_FREQ_HZ      -- maps to PFM_MAX_CURRENT_A, the top of the
+ *                          demand range.
+ *
+ * LINEAR interpolation between these two points, PLACEHOLDER, per
+ * direct confirmation (2026-09-10) -- flagged, not silently assumed:
+ * the ORIGINAL analog Transrex chain (docs/Transrex/
+ * Transrex_Controls_Upgrade (1).pdf) describes a 0-10V signal mapping
+ * to SCR firing angles 180-0 degrees, and phase-controlled rectifiers
+ * are classically NONLINEAR (roughly cosine-shaped) between firing
+ * angle and actual output current -- whether that nonlinearity is
+ * already compensated upstream of us, or whether our frequency needs
+ * to trace a matching curve instead of a straight line, is unknown
+ * from here and needs real hardware characterization. AmpsToHz()
+ * (pid.c) is written as one small, isolated, swappable function
+ * specifically so replacing "linear" with a calibrated curve later
+ * touches only that function, not the profile generator or the
+ * control loop around it.
+ *
+ * Both frequency values are PLACEHOLDERS ("~5 kHz" / "100 kHz" per
+ * direct confirmation, "hardware testing will give us a more precise
+ * value") -- update once real bench characterization exists, and
+ * note the range these define sits safely inside
+ * [PID_OUTPUT_MIN_HZ, PID_OUTPUT_MAX_HZ] above, which stays in place
+ * as the outer hardware-register safety clamp regardless of what
+ * these two turn out to be. */
+#define PFM_TURNON_FREQ_HZ   (5000UL)
+#define PFM_MAX_FREQ_HZ       (100000UL)
+#define PFM_MAX_CURRENT_A     (5000.0f)   /* 5 kA nominal, placeholder */
+
+/* --------------------------------------------------------------------------
  * GateDriverStatus fault polarity (compile-time)
  *
  * GDS_NORMALLY_HIGH -- pins read HIGH in good operation;

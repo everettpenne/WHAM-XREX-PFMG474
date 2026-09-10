@@ -221,6 +221,32 @@ void cmd_pid_ramp(uart_instance_t *inst, char *args);       /* PID:RAMP <ch> <st
                                                                  OK, begins a linear
                                                                  setpoint ramp */
 
+/* Production shot profile + open/closed-loop mode, added 2026-09-10 --
+   see pid.h's "DEMAND PROFILE"/"OPEN-LOOP MODE" doc sections and
+   PID_SetLoopMode()/PID_SetProfileTiming()/PID_SetProfileCurrent()/
+   PID_ProfileStart()'s own comments for the full design. */
+void cmd_pid_loopmode(uart_instance_t *inst, char *args);       /* PID:LOOPMODE <ch>
+                                                                     <0|1> -- OK, 0 =
+                                                                     open-loop, 1 =
+                                                                     closed-loop
+                                                                     (default) */
+void cmd_pid_profile_timing(uart_instance_t *inst, char *args);  /* PID:PROFILE:TIMING
+                                                                      <rampTimeS>
+                                                                      <flatTopTimeS> --
+                                                                      OK, sets the SHARED
+                                                                      shot timing (every
+                                                                      channel) */
+void cmd_pid_profile_current(uart_instance_t *inst, char *args); /* PID:PROFILE:CURRENT
+                                                                      <ch> <demandCurrentA>
+                                                                      -- OK, sets channel
+                                                                      ch's peak current
+                                                                      for the next shot */
+void cmd_pid_profile_start(uart_instance_t *inst, char *args);   /* PID:PROFILE:START --
+                                                                      OK, begins a
+                                                                      profiled shot on
+                                                                      every channel at
+                                                                      once */
+
 #ifdef __cplusplus
 }
 #endif

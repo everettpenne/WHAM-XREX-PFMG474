@@ -73,6 +73,45 @@ extern "C" {
  * that only cares about frequency. Revisit (HRTIM's UPDGAT, or a
  * DMA-burst transfer to make the pair atomic) only if real bench
  * testing ever shows this matters.
+ *
+ * FEEDBACK MEASUREMENT (2026-09-10, real production decision, see
+ * docs/changelog.txt): PID_Update() reads pfm_input.c's
+ * PfmInput_ConsumeAveragePeriod() -- the AVERAGE over every complete
+ * period PFM_Input measured since the last tick (standard reciprocal-
+ * frequency-counting practice: average the raw PERIODS, then convert
+ * once to Hz), not a single most-recently-captured sample
+ * (PfmInput_GetLatestPeriod(), still exists, no longer what the
+ * control loop itself uses). A real Transrex output can be tens of
+ * periods per 1 ms Master tick; averaging all of them gives a real
+ * noise-rejecting measurement of the actual physical supply output
+ * instead of one arbitrary edge.
+ *
+ * DEMAND PROFILE (2026-09-10, the real production shot shape, see
+ * docs/changelog.txt): an operator programs Ramp Time / Flat Top Time
+ * (SHARED across all 4 channels -- one synchronized shot clock, see
+ * PID_SetProfileTiming()) and, per channel, a Demand Current in Amps
+ * (PID_SetProfileCurrent()). PID_ProfileStart() begins a shot: 0 A ->
+ * linear ramp to Demand Current over Ramp Time -> hold for Flat Top
+ * Time -> linear ramp back to 0 A over Ramp Time -> full stop
+ * (PID_Stop(), PFM output off entirely, per direct instruction --
+ * NOT a hold-at-floor). Computed ON THE FLY from the compact
+ * {rampTicks, flatTopTicks, demandCurrentA} description each
+ * PID_Update() tick (TrapezoidalCurrentA(), pid.c) -- there is
+ * deliberately no stored per-period table (not enough RAM for one,
+ * and the whole point of Possibility 3 plus a fixed heartbeat is that
+ * nothing needs one). The resulting instantaneous current target is
+ * converted to a frequency (AmpsToHz(), pid.c -- LINEAR, a
+ * placeholder pending real hardware characterization, see
+ * ctrlr_config.h's own note on PFM_TURNON_FREQ_HZ) and that becomes
+ * this channel's setpoint for the tick, feeding the same error/PID
+ * math as always.
+ *
+ * OPEN-LOOP MODE (2026-09-10): each channel independently
+ * (PID_SetLoopMode()) can run the profile-generated setpoint straight
+ * to HRTIM with NO error correction at all -- feedback is still read
+ * and reported (so open- vs. closed-loop behavior can be compared
+ * directly against the same profile), just not used to adjust the
+ * output. Defaults to closed-loop.
  */
 
 /* Called once at boot (main.c) -- zeroes every channel's PID state and
@@ -170,6 +209,61 @@ uint8_t PID_SetGains(uint8_t channel, float kp, float ki, float kd);
  * is out of range (outputs left unwritten in that case). */
 uint8_t PID_GetStatus(uint8_t channel, uint32_t *setpointHz,
                       uint32_t *measuredHz, uint32_t *outputHz);
+
+/* Sets channel `channel`'s loop mode -- 1 = closed-loop (the default,
+ * PID error correction against measured feedback, same as always), 0
+ * = open-loop (the profile-generated -- or plain PID_SetSetpoint()/
+ * PID_StartRamp() -- setpoint is written straight to HRTIM every
+ * tick, NO error correction at all). Feedback is still read and
+ * reported (PID_GetStatus()'s measuredHz, the waveform log) in open
+ * loop -- it's just not used to adjust the output -- so open- vs.
+ * closed-loop behavior against the identical commanded profile can be
+ * compared directly. Per-channel, not global, matching this whole
+ * architecture's independence between channels. Returns 1 on success,
+ * 0 if `channel` is out of range. Takes effect on this channel's very
+ * next PID_Update() tick. */
+uint8_t PID_SetLoopMode(uint8_t channel, uint8_t closedLoop);
+uint8_t PID_GetLoopMode(uint8_t channel);
+
+/* --------------------------------------------------------------------------
+ * Demand profile -- added 2026-09-10, the real production shot shape.
+ * See this file's own header comment for the full picture. Ramp Time/
+ * Flat Top Time are SHARED (one synchronized clock for all
+ * HRTIM_NUM_CHANNELS channels); Demand Current is per-channel.
+ * -------------------------------------------------------------------------- */
+
+/* Sets the SHARED ramp/flat-top durations, in milliseconds (matching
+ * PID_StartRamp()'s existing convention) -- an operator-facing wire
+ * command converts from the natural operator unit (seconds) before
+ * calling this. Applies to every channel's NEXT PID_ProfileStart(),
+ * not retroactively to a shot already in progress. Returns 1 on
+ * success, 0 if either duration is 0. */
+uint8_t PID_SetProfileTiming(uint32_t rampTimeMs, uint32_t flatTopTimeMs);
+
+/* Sets channel `channel`'s peak demand current for the profile, in
+ * Amps -- clamped to [0, PFM_MAX_CURRENT_A] (ctrlr_config.h). Takes
+ * effect on this channel's next PID_ProfileStart(). Returns 1 on
+ * success, 0 if `channel` is out of range. */
+uint8_t PID_SetProfileCurrent(uint8_t channel, float demandCurrentA);
+
+/* Begins a profiled shot on every channel at once, from the SAME
+ * synchronized instant: zeroes the one shared elapsed-tick clock,
+ * marks the profile active, and calls PID_Start() -- per direct
+ * instruction, closed-loop operation begins the moment PFM output
+ * does, not as a separate step. Each channel computes its own
+ * trapezoidal current target from the shared clock and its own
+ * PID_SetProfileCurrent() value (see TrapezoidalCurrentA(), pid.c);
+ * channels currently in open-loop mode (PID_SetLoopMode()) still
+ * follow the same profile, just without error correction. When the
+ * shared clock reaches the end of the down-ramp, the shot ends
+ * automatically: PID_Stop() (full stop, PFM output off entirely, per
+ * direct instruction) -- an operator must send PID:PROFILE:START
+ * again for another shot, nothing resumes on its own. Returns 1 on
+ * success, 0 if PID_SetProfileTiming() was never called (rampTimeMs/
+ * flatTopTimeMs both 0). */
+uint8_t PID_ProfileStart(void);
+
+uint8_t PID_IsProfileActive(void);
 
 /* --------------------------------------------------------------------------
  * Waveform logging -- added 2026-09-10, so "demanded vs. closed-loop

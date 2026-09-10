@@ -27,3 +27,7 @@
 ../Core/Src/commands.c:767:6:cmd_pid_log	40	static
 ../Core/Src/commands.c:830:6:cmd_pid_logdata	96	static
 ../Core/Src/commands.c:854:6:cmd_pid_ramp	40	static
+../Core/Src/commands.c:920:6:cmd_pid_loopmode	32	static
+../Core/Src/commands.c:954:6:cmd_pid_profile_timing	48	static
+../Core/Src/commands.c:993:6:cmd_pid_profile_current	40	static
+../Core/Src/commands.c:1035:6:cmd_pid_profile_start	16	static

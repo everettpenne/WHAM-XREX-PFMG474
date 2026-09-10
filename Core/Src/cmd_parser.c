@@ -136,6 +136,15 @@ static const command_t command_table[] = {
     { "PID:LOG",             cmd_pid_log       },
     { "PID:LOGDATA?",        cmd_pid_logdata   },
     { "PID:RAMP",            cmd_pid_ramp      },
+
+    /* Production shot profile + open/closed-loop mode, added
+       2026-09-10 -- see commands.h's own header comment on these
+       handlers and pid.h's "DEMAND PROFILE"/"OPEN-LOOP MODE" doc
+       sections for the full design. */
+    { "PID:LOOPMODE",        cmd_pid_loopmode        },
+    { "PID:PROFile:TIMing",  cmd_pid_profile_timing  },
+    { "PID:PROFile:CURRent", cmd_pid_profile_current },
+    { "PID:PROFile:STARt",   cmd_pid_profile_start   },
 };
 
 #define NUM_COMMANDS  (sizeof(command_table) / sizeof(command_table[0]))

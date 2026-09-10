@@ -180,6 +180,18 @@ typedef struct
     uint8_t  running;
     uint8_t  continuous;
     uint32_t lastPeriod;
+
+    /* Windowed-average accumulator -- added 2026-09-10, see
+       pfm_input.h's own comment block on PfmInput_ConsumeAveragePeriod().
+       Continuous mode only (bench-capture mode's period[] array
+       already serves a different purpose -- a full recorded sequence,
+       not a running average). `avgSum`/`avgCount` accumulate every
+       complete period seen since the last consume-and-reset; both
+       cleared back to 0 there, and whenever continuous mode is
+       (re)started (PfmInput_StartContinuous()), so a fresh capture
+       never inherits a stale partial sum from a previous run. */
+    uint32_t avgSum;
+    uint16_t avgCount;
 } PfmInputState_t;
 
 static PfmInputState_t g_state[PFM_INPUT_NUM_CHANNELS];
@@ -535,6 +547,8 @@ uint8_t PfmInput_StartContinuous(uint8_t channel)
     g_state[channel].haveFirstRise = 0U;
     g_state[channel].lastRiseTick  = 0U;
     g_state[channel].lastPeriod    = 0U;
+    g_state[channel].avgSum        = 0U;
+    g_state[channel].avgCount      = 0U;
     g_dmaNextOffset[channel]       = 0U;
 
     g_dmaStartStatus[channel] = HAL_TIM_IC_Start_DMA(htim, kDesc[channel].timChannel,
@@ -576,6 +590,44 @@ uint32_t PfmInput_GetLatestPeriod(uint8_t channel)
         return 0U;
     }
     return g_state[channel].lastPeriod;
+}
+
+uint8_t PfmInput_ConsumeAveragePeriod(uint8_t channel, uint32_t *avgPeriodTicks, uint16_t *sampleCount)
+{
+    if (channel >= PFM_INPUT_NUM_CHANNELS)
+    {
+        return 0U;
+    }
+
+    /* Atomicity note: this is called from PID_Update() (HRTIM1_Master_IRQn,
+       NVIC priority 1 -- see hrtim.c's HRTIM1_EnableMasterInterrupt()),
+       and written above (ProcessDmaChunk(), called from the DMA
+       channel ISRs, priority 3 -- see PfmInput_Init()). Priority 1 can
+       preempt priority 3 but never the reverse, so the DMA ISR can
+       never run WHILE this is executing -- the read-then-reset below
+       is safe from that specific race without needing an explicit
+       critical section, the same reasoning this project already
+       relies on elsewhere for priority-ordered shared state. */
+    PfmInputState_t *st = &g_state[channel];
+
+    if (st->avgCount == 0U)
+    {
+        return 0U;   /* nothing accumulated since the last consume */
+    }
+
+    if (avgPeriodTicks != NULL)
+    {
+        *avgPeriodTicks = st->avgSum / st->avgCount;
+    }
+    if (sampleCount != NULL)
+    {
+        *sampleCount = st->avgCount;
+    }
+
+    st->avgSum   = 0U;
+    st->avgCount = 0U;
+
+    return 1U;
 }
 
 /* --------------------------------------------------------------------------
@@ -626,10 +678,16 @@ static void ProcessDmaChunk(uint8_t idx, uint16_t startOffset, uint16_t count)
        return below: targetCount is always 0 for a continuous channel
        (PfmInput_Arm() was never called for it), so falling through to
        that check would incorrectly look "already finished" and never
-       process anything. No array accumulation here (can't overflow
-       PFM_INPUT_MAX_PERIODS since nothing is ever appended), no target
-       count, never stops DMA on its own -- just keeps lastPeriod
-       current. */
+       process anything. No PER-PERIOD array accumulation here (can't
+       overflow PFM_INPUT_MAX_PERIODS since nothing is ever appended
+       to period[]), no target count, never stops DMA on its own --
+       keeps lastPeriod current (single most-recent sample, the
+       original 2026-09-09 behavior, still exposed via
+       PfmInput_GetLatestPeriod() for anything that wants it) AND
+       (2026-09-10) accumulates avgSum/avgCount -- see
+       PfmInput_ConsumeAveragePeriod()'s own comment in pfm_input.h --
+       so a consumer that wants the windowed average instead of one
+       sample has real data to read. */
     if (st->continuous != 0U)
     {
         for (uint16_t k = 0U; k < count; k++)
@@ -642,7 +700,10 @@ static void ProcessDmaChunk(uint8_t idx, uint16_t startOffset, uint16_t count)
             }
             else
             {
-                st->lastPeriod = (tick - st->lastRiseTick) & mask;
+                uint32_t period = (tick - st->lastRiseTick) & mask;
+                st->lastPeriod = period;
+                st->avgSum    += period;
+                st->avgCount++;
             }
             st->lastRiseTick = tick;
         }
@@ -888,5 +949,9 @@ uint8_t PfmInput_GetDmaStartStatus(uint8_t channel) { (void)channel; return 0xFF
 uint8_t PfmInput_StartContinuous(uint8_t channel) { (void)channel; return 0U; }
 void PfmInput_StopContinuous(uint8_t channel) { (void)channel; }
 uint32_t PfmInput_GetLatestPeriod(uint8_t channel) { (void)channel; return 0U; }
+uint8_t PfmInput_ConsumeAveragePeriod(uint8_t channel, uint32_t *avgPeriodTicks, uint16_t *sampleCount)
+{
+    (void)channel; (void)avgPeriodTicks; (void)sampleCount; return 0U;
+}
 
 #endif /* PFM_INPUT_FEATURE_ENABLED */

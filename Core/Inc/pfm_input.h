@@ -249,6 +249,48 @@ void PfmInput_StopContinuous(uint8_t channel);
  * stale once that capture finishes and stops. */
 uint32_t PfmInput_GetLatestPeriod(uint8_t channel);
 
+/* --------------------------------------------------------------------------
+ * Windowed average -- added 2026-09-10, per direct project decision:
+ * pid.c's closed-loop feedback should be the AVERAGE frequency over
+ * everything PFM_Input measured during the just-completed HRTIM
+ * Master period, not just the single most-recently-captured edge
+ * (PfmInput_GetLatestPeriod(), above) -- a real Transrex output can
+ * be tens of periods per 1 ms Master tick, and averaging over all of
+ * them (standard reciprocal-frequency-counting practice: average the
+ * raw PERIODS, then convert once to frequency, per direct
+ * confirmation -- NOT averaging already-converted frequencies, a
+ * different, not-chosen number) gives a real noise-rejecting
+ * measurement instead of one arbitrary sample.
+ *
+ * Window boundary is intentionally NOT hardware-timestamped to the
+ * exact 1 ms Master tick -- per direct confirmation, "doesn't need to
+ * be exact." Implemented the simple way: accumulate every complete
+ * period since the last PfmInput_ConsumeAveragePeriod() call
+ * (continuous mode only -- see ProcessDmaChunk()'s own comment),
+ * THEN RESET on read. Called once per PID_Update() tick, this
+ * naturally yields "the average over very close to one Master
+ * period" without needing a second, independently-timed window
+ * mechanism -- any edge still in flight when the window closes just
+ * carries into the NEXT window's count instead of being split, which
+ * is the normal, correct way to handle a boundary that doesn't need
+ * to be exact.
+ * -------------------------------------------------------------------------- */
+
+/* Consumes (reads AND resets) `channel`'s accumulated average since
+ * the last call. Returns 1 and fills `*avgPeriodTicks`/`*sampleCount`
+ * if at least one complete period was accumulated; returns 0 (leaves
+ * both outputs untouched) if the accumulator was empty -- e.g. the
+ * signal's own period exceeds one Master period (an genuinely
+ * possible condition down near PFM_TURNON_FREQ_HZ, ctrlr_config.h,
+ * where a period can approach 1 ms), or nothing is physically
+ * connected. `*sampleCount` is worth keeping, not just the average
+ * itself: measurement confidence scales with how many periods went
+ * into it -- a handful of samples near the frequency floor is a much
+ * noisier estimate than the tens of samples typical near the top of
+ * the range, worth surfacing (e.g. in a log) rather than only ever
+ * reporting the averaged number with no sense of how solid it is. */
+uint8_t PfmInput_ConsumeAveragePeriod(uint8_t channel, uint32_t *avgPeriodTicks, uint16_t *sampleCount);
+
 #ifdef __cplusplus
 }
 #endif
