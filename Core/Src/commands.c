@@ -20,6 +20,7 @@
 #include "qspi_test.h"
 #include "pfm_input.h"
 #include "pid.h"
+#include "git_version.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -37,14 +38,31 @@ static void SendErr(uart_instance_t *inst, int code, const char *msg)
 
 void cmd_idn(uart_instance_t *inst, char *args)
 {
-    char buf[64];
+    char buf[96];
     (void)args;
 
     /* Board + firmware identity in one line, matching the sibling
        PFM-STM32G474 project's *IDN convention (OK <value>, space-
-       separated fields) -- see ctrlr_config.h for the constants. */
-    snprintf(buf, sizeof(buf), "OK %s %s %s\r\n",
-             HW_BOARD_NAME, HW_BOARD_REV, FW_VERSION_STRING);
+       separated fields) -- see ctrlr_config.h for HW_BOARD_NAME/
+       HW_BOARD_REV/FW_VERSION_STRING.
+
+       4th field, FW_GIT_COMMIT, added 2026-09-11 per direct request --
+       exactly which git commit THIS firmware was actually built from,
+       so a host can always tell what's really running on a board, not
+       just what's supposed to be flashed. See python/gen_git_version.py
+       (generates Core/Inc/git_version.h, gitignored -- see that file's
+       own header comment) and python/wham_build.py (runs it
+       automatically before every build; this is the canonical way to
+       build this project now). A `-dirty` suffix (FW_GIT_DIRTY) flags
+       a build made with uncommitted changes -- the commit hash alone
+       would otherwise silently overstate how precisely this build
+       matches that commit in git history. "unknown" if git_version.h
+       was never generated (git unavailable, or built some other way
+       entirely) -- gen_git_version.py always writes a valid, buildable
+       header either way, never blocks compiling over this. */
+    snprintf(buf, sizeof(buf), "OK %s %s %s %s%s\r\n",
+             HW_BOARD_NAME, HW_BOARD_REV, FW_VERSION_STRING,
+             FW_GIT_COMMIT, (FW_GIT_DIRTY != 0U) ? "-dirty" : "");
     uart_send(inst, buf);
 }
 

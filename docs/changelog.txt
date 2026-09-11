@@ -1,6 +1,75 @@
 WHAM-XREX-PFMG474 Firmware Changelog
 =====================================
 
+2026-09-11  —  *IDN? now reports the exact git commit a firmware build
+               was made from (FW_GIT_COMMIT); new wham_build.py closes
+               the stale-.bin gotcha as a side effect (build verified;
+               real-hardware verification PENDING -- board still
+               disconnected)
+-----------------------------------------------------------------------
+  Change:  Direct request: a way to track which git commit is actually
+        flashed on the controller, verifiable via `*IDN?`. Standard
+        embedded-firmware technique -- bake the commit hash into a
+        generated header, included by the identity command:
+
+          - New `python/gen_git_version.py`: runs `git rev-parse
+            --short=8 HEAD` (+ `git status --porcelain` for a dirty-
+            tree check) and writes `Core/Inc/git_version.h`
+            (`FW_GIT_COMMIT "<hash>"`, `FW_GIT_DIRTY 0|1`). Never fails
+            the build over a git problem -- no git repo, no git on
+            PATH, no commits yet all fall back to a valid
+            `FW_GIT_COMMIT "unknown"` header rather than blocking
+            compilation. Deliberately NOT tracked in git (`.gitignore`)
+            -- its whole job is capturing "what commit was THIS build
+            from," which is redundant with git's own history for a
+            clean build (a fresh clone always regenerates it correctly
+            for HEAD) and would create spurious diffs on every single
+            commit if tracked; the one case that isn't reconstructable
+            from git alone -- a build made with uncommitted changes --
+            isn't lost either, since it gets baked into the `.elf`/
+            `.bin` themselves, which this project deliberately DOES
+            track in `Debug/`.
+          - `cmd_idn()` (commands.c) now reports a 4th space-separated
+            field: `FW_GIT_COMMIT`, with a `-dirty` suffix from
+            `FW_GIT_DIRTY` when the working tree had uncommitted
+            changes at build time -- flagged explicitly rather than
+            silently reporting a hash that doesn't fully describe what
+            was actually compiled. `commands.c` now `#include`s the
+            new `git_version.h`.
+
+        Also new `python/wham_build.py` -- the canonical way to build
+        this project from here on: `gen_git_version.py` -> `make -j4
+        all` -> the `.bin` regeneration, as ONE command. This directly
+        closes a real, previously-documented gotcha (2026-09-10 entry,
+        above): this project's `.cproject` has no "Convert to binary"
+        post-build step, so a bare `make` never touches the `.bin` at
+        all -- flashing a stale one "succeeds," verified even, while
+        silently not containing the latest changes. Three manual steps
+        to remember (in the right order, every time) is exactly the
+        kind of gap that already bit this project once; one command
+        removes the gap rather than just re-documenting it more loudly.
+        `docs/command_reference.md`'s `*IDN?` section and `AGENTS.md`'s
+        "Build & verify" section both updated to point at it as the
+        default; also fixed two unrelated stale references found while
+        in that section (`Core/Inc/version.h`, which no longer exists
+        -- see the 2026-09-08/09 condensing into `ctrlr_config.h` -- and
+        a leftover `Debug/WHAM-PFMG474-V4.elf` filename from the
+        sibling project this was reseeded from).
+
+        Build verified: clean rebuild via `wham_build.py`, zero
+        warnings, `git_version.h` correctly generated (confirmed
+        `74994292-dirty` while this round's own changes were
+        uncommitted). REAL-HARDWARE VERIFICATION NOT YET DONE -- the
+        board's USB-serial adapter is STILL disconnected as of this
+        entry (the fourth change in a row made without hardware
+        access -- see the three entries above, all still also
+        pending). Once reconnected: build with `wham_build.py` fresh
+        against whatever commit this repo is on by then, flash, and
+        confirm `*IDN?`'s 4th field matches `git rev-parse --short=8
+        HEAD` exactly (no `-dirty` suffix, assuming a clean tree at
+        build time) -- then work through the other three pending
+        verifications in order.
+
 2026-09-11  —  Per-channel output enable/disable (PID:CHANnel:ENAble)
                -- a genuine "no PFM waveform at all" switch; console
                updated to match (build verified; real-hardware

@@ -151,16 +151,37 @@ decision (see `docs/command_reference.md`'s `FIRE` entry).
      debugging history (this was chased down empirically, on real
      hardware, over several flash/reset cycles).
 - **Host-side tooling** (`python/`):
+  - `wham_build.py` -- **the canonical way to build this project**,
+    added 2026-09-11 (see "Build & verify" above for the full reasoning):
+    `gen_git_version.py` then `make` then the `.bin` regeneration, as
+    one command instead of three separate steps to forget.
+  - `gen_git_version.py` -- regenerates `Core/Inc/git_version.h` from
+    the current git state (commit hash + dirty-tree flag), so `*IDN?`
+    reports exactly which commit a running firmware was built from.
+    Gitignored output; run automatically by `wham_build.py`, or
+    directly if driving `make` yourself for some other reason.
   - `wham_serial_flash.py` -- one-command serial reflash (`BOOT` +
     `stm32flash`). Ported from the sibling project's
     `pfm_serial_flash.py`, corrected for this project's actual baud and
     build artifact name. **Verified working end-to-end on real hardware**,
     including the VTOR/MEMRMP fix above (confirmed: flash a new version,
     query `*IDN?` immediately, no manual reset, get the new version back
-    -- done twice, back to back).
-  - `scpi.py` -- an interactive serial terminal (not written by an
-    agent; predates this documentation pass). Useful for manual
-    poking at the command set.
+    -- done twice, back to back). Flashes whatever `Debug/*.bin` already
+    exists -- doesn't rebuild; run `wham_build.py` first.
+  - `wham_console.py` -- **the maintained interactive operator
+    console**, added 2026-09-10, the intended day-to-day front end for
+    a human working with a real board (raw SCPI passthrough, a guided
+    shot-profile wizard, live status, automatic diagnostic plotting --
+    see its own header comment for the full command list). Extend this
+    as new firmware commands are added, rather than leaving operators
+    to fall back on raw SCPI for everything new -- see its own "Adding
+    a new console command" section before adding one (console
+    meta-command names must never collide with a real SCPI mnemonic's
+    leading token -- that section explains exactly why and how).
+  - `scpi.py` -- a minimal interactive serial terminal (not written by
+    an agent; predates this documentation pass, and predates
+    `wham_console.py` above). Superseded by `wham_console.py` for
+    routine use; kept as a bare-bones fallback.
   - `pfm_table_upload.py` -- builds one of 5 fixed PFM shot profiles
     (see below) and uploads it via `TABLE:*`.
   - `dsl_viewer.py` -- interactive viewer for saved DSLogic/DSView
@@ -187,7 +208,7 @@ decision (see `docs/command_reference.md`'s `FIRE` entry).
     `docs/memory_report.html` from that CSV), and commit both files
     alongside the code change. `python3 memory_report.py history
     --backfill` rebuilds the whole CSV from every past commit that has
-    a `Debug/WHAM-PFMG474-V4.elf` checked in -- only needed once, or if
+    a `Debug/WHAM-XREX-PFMG474.elf` checked in -- only needed once, or if
     the CSV is ever lost/corrupted. Per-module attribution is read off
     the **linked ELF's own retained symbol table**
     (`arm-none-eabi-nm --print-size -l`), not summed `.o` files -- with
@@ -449,21 +470,44 @@ decision (see `docs/command_reference.md`'s `FIRE` entry).
 
 ## Build & verify
 
+**Canonical way to build, as of 2026-09-11:**
+
+```bash
+python3 python/wham_build.py
+```
+
+One command instead of three separate steps to remember. It runs, in
+order: (1) `python/gen_git_version.py`, regenerating
+`Core/Inc/git_version.h` from the current git state -- so `*IDN?`'s
+reply always reports exactly which commit this build is from (see
+`docs/command_reference.md`'s own `*IDN?` section); (2) `make -j4 all`
+in `Debug/`; (3) `arm-none-eabi-objcopy -O binary` to regenerate
+`Debug/WHAM-XREX-PFMG474.bin` -- this project's `.cproject` does **not**
+have CubeIDE's "Convert to binary file (.bin)" post-build step enabled
+(confirmed; unlike the sibling project, which does), so a bare `make`
+alone never touches the `.bin` at all. Skipping this step is a REAL,
+confirmed-on-hardware gotcha: `wham_serial_flash.py` against a stale
+`.bin` flashes it "successfully" -- verified even -- while silently NOT
+containing your latest changes (see `docs/changelog.txt`'s 2026-09-10
+entry for exactly this happening). `wham_build.py` exists specifically
+so there's no gap in the sequence left to forget.
+
+If you need the two lower-level steps directly (debugging the build
+itself, say):
+
 ```bash
 cd Debug && make all -j4
+arm-none-eabi-objcopy -O binary WHAM-XREX-PFMG474.elf WHAM-XREX-PFMG474.bin
 ```
 
-then, since this project's `.cproject` does **not** have the "Convert to
-binary file (.bin)" post-build step enabled (confirmed; unlike the
-sibling project, which does), generate the `.bin` by hand -- EVERY
-time, after every rebuild, before flashing (a stale `.bin` flashes
-"successfully" -- verified even -- while silently NOT containing your
-latest changes; see `docs/changelog.txt`'s 2026-09-10 entry for exactly
-this happening):
-
-```bash
-arm-none-eabi-objcopy -O binary Debug/WHAM-XREX-PFMG474.elf Debug/WHAM-XREX-PFMG474.bin
-```
+-- but prefer `wham_build.py` for anything you intend to flash, for
+`*IDN?` accuracy. `Core/Inc/git_version.h` is gitignored (see that
+file's own generated header comment, and `.gitignore`'s comment on
+why) -- a fresh checkout has no `git_version.h` until
+`gen_git_version.py` (or `wham_build.py`) runs at least once;
+`commands.c` `#include`s it unconditionally, so a bare `make` with
+neither ever run fails to compile `commands.c` with a plain
+missing-header error, not a mysterious one.
 
 **Adding a new source file from outside CubeIDE (e.g. this agent
 writing a `.c`/`.h` pair directly)**: CubeIDE's managed build

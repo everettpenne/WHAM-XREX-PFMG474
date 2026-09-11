@@ -35,7 +35,7 @@ Core/Src/commands.o: ../Core/Src/commands.c ../Core/Inc/commands.h \
  ../Core/Inc/qspi_test.h ../Core/Inc/pfm_input.h ../Core/Inc/uart.h \
  ../Core/Inc/ctrlr_config.h ../Core/Inc/boot_jump.h ../Core/Inc/pfm.h \
  ../Core/Inc/hrtim.h ../Core/Inc/gate_driver.h ../Core/Inc/qspi_test.h \
- ../Core/Inc/pfm_input.h ../Core/Inc/pid.h
+ ../Core/Inc/pfm_input.h ../Core/Inc/pid.h ../Core/Inc/git_version.h
 ../Core/Inc/commands.h:
 ../Core/Inc/uart.h:
 ../Core/Inc/main.h:
@@ -83,3 +83,4 @@ Core/Src/commands.o: ../Core/Src/commands.c ../Core/Inc/commands.h \
 ../Core/Inc/qspi_test.h:
 ../Core/Inc/pfm_input.h:
 ../Core/Inc/pid.h:
+../Core/Inc/git_version.h:

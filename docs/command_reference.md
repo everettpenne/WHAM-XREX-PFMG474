@@ -64,13 +64,34 @@ Board and firmware identification.
 
 ```
 > *IDN?
-< OK WHAM-XREX-PFMG474 REVA v0.1
+< OK WHAM-XREX-PFMG474 REVA v0.1 74994292
+  (or, built from an uncommitted working tree:)
+< OK WHAM-XREX-PFMG474 REVA v0.1 74994292-dirty
 ```
 
 Reports, space-separated: `HW_BOARD_NAME`, `HW_BOARD_REV`,
-`FW_VERSION_STRING` — all compile-time constants in `Core/Inc/version.h`.
+`FW_VERSION_STRING` (compile-time constants, `Core/Inc/ctrlr_config.h`),
+then `FW_GIT_COMMIT` (added 2026-09-11, per direct request) — the
+short git commit hash this exact firmware build was made from, an
+`-dirty` suffix if the working tree had uncommitted changes at build
+time, or `unknown` if `Core/Inc/git_version.h` was never generated
+(git unavailable, or built some other way entirely). This is how to
+answer "which commit is actually running on this board right now" with
+certainty, independent of what you think you last flashed.
+
 `HW_BOARD_REV` is currently a placeholder (`REVA`); update it to match
 the actual PCB silkscreen revision.
+
+**Build with `python3 python/wham_build.py`** (not a bare `make`) to
+get an accurate `FW_GIT_COMMIT` — it runs `python/gen_git_version.py`
+(regenerates `Core/Inc/git_version.h` from the current git state) before
+`make`, then regenerates `Debug/WHAM-XREX-PFMG474.bin` (this project's
+`.cproject` has no "Convert to binary" post-build step -- `make` alone
+never touches the `.bin` at all, a real gotcha this same script exists
+to close, see `docs/changelog.txt`'s 2026-09-10 entry). One command
+instead of three separate steps to remember; see that script's own
+header comment. `git_version.h` is gitignored -- see `.gitignore`'s own
+comment on why it's deliberately not tracked.
 
 ### `BOOT`
 
