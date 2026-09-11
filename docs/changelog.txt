@@ -1,6 +1,72 @@
 WHAM-XREX-PFMG474 Firmware Changelog
 =====================================
 
+2026-09-11  —  Per-channel Transrex full-range current --
+               *** MUST BE CALIBRATED BEFORE FINAL DEPLOYMENT ***
+               (build/link verified; real-hardware verification
+               PENDING -- board disconnected this session)
+-----------------------------------------------------------------------
+  Change:  Direct correction: "100kHz corresponds to 5kA" was always
+        stated as an approximation, and the 4 physical Transrex
+        supplies this controller drives may each have a genuinely
+        different full-range output current -- there was no reason to
+        assume all four are identical, and nothing has measured any of
+        them yet. `PFM_MAX_CURRENT_A` (a single float, ctrlr_config.h)
+        replaced with `PFM_MAX_CURRENT_A_PER_CHANNEL` -- a
+        HRTIM_NUM_CHANNELS-entry array (ch1..ch4, 0-based internally
+        like every other per-channel state in this codebase). Every
+        entry is CURRENTLY the same 5000.0f placeholder -- unchanged
+        numerically from before, but now explicitly a PER-CHANNEL
+        placeholder rather than a single shared one, and flagged with
+        a *** MUST BE CALIBRATED BEFORE FINAL DEPLOYMENT *** banner
+        comment (ctrlr_config.h) giving the actual required procedure:
+        drive each Transrex independently (open-loop is simplest -- a
+        known, repeatable commanded frequency) at PFM_MAX_FREQ_HZ and
+        measure that supply's REAL output current with real
+        instrumentation (a calibrated sensor/shunt on that specific
+        supply -- NOT inferred from this controller's own PFM_Input
+        feedback, which measures the PFM signal, not load current, and
+        cannot validate this mapping on its own).
+
+        PFM_TURNON_FREQ_HZ/PFM_MAX_FREQ_HZ stay single, shared values
+        -- nothing so far indicates the turn-on threshold or the top
+        of the PFM frequency range themselves differ per Transrex,
+        only the CURRENT the top of that range actually produces.
+        Revisit if bench testing ever shows otherwise.
+
+        pid.c: new `g_pfmMaxCurrentA[HRTIM_NUM_CHANNELS]` (initialized
+        from the macro), with a `_Static_assert` confirming the
+        initializer list's entry count actually matches
+        HRTIM_NUM_CHANNELS at compile time (so a future edit to either
+        one, done inconsistently, fails the BUILD rather than silently
+        indexing past the array or leaving a channel's ceiling at 0).
+        AmpsToHz() and PID_SetProfileCurrent() (both pid.c) now take
+        the channel into account, clamping/converting against THAT
+        channel's own entry instead of one value shared by all four --
+        meaningful now that entries can genuinely differ once real
+        calibration data replaces the placeholder (e.g. a channel with
+        a lower real full-range current will correctly refuse a demand
+        beyond its own ceiling, something the old shared-constant code
+        could never express).
+
+        wham_console.py NOT yet updated to match (still uses a single
+        module-level PFM_MAX_CURRENT_A constant for its Amps-axis
+        plotting) -- flagged as a follow-up, not done this round; the
+        Hz-axis data itself (driven entirely by on-wire values) is
+        unaffected, only the console's own plotted Amps conversion
+        would need the same per-channel treatment once real per-
+        channel values exist to plug in.
+
+        Build verified: clean rebuild, zero warnings, _Static_assert
+        passes. REAL-HARDWARE VERIFICATION NOT YET DONE THIS ROUND --
+        the board's USB-serial adapter disconnected mid-session
+        (/dev/cu.usbserial* stopped enumerating entirely) before
+        reflashing could happen; the previously-flashed firmware
+        (without this change) is still what's actually running on the
+        board as of this entry. Reflash and verify (PID:PROFILE:CURRENT
+        clamping, a real shot) once reconnected -- do not assume this
+        change is live on hardware from this entry alone.
+
 2026-09-10  —  Simultaneous all-channel waveform logging
                (PID_ArmLogAll()); wham_console.py generates one
                combined plot across every channel from a single shot

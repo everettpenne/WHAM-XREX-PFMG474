@@ -111,6 +111,22 @@ static uint8_t  g_logAllChannels = 0U;  /* 1 = PID_ArmLogAll() armed every
 static uint16_t g_logDecim   = 1U;
 static uint16_t g_logDecimCounter = 0U;
 
+/* Per-channel Transrex full-range current -- see ctrlr_config.h's own
+   extensive comment on PFM_MAX_CURRENT_A_PER_CHANNEL (added
+   2026-09-11, *** MUST BE CALIBRATED BEFORE FINAL DEPLOYMENT ***,
+   currently all 4 entries are the SAME unverified placeholder). The
+   _Static_assert below is the compile-time guard promised in that
+   comment: HRTIM_NUM_CHANNELS is the number of entries AmpsToHz()
+   actually indexes (0..HRTIM_NUM_CHANNELS-1) -- if a future edit ever
+   changes HRTIM_NUM_CHANNELS without updating this initializer list to
+   match, this fails the BUILD instead of silently indexing past the
+   array (or leaving a channel's entry as 0, quietly making that
+   channel's Amps<->Hz conversion degenerate). */
+static const float g_pfmMaxCurrentA[HRTIM_NUM_CHANNELS] = PFM_MAX_CURRENT_A_PER_CHANNEL;
+_Static_assert(sizeof(g_pfmMaxCurrentA) / sizeof(g_pfmMaxCurrentA[0]) == HRTIM_NUM_CHANNELS,
+               "PFM_MAX_CURRENT_A_PER_CHANNEL (ctrlr_config.h) must have exactly "
+               "HRTIM_NUM_CHANNELS entries");
+
 /* --------------------------------------------------------------------------
  * Demand profile helpers -- see pid.h's "DEMAND PROFILE" doc section.
  * -------------------------------------------------------------------------- */
@@ -153,31 +169,41 @@ static float TrapezoidalCurrentA(uint32_t elapsedTicks, float demandCurrentA)
 }
 
 /* Amps -> Hz, LINEAR PLACEHOLDER -- see ctrlr_config.h's own extensive
-   comment on PFM_TURNON_FREQ_HZ/PFM_MAX_FREQ_HZ/PFM_MAX_CURRENT_A for
-   why this is flagged as provisional (real Transrex SCR/phase-control
+   comment on PFM_TURNON_FREQ_HZ/PFM_MAX_FREQ_HZ/PFM_MAX_CURRENT_A_PER_CHANNEL
+   for why this is flagged as provisional (real Transrex SCR/phase-control
    physics may not be linear) and left for post-characterization
    revisit. Per direct instruction, 0A maps to EXACTLY
    PFM_TURNON_FREQ_HZ (not some frequency below it -- there is no
-   "off but nonzero" output state between 0A and turn-on). Clamps
-   currentA to [0, PFM_MAX_CURRENT_A] first (a profile's own math
-   should never produce outside that range, but this is the last line
-   of defense before a value reaches hardware) and the resulting Hz to
+   "off but nonzero" output state between 0A and turn-on).
+
+   `channel`, added 2026-09-11: PFM_MAX_CURRENT_A_PER_CHANNEL[channel]
+   is THIS channel's own full-range current, not a single value shared
+   by all four -- *** SEE THAT MACRO'S OWN "MUST BE CALIBRATED BEFORE
+   FINAL DEPLOYMENT" COMMENT ***, ctrlr_config.h; every entry is
+   currently the same unverified placeholder. Clamps currentA to
+   [0, g_pfmMaxCurrentA[channel]] first (a profile's own math should
+   never produce outside that range, but this is the last line of
+   defense before a value reaches hardware) and the resulting Hz to
    [PID_OUTPUT_MIN_HZ, PID_OUTPUT_MAX_HZ] (the hardware-register safety
    clamp -- PFM_TURNON_FREQ_HZ/PFM_MAX_FREQ_HZ are documented to nest
    inside that range, this is defense-in-depth, not expected to ever
-   actually bind). */
-static uint32_t AmpsToHz(float currentA)
+   actually bind). Caller's responsibility to pass a valid channel
+   (0..HRTIM_NUM_CHANNELS-1) -- this is only ever called from
+   PID_Update()'s own per-channel loop, which already guarantees that. */
+static uint32_t AmpsToHz(uint8_t channel, float currentA)
 {
+    float maxCurrentA = g_pfmMaxCurrentA[channel];
+
     if (currentA < 0.0f)
     {
         currentA = 0.0f;
     }
-    else if (currentA > (float)PFM_MAX_CURRENT_A)
+    else if (currentA > maxCurrentA)
     {
-        currentA = (float)PFM_MAX_CURRENT_A;
+        currentA = maxCurrentA;
     }
 
-    float frac = currentA / (float)PFM_MAX_CURRENT_A;
+    float frac = currentA / maxCurrentA;
     float hzF = (float)PFM_TURNON_FREQ_HZ +
                 frac * ((float)PFM_MAX_FREQ_HZ - (float)PFM_TURNON_FREQ_HZ);
 
@@ -413,7 +439,7 @@ void PID_Update(void)
         if (g_profileActive != 0U)
         {
             float demandA = TrapezoidalCurrentA(profileElapsedThisTick, st->demandCurrentA);
-            st->setpointHz = AmpsToHz(demandA);
+            st->setpointHz = AmpsToHz(ch, demandA);
         }
         else if (st->rampTicksLeft > 0U)
         {
@@ -918,13 +944,22 @@ uint8_t PID_SetProfileCurrent(uint8_t channel, float demandCurrentA)
         return 0U;
     }
 
+    /* Clamped against THIS channel's own full-range current, not a
+       single value shared by all four -- see g_pfmMaxCurrentA's own
+       comment (2026-09-11) and ctrlr_config.h's PFM_MAX_CURRENT_A_PER_CHANNEL
+       ("MUST BE CALIBRATED BEFORE FINAL DEPLOYMENT"). A channel whose
+       real full-range current turns out lower than another's will
+       correctly refuse a demand beyond ITS OWN ceiling, once that
+       ceiling is a real calibrated number instead of today's shared
+       placeholder. */
+    float maxCurrentA = g_pfmMaxCurrentA[channel];
     if (demandCurrentA < 0.0f)
     {
         demandCurrentA = 0.0f;
     }
-    else if (demandCurrentA > (float)PFM_MAX_CURRENT_A)
+    else if (demandCurrentA > maxCurrentA)
     {
-        demandCurrentA = (float)PFM_MAX_CURRENT_A;
+        demandCurrentA = maxCurrentA;
     }
 
     g_ch[channel].demandCurrentA = demandCurrentA;

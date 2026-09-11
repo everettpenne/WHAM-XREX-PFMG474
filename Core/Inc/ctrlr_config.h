@@ -137,20 +137,44 @@
  * operator programs Ramp Time / Flat Top Time / Demand Current
  * (Amps) -- see pid.h's PID_SetProfileTiming()/PID_SetProfileCurrent()
  * -- and pid.c converts that trapezoidal CURRENT trajectory to a
- * target FREQUENCY each Master tick via these two calibration points:
+ * target FREQUENCY each Master tick via these calibration points:
  *
- *   PFM_TURNON_FREQ_HZ  -- the Transrex's own "turn-on" threshold: at
- *                          or below this frequency, the supply outputs
- *                          ZERO current (a genuine hardware dead zone,
- *                          not just "small current"). Maps to exactly
- *                          0 A, per direct confirmation -- the ramp
- *                          never commands anything below this value.
- *   PFM_MAX_FREQ_HZ      -- maps to PFM_MAX_CURRENT_A, the top of the
- *                          demand range.
+ *   PFM_TURNON_FREQ_HZ       -- the Transrex's own "turn-on"
+ *                               threshold: at or below this
+ *                               frequency, the supply outputs ZERO
+ *                               current (a genuine hardware dead
+ *                               zone, not just "small current"). Maps
+ *                               to exactly 0 A, per direct
+ *                               confirmation -- the ramp never
+ *                               commands anything below this value.
+ *                               ONE value, shared across every
+ *                               channel -- unlike PFM_MAX_CURRENT_A_PER_CHANNEL
+ *                               below, nothing so far indicates this
+ *                               threshold itself differs per Transrex,
+ *                               only the CURRENT the top of the range
+ *                               produces. Revisit if bench testing
+ *                               ever shows otherwise.
+ *   PFM_MAX_FREQ_HZ           -- the top of the PFM frequency range,
+ *                               also shared across every channel (a
+ *                               property of this controller's own PFM
+ *                               modulation scheme, not of any one
+ *                               Transrex).
+ *   PFM_MAX_CURRENT_A_PER_CHANNEL[ch]   -- PER-CHANNEL, added 2026-09-11 per
+ *                               direct correction: what PFM_MAX_FREQ_HZ
+ *                               actually produces is a property of
+ *                               EACH PHYSICAL TRANSREX SUPPLY, not a
+ *                               single number good for all four --
+ *                               "100kHz corresponds to 5kA" was only
+ *                               ever an approximation, and the 4
+ *                               Transrexes this controller drives may
+ *                               each have a genuinely different
+ *                               full-range output current. See its
+ *                               own comment below.
  *
- * LINEAR interpolation between these two points, PLACEHOLDER, per
- * direct confirmation (2026-09-10) -- flagged, not silently assumed:
- * the ORIGINAL analog Transrex chain (docs/Transrex/
+ * LINEAR interpolation between the per-channel current range and
+ * [PFM_TURNON_FREQ_HZ, PFM_MAX_FREQ_HZ], PLACEHOLDER, per direct
+ * confirmation (2026-09-10) -- flagged, not silently assumed: the
+ * ORIGINAL analog Transrex chain (docs/Transrex/
  * Transrex_Controls_Upgrade (1).pdf) describes a 0-10V signal mapping
  * to SCR firing angles 180-0 degrees, and phase-controlled rectifiers
  * are classically NONLINEAR (roughly cosine-shaped) between firing
@@ -163,16 +187,59 @@
  * touches only that function, not the profile generator or the
  * control loop around it.
  *
- * Both frequency values are PLACEHOLDERS ("~5 kHz" / "100 kHz" per
- * direct confirmation, "hardware testing will give us a more precise
- * value") -- update once real bench characterization exists, and
- * note the range these define sits safely inside
+ * PFM_TURNON_FREQ_HZ/PFM_MAX_FREQ_HZ are PLACEHOLDERS ("~5 kHz" /
+ * "100 kHz" per direct confirmation, "hardware testing will give us a
+ * more precise value") -- update once real bench characterization
+ * exists, and note the range these define sits safely inside
  * [PID_OUTPUT_MIN_HZ, PID_OUTPUT_MAX_HZ] above, which stays in place
  * as the outer hardware-register safety clamp regardless of what
  * these two turn out to be. */
 #define PFM_TURNON_FREQ_HZ   (5000UL)
 #define PFM_MAX_FREQ_HZ       (100000UL)
-#define PFM_MAX_CURRENT_A     (5000.0f)   /* 5 kA nominal, placeholder */
+
+/* --------------------------------------------------------------------------
+ * *** MUST BE CALIBRATED BEFORE FINAL DEPLOYMENT ***
+ *
+ * PFM_MAX_CURRENT_A_PER_CHANNEL -- per-channel: this channel's actual real-world
+ * output current (Amps) at PFM_MAX_FREQ_HZ (100 kHz). Added
+ * 2026-09-11, per direct correction: "100kHz corresponds to 5kA" was
+ * stated as an approximation from the start, and the 4 physical
+ * Transrex supplies this controller drives may each have a genuinely
+ * different full-range current -- there is no reason to expect all
+ * four are identical, and nothing has actually measured any of them
+ * yet. EVERY entry below is currently the SAME 5000.0f placeholder,
+ * which is almost certainly wrong for at least some channels --
+ * DO NOT ship/commission with these values unverified.
+ *
+ * REQUIRED BEFORE FINAL DEPLOYMENT: for EACH of the 4 Transrexes,
+ * independently -- drive that channel (PID:PROFILE:CURRENT/PID:LOOPMODE
+ * open-loop is the simplest way to command a known, repeatable
+ * frequency directly, e.g. via python/wham_console.py) at
+ * PFM_MAX_FREQ_HZ (or as close to it as is safe to actually run) and
+ * measure that Transrex's REAL output current with real
+ * instrumentation (a calibrated current sensor/shunt on that
+ * specific supply's output -- NOT inferred from this codebase's own
+ * PFM_Input frequency feedback, which measures the PFM signal, not
+ * the actual load current, and cannot itself validate this mapping).
+ * Replace that channel's entry below with the measured value. Until
+ * this is done, every Amps<->Hz conversion on every channel
+ * (AmpsToHz(), pid.c; the shot-profile Demand Current an operator
+ * programs; wham_console.py's plotted Amps axis) is only as accurate
+ * as this shared placeholder -- i.e., not yet verified for ANY
+ * channel, and certain to be wrong for at least some of the 4 once
+ * real numbers differ.
+ *
+ * Indexed 0..HRTIM_NUM_CHANNELS-1 (0-based, internal convention --
+ * matches every other per-channel array in this codebase), NOT the
+ * 1-based wire numbering PID:PROFILE:CURRENT/etc. use -- channel 1 on
+ * the wire is index [0] here. Entry count MUST equal HRTIM_NUM_CHANNELS
+ * exactly -- pid.c _Static_assert()s this at compile time so a
+ * mismatched edit (e.g. after ever changing HRTIM_NUM_CHANNELS above)
+ * fails the build loudly instead of silently reading past the array
+ * or leaving a channel uninitialized. */
+#define PFM_MAX_CURRENT_A_PER_CHANNEL  { 5000.0f, 5000.0f, 5000.0f, 5000.0f }   /* ch1, ch2, ch3, ch4 --
+                                                                          ALL PLACEHOLDER,
+                                                                          see comment above */
 
 /* --------------------------------------------------------------------------
  * PID_OUTPUT_MAX_SLEW_HZ_PER_TICK -- hard per-tick output slew-rate

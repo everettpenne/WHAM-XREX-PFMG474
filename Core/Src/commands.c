@@ -1176,8 +1176,9 @@ void cmd_pid_profile_current(uart_instance_t *inst, char *args)
         return;
     }
 
-    /* PID_SetProfileCurrent() clamps into [0, PFM_MAX_CURRENT_A] itself
-       -- matches PID:SETPOINT's own clamp-don't-reject convention. */
+    /* PID_SetProfileCurrent() clamps into [0, this channel's own
+       PFM_MAX_CURRENT_A_PER_CHANNEL entry] itself -- matches
+       PID:SETPOINT's own clamp-don't-reject convention. */
     (void)PID_SetProfileCurrent(ch, (float)currentA);
     uart_send(inst, "OK\r\n");
 }

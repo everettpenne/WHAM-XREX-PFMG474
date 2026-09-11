@@ -285,9 +285,13 @@ uint8_t PID_SetProfileTiming(uint32_t rampTimeMs, uint32_t flatTopTimeMs);
 uint8_t PID_GetProfileTiming(uint32_t *rampTimeMs, uint32_t *flatTopTimeMs);
 
 /* Sets channel `channel`'s peak demand current for the profile, in
- * Amps -- clamped to [0, PFM_MAX_CURRENT_A] (ctrlr_config.h). Takes
- * effect on this channel's next PID_ProfileStart(). Returns 1 on
- * success, 0 if `channel` is out of range. */
+ * Amps -- clamped to [0, PFM_MAX_CURRENT_A_PER_CHANNEL[channel]]
+ * (ctrlr_config.h) -- THIS channel's own full-range current, not one
+ * value shared by all four (added 2026-09-11; *** see that macro's
+ * own "MUST BE CALIBRATED BEFORE FINAL DEPLOYMENT" comment ***, every
+ * entry is currently the same unverified placeholder). Takes effect
+ * on this channel's next PID_ProfileStart(). Returns 1 on success, 0
+ * if `channel` is out of range. */
 uint8_t PID_SetProfileCurrent(uint8_t channel, float demandCurrentA);
 
 /* Reads back channel `channel`'s current peak demand current (Amps),
