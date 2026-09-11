@@ -1,6 +1,68 @@
 WHAM-XREX-PFMG474 Firmware Changelog
 =====================================
 
+2026-09-11  —  REAL BUG FIXED: GateDriverStatus fault during closed-
+               loop PID operation left an operator with no way to
+               resume without a reboot (build verified; real-hardware
+               verification PENDING -- board still disconnected)
+-----------------------------------------------------------------------
+  Change:  Found while explaining this project's fault-handling
+        architecture to the user, then fixed on direct request. Two
+        independent fault sources exist: PC10/HRTIM1_FLT6 (real
+        hardware fault input, autonomous in silicon) and
+        GateDriverStatus_01..12 (software/EXTI-driven, gate_driver.c).
+        PID_Update() already polled HRTIM1_FaultIsTripped() every tick
+        and correctly called PID_Stop() when tripped -- but never
+        checked GateDriver_FaultIsLatched() at all. GateDriver_
+        CheckFault()'s PFM_ForceStop() (pfm.c) predates the PID
+        architecture (2026-09-09) and was never integrated with it: it
+        stops HRTIM output directly (including the Master counter, so
+        PID_Update() genuinely stops being invoked), but with nothing
+        checking the GateDriverStatus latch inside PID_Update() itself,
+        g_running was NEVER cleared by this fault source.
+
+        CONFIRMED impact, not just theoretical: PID_IsRunning()/
+        PID:STATus? kept reporting running=1 after a GateDriverStatus
+        fault, even with hardware output already genuinely stopped.
+        Far more serious: PID_Start()'s own idempotency check
+        (`if (g_running != 0U) return 1U;`) then silently turned every
+        subsequent PID:START into a no-op -- no reconnect, no
+        restarted feedback capture, nothing, and no error reported
+        either (a plain "OK" comes back, indistinguishable from a
+        real, successful start). FAULT:CLEAR didn't help -- it only
+        ever cleared the two hardware/EXTI latches
+        (HRTIM1_FaultClear()/GateDriver_FaultClear()), never touched
+        g_running. Net effect: an operator had NO way to resume
+        closed-loop operation after a GateDriverStatus fault short of
+        a full reboot -- silently, with no error message pointing at
+        why PID:START "succeeded" but nothing actually happened.
+
+        Fixed with the minimal, already-proven mechanism -- extended
+        PID_Update()'s existing fault check
+        (`if (HRTIM1_FaultIsTripped() ...)`) to also check
+        `GateDriver_FaultIsLatched()`, calling the same real
+        PID_Stop() either way. No new recovery path designed or
+        needed: this is the exact same bookkeeping (stop the Master
+        counter so the ISR doesn't spin forever under already-safed
+        outputs, clear g_running so IsRunning()/a later PID_Start()
+        both see truthful state) the PC10 path already did correctly
+        -- the GateDriverStatus source was just never plugged into it.
+        pid.c now includes gate_driver.h.
+
+        Build verified: clean rebuild, zero warnings. REAL-HARDWARE
+        VERIFICATION NOT YET DONE -- board's USB-serial adapter is
+        still disconnected as of this entry (see the previous entry);
+        the board is still running firmware WITHOUT this fix. Once
+        reconnected: reflash, then verify directly -- trip a
+        GateDriverStatus fault while PID:START is active (or during a
+        PID:PROFILE:START shot), confirm PID:STATus? correctly reports
+        running=0 immediately, and confirm a subsequent PID:START
+        (after FAULT:CLEAR) genuinely reconnects output rather than
+        silently no-opping. Also worth re-confirming the PC10 path
+        still behaves identically (this change only added a second
+        condition to an existing check, but re-verify given how
+        serious this exact failure mode turned out to be).
+
 2026-09-11  —  Per-channel Transrex full-range current --
                *** MUST BE CALIBRATED BEFORE FINAL DEPLOYMENT ***
                (build/link verified; real-hardware verification
