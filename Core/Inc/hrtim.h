@@ -122,6 +122,31 @@ void HRTIM1_EnableMasterInterrupt(void);
 void HRTIM1_PWM_Start(const uint8_t *channelEnabled);
 void HRTIM1_PWM_Stop(void);
 
+/* Connects or disconnects ONE channel's output pins LIVE -- added
+ * 2026-09-11 for PID:CHANnel:ENAble (commands.c/pid.c), so an operator
+ * can enable/disable a single Transrex channel's actual output at any
+ * time, including mid-shot, without touching any other channel or
+ * needing a fresh HRTIM1_PWM_Start() call. `channel` is
+ * 0..HRTIM_NUM_CHANNELS-1 (caller's responsibility to validate --
+ * pid.c already does, same convention as HRTIM1_SetChannelPeriod()).
+ *
+ * `enable != 0`: forces a clean complementary output-1-ACTIVE/
+ * output-2-INACTIVE level (same one-time dance HRTIM1_PWM_Start() does
+ * at cold start -- required whenever DeadTimeInsertion is enabled and
+ * a pair's outputs are coming from a disconnected/undefined state),
+ * THEN connects both outputs via OENR.
+ *
+ * `enable == 0`: disconnects both outputs (HAL_HRTIM_WaveformOutputStop())
+ * -- no physical PFM waveform can reach the pins. Does NOT stop this
+ * channel's own counter -- exactly HRTIM1_PWM_Start()'s own existing
+ * disabled-channel behavior (see its doc comment above): the counter
+ * keeps running, kept synchronized, so a later re-enable is instant
+ * and clean with no re-synchronization dance needed. pid.c's own
+ * PID_Update() is what actually stops driving new PER/CMP1 values into
+ * a disabled channel's shadow registers (see PID_SetChannelEnable()) --
+ * this function only ever touches the physical output connection. */
+void HRTIM1_SetChannelOutputEnable(uint8_t channel, uint8_t enable);
+
 /* Reads the HRTIM1_FLT6 status flag directly from hardware (ISR
  * register) -- NOT a software-tracked/debounced copy. Since the fault
  * channel is configured (HRTIM1_FullInit()) to force every

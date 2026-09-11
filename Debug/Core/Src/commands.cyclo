@@ -30,8 +30,10 @@
 ../Core/Src/commands.c:949:6:cmd_pid_ramp	11
 ../Core/Src/commands.c:1015:6:cmd_pid_loopmode	7
 ../Core/Src/commands.c:1051:6:cmd_pid_loopmode_query	5
-../Core/Src/commands.c:1077:6:cmd_pid_profile_timing	7
-../Core/Src/commands.c:1122:6:cmd_pid_profile_timing_query	2
-../Core/Src/commands.c:1143:6:cmd_pid_profile_current	7
-../Core/Src/commands.c:1191:6:cmd_pid_profile_current_query	5
-../Core/Src/commands.c:1220:6:cmd_pid_profile_start	2
+../Core/Src/commands.c:1082:6:cmd_pid_channel_enable	7
+../Core/Src/commands.c:1116:6:cmd_pid_channel_enable_query	5
+../Core/Src/commands.c:1142:6:cmd_pid_profile_timing	7
+../Core/Src/commands.c:1187:6:cmd_pid_profile_timing_query	2
+../Core/Src/commands.c:1208:6:cmd_pid_profile_current	7
+../Core/Src/commands.c:1256:6:cmd_pid_profile_current_query	5
+../Core/Src/commands.c:1285:6:cmd_pid_profile_start	2

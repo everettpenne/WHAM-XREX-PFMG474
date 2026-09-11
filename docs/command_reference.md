@@ -410,6 +410,40 @@ cover yet.
   read/reported for comparison), `1` = closed-loop (default).
 - **`PID:LOOPMODE? <ch>`** -- `OK <0|1>` -- added 2026-09-10 (see
   `PID_GetLoopMode()`).
+- **`PID:CHANnel:ENAble <ch> <0|1>`** -- added 2026-09-11, per direct
+  request: a genuine "this channel outputs no PFM waveform at all"
+  switch, distinct from `PID:LOOPMODE` (open-loop still drives a real,
+  uncorrected PFM waveform) or a 0A `PID:PROFile:CURRent` (still drives
+  a real PFM waveform, at the turn-on floor). `0` = fully disabled --
+  the channel's HRTIM output pins are physically disconnected
+  (`HRTIM1_SetChannelOutputEnable()`, `hrtim.c`) and `PID_Update()`
+  skips this channel completely (no setpoint, no feedback consumption,
+  no PID math, no log entry). `1` = enabled (default -- every channel
+  always output, unchanged unless a channel is explicitly disabled).
+  Takes effect on the NEXT `PID:START`/`PID:PROFile:STARt` if the loop
+  isn't currently running; takes effect **immediately, live**, if it
+  is -- an operator can kill (or restore) one channel's real output
+  mid-shot without touching any other channel or stopping the loop.
+  Disabling does NOT stop that channel's own HRTIM counter (kept
+  synchronized for an instant, clean re-enable) and does NOT reset its
+  PID state (integral, setpoint, gains) -- re-enabling resumes exactly
+  where it left off, not from a fresh reset.
+- **`PID:CHANnel:ENAble? <ch>`** -- `OK <0|1>` -- see `PID_GetChannelEnable()`.
+
+```
+> PID:CHANNEL:ENABLE 3 0
+< OK
+  (channel 3's output pins disconnect immediately if the loop is
+   running; channel 3's own PID state/HRTIM counter keep running
+   untouched, just disconnected from the pins)
+> PID:CHANNEL:ENABLE? 3
+< OK 0
+> PID:CHANNEL:ENABLE 3 1
+< OK
+  (channel 3 resumes output immediately, from where its own PID state
+   left off -- not a fresh start)
+```
+
 - **`PID:PROFile:TIMing <rampTimeS> <flatTopTimeS>`** -- sets the
   SHARED ramp/flat-top durations (seconds) for the next
   `PID:PROFile:STARt`, applied to every channel at once (each channel

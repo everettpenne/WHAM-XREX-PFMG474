@@ -256,6 +256,31 @@ uint8_t PID_GetStatus(uint8_t channel, uint32_t *setpointHz,
 uint8_t PID_SetLoopMode(uint8_t channel, uint8_t closedLoop);
 uint8_t PID_GetLoopMode(uint8_t channel);
 
+/* Enables/disables channel `channel`'s output ENTIRELY -- added
+ * 2026-09-11, per direct request. A genuinely different switch from
+ * PID_SetLoopMode() above: open-loop still drives a real PFM waveform
+ * (just uncorrected), and a 0A demand current still drives a real PFM
+ * waveform too (at PFM_TURNON_FREQ_HZ, representing 0A -- not "off").
+ * Disabled means NO PFM waveform at all -- the channel's HRTIM output
+ * pin is physically disconnected (HRTIM1_SetChannelOutputEnable(),
+ * hrtim.c) and PID_Update() skips this channel completely (no
+ * setpoint, no feedback consumption, no PID math, no log entry --
+ * see PID_Update()'s own comment).
+ *
+ * Takes effect on the NEXT PID_Start() if the loop isn't currently
+ * running; takes effect IMMEDIATELY, live, if it is -- an operator can
+ * kill (or restore) one channel's real output mid-shot without
+ * touching any other channel or stopping the loop. Disabling does NOT
+ * stop this channel's own HRTIM counter (kept synchronized for an
+ * instant, clean re-enable -- see HRTIM1_SetChannelOutputEnable()'s
+ * own comment) and does NOT reset this channel's PID state (integral,
+ * setpoint, gains) -- re-enabling resumes exactly where it left off.
+ * Defaults to enabled (1) for every channel -- today's only prior
+ * behavior, unchanged unless a channel is explicitly disabled.
+ * Returns 1 on success, 0 if `channel` is out of range. */
+uint8_t PID_SetChannelEnable(uint8_t channel, uint8_t enabled);
+uint8_t PID_GetChannelEnable(uint8_t channel);
+
 /* --------------------------------------------------------------------------
  * Demand profile -- added 2026-09-10, the real production shot shape.
  * See this file's own header comment for the full picture. Ramp Time/

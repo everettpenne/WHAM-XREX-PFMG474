@@ -51,6 +51,18 @@ typedef struct
        switched to open-loop. */
     float    demandCurrentA;
     uint8_t  closedLoopEnabled;
+
+    /* Channel output enable -- added 2026-09-11, per direct request: a
+       genuine "this channel outputs nothing at all" switch, distinct
+       from closedLoopEnabled/open-loop (which still drives a real PFM
+       waveform, just without error correction) or a 0A demand current
+       (which still drives a real PFM waveform too -- at
+       PFM_TURNON_FREQ_HZ, representing 0A, not "off"). Defaults to 1
+       (enabled, today's only prior behavior -- every channel always
+       output) so nothing changes unless a channel is explicitly
+       disabled. See PID_SetChannelEnable()'s own doc comment in pid.h
+       for exactly what "disabled" does and doesn't do. */
+    uint8_t  outputEnabled;
 } PidChannelState_t;
 
 static PidChannelState_t g_ch[HRTIM_NUM_CHANNELS];
@@ -278,6 +290,7 @@ void PID_Init(void)
         g_ch[ch].rampTicksLeft      = 0U;
         g_ch[ch].demandCurrentA     = 0.0f;
         g_ch[ch].closedLoopEnabled  = 1U;   /* default: closed-loop, prior-only behavior */
+        g_ch[ch].outputEnabled      = 1U;   /* default: enabled, prior-only behavior */
     }
     g_running               = 0U;
     g_profileActive          = 0U;
@@ -317,10 +330,18 @@ uint8_t PID_Start(void)
     }
 
     {
+        /* Built from each channel's own outputEnabled (added
+           2026-09-11, PID_SetChannelEnable()) instead of hardcoded 1 --
+           a channel disabled before this PID_Start() call never gets
+           its output connected in the first place. A channel disabled
+           WHILE already running is handled separately, live, by
+           PID_SetChannelEnable() itself calling
+           HRTIM1_SetChannelOutputEnable() directly -- this array only
+           matters for the initial bring-up here. */
         uint8_t channelEnabled[HRTIM_NUM_CHANNELS];
         for (uint8_t ch = 0U; ch < HRTIM_NUM_CHANNELS; ch++)
         {
-            channelEnabled[ch] = 1U;
+            channelEnabled[ch] = g_ch[ch].outputEnabled;
         }
         HRTIM1_PWM_Start(channelEnabled);
     }
@@ -453,6 +474,22 @@ void PID_Update(void)
     for (uint8_t ch = 0U; ch < HRTIM_NUM_CHANNELS; ch++)
     {
         PidChannelState_t *st = &g_ch[ch];
+
+        /* Output-disabled channel -- added 2026-09-11, PID_SetChannelEnable().
+           Completely inert: no setpoint computed, no feedback consumed,
+           no PID math, no HRTIM write, no log entry this tick (a
+           disabled channel's log simply stops advancing -- the same
+           flat/held semantics an unarmed/no-fresh-feedback tick already
+           has, nothing new to represent). The channel's actual output
+           PIN is already disconnected at the hardware level
+           (HRTIM1_SetChannelOutputEnable(), called from
+           PID_SetChannelEnable() itself the moment it was disabled) --
+           this skip is what stops pid.c from doing meaningless work
+           for a channel with nowhere for its output to go. */
+        if (st->outputEnabled == 0U)
+        {
+            continue;
+        }
 
         /* Setpoint: either this tick's profile-computed demand (shared
            timing, this channel's own peak demandCurrentA), or -- when
@@ -912,6 +949,45 @@ uint8_t PID_GetLoopMode(uint8_t channel)
     }
 
     return g_ch[channel].closedLoopEnabled;
+}
+
+/* Enables/disables channel `channel`'s output entirely -- added
+   2026-09-11, per direct request. Updates the stored state (so the
+   NEXT PID_Start() picks it up via channelEnabled[], see that
+   function) AND, if the loop is already running, applies it LIVE via
+   HRTIM1_SetChannelOutputEnable() -- an operator can disable/re-enable
+   a single channel's real output at any time, mid-shot included, not
+   only before starting. Disabling does NOT stop this channel's HRTIM
+   counter (see HRTIM1_SetChannelOutputEnable()'s own doc comment) and
+   does NOT reset its PID state (integral, setpoint, gains all held
+   exactly as they were) -- re-enabling resumes from where it left off,
+   not from a fresh PID_Start()-like reset. Returns 1 on success, 0 if
+   `channel` is out of range. */
+uint8_t PID_SetChannelEnable(uint8_t channel, uint8_t enabled)
+{
+    if (channel >= HRTIM_NUM_CHANNELS)
+    {
+        return 0U;
+    }
+
+    g_ch[channel].outputEnabled = (enabled != 0U) ? 1U : 0U;
+
+    if (g_running != 0U)
+    {
+        HRTIM1_SetChannelOutputEnable(channel, g_ch[channel].outputEnabled);
+    }
+
+    return 1U;
+}
+
+uint8_t PID_GetChannelEnable(uint8_t channel)
+{
+    if (channel >= HRTIM_NUM_CHANNELS)
+    {
+        return 1U;   /* safe default (enabled) for an out-of-range channel */
+    }
+
+    return g_ch[channel].outputEnabled;
 }
 
 uint8_t PID_SetProfileTiming(uint32_t rampTimeMs, uint32_t flatTopTimeMs)

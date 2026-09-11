@@ -144,6 +144,8 @@ static const command_t command_table[] = {
        sections for the full design. */
     { "PID:LOOPMODE",        cmd_pid_loopmode        },
     { "PID:LOOPMODE?",       cmd_pid_loopmode_query        },
+    { "PID:CHANnel:ENAble",  cmd_pid_channel_enable        },
+    { "PID:CHANnel:ENAble?", cmd_pid_channel_enable_query  },
     { "PID:PROFile:TIMing",  cmd_pid_profile_timing  },
     { "PID:PROFile:TIMing?", cmd_pid_profile_timing_query  },
     { "PID:PROFile:CURRent", cmd_pid_profile_current },

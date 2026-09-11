@@ -1,6 +1,81 @@
 WHAM-XREX-PFMG474 Firmware Changelog
 =====================================
 
+2026-09-11  —  Per-channel output enable/disable (PID:CHANnel:ENAble)
+               -- a genuine "no PFM waveform at all" switch; console
+               updated to match (build verified; real-hardware
+               verification PENDING -- board still disconnected)
+-----------------------------------------------------------------------
+  Change:  Direct request: a specific command to enable/disable each of
+        the 4 output channels, where disabled means the channel's
+        HRTIM output is genuinely never triggered -- distinct from
+        every existing per-channel switch. `PID:LOOPMODE`'s open-loop
+        mode still drives a real, uncorrected PFM waveform; a 0A
+        `PID:PROFile:CURRent` still drives a real PFM waveform (at
+        `PFM_TURNON_FREQ_HZ`, representing 0A, not "off"). Neither was
+        what was asked for.
+
+        New `HRTIM1_SetChannelOutputEnable(channel, enable)` (hrtim.c/h)
+        connects or disconnects ONE channel's output pins LIVE, at any
+        time -- reuses the exact mechanism `HRTIM1_PWM_Start()`'s
+        existing `channelEnabled[]` parameter already established
+        (disconnecting via `OENR`, forcing the same complementary
+        output-1-ACTIVE/output-2-INACTIVE level `HRTIM1_PWM_Start()`
+        already does at cold start when re-enabling) -- no new HRTIM
+        mechanism invented, just made callable for one channel,
+        independently, outside the one-shot bring-up call.
+        Deliberately does NOT stop the channel's own counter either
+        way (same reasoning `HRTIM1_PWM_Start()`'s own disabled-channel
+        path already documented: keeps it synchronized so a later
+        re-enable is instant and clean, no re-sync dance needed).
+
+        New `outputEnabled` per-channel state (pid.c, defaults to 1 --
+        every channel always output, today's only prior behavior,
+        unchanged unless explicitly disabled) and
+        `PID_SetChannelEnable()`/`PID_GetChannelEnable()` (pid.h/pid.c).
+        Setting it: updates the stored state (picked up by the NEXT
+        `PID_Start()`/`PID_ProfileStart()` via `channelEnabled[]`, now
+        built from real per-channel state instead of hardcoded all-1s)
+        AND, if the loop is already running, applies it immediately via
+        `HRTIM1_SetChannelOutputEnable()` -- live, mid-shot control, not
+        only pre-configuration. `PID_Update()`'s own per-channel loop
+        now skips a disabled channel completely at the top (no
+        setpoint, no feedback consumption, no PID math, no log entry --
+        same "continue" pattern as the other per-channel early-outs).
+
+        New commands `PID:CHANnel:ENAble <ch> <0|1>` / `PID:CHANnel:ENAble?
+        <ch>` (commands.c/commands.h/cmd_parser.c), following the exact
+        same pattern as every other set/query pair added this project
+        (PID:LOOPMODE, PID:GAINS, ...).
+
+        wham_console.py updated to match: new `enable <ch> <on|off>`
+        wrapper (asks to confirm only when turning ON -- the direction
+        that starts real new output, disabling never asks, always the
+        safe direction); `_refresh_config()`/`config` now also reads
+        `PID:CHANnel:ENAble?` per channel; the `shot` wizard now asks
+        "Ch{N} enabled? yes/no" FIRST for each channel, skipping every
+        other prompt for a disabled one, and sends
+        `PID:CHANnel:ENAble` explicitly for every channel every run
+        (matching this project's "explicit, no implicit magic"
+        convention -- same reasoning as `TABLE:BEGIN` before every
+        upload -- so a channel enabled in a previous session doesn't
+        silently stay enabled just because a later wizard run didn't
+        mention it).
+
+        Build verified: clean rebuild, zero warnings. REAL-HARDWARE
+        VERIFICATION NOT YET DONE -- board's USB-serial adapter is
+        STILL disconnected as of this entry (the third change in a row
+        made without hardware access -- see the two entries above).
+        Once reconnected, verify ALL THREE pending changes before
+        assuming any is solid: (1) per-channel
+        `PFM_MAX_CURRENT_A_PER_CHANNEL` clamping, (2) the
+        GateDriverStatus fault-recovery fix, (3) this entry --
+        specifically confirm `PID:CHANnel:ENAble 2 0` while a shot is
+        running actually stops channel 2's physical output immediately
+        (scope/DSLogic it if possible, not just PID:STATus?), and that
+        `PID:CHANnel:ENAble 2 1` afterward resumes it cleanly from
+        wherever its PID state had gotten to, not from a reset.
+
 2026-09-11  —  REAL BUG FIXED: GateDriverStatus fault during closed-
                loop PID operation left an operator with no way to
                resume without a reboot (build verified; real-hardware

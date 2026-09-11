@@ -593,6 +593,12 @@ class WhamConsole(cmd.Cmd):
             return None
         return "closed" if reply.split()[1] == "1" else "open"
 
+    def _query_channel_enable(self, ch):
+        reply = self.link.query(f"PID:CHANNEL:ENABLE? {ch}")
+        if is_err(reply):
+            return None
+        return reply.split()[1] == "1"
+
     def _query_profile_current(self, ch):
         reply = self.link.query(f"PID:PROFILE:CURRENT? {ch}")
         if is_err(reply):
@@ -620,6 +626,9 @@ class WhamConsole(cmd.Cmd):
                 loop_mode = self._query_loopmode(ch)
                 if loop_mode:
                     entry["loop_mode"] = loop_mode
+                enabled = self._query_channel_enable(ch)
+                if enabled is not None:
+                    entry["enabled"] = enabled
                 demand_a = self._query_profile_current(ch)
                 if demand_a is not None:
                     entry["demand_a"] = demand_a
@@ -799,7 +808,9 @@ class WhamConsole(cmd.Cmd):
             c = self.channel_config[ch]
             gains = (f"Kp={c['kp']:g} Ki={c['ki']:g} Kd={c['kd']:g}"
                      if c.get("kp") is not None else "gains: unavailable")
-            print(f"  ch{ch}: loop_mode={c.get('loop_mode', 'unavailable')}  "
+            enabled = c.get("enabled")
+            enabled_str = "DISABLED (no output)" if enabled is False else ("enabled" if enabled else "unavailable")
+            print(f"  ch{ch}: {enabled_str}  loop_mode={c.get('loop_mode', 'unavailable')}  "
                   f"demand={c.get('demand_a', 'unavailable')}A  {gains}")
 
     # -- direct wrappers (safe: no first-token collision, see module header) --
@@ -834,6 +845,34 @@ class WhamConsole(cmd.Cmd):
         reply = self._query_print(f"PID:LOOPMODE {ch} {bit}")
         if reply and not is_err(reply):
             self.channel_config.setdefault(int(ch), {})["loop_mode"] = mode.lower()
+
+    def do_enable(self, arg):
+        """enable <ch> <on|off>  -- wrapper for PID:CHANNEL:ENABLE: a
+        genuine "this channel outputs nothing at all" switch, distinct
+        from `loopmode` (open-loop still drives a real, uncorrected PFM
+        waveform) or a 0A demand current (still drives a real PFM
+        waveform, at the turn-on floor). Takes effect on the NEXT
+        `start`/`shot` if the loop isn't running yet; takes effect
+        IMMEDIATELY, live, if it is -- turning a channel back on while
+        the loop is already running asks to confirm first (see
+        `confirm`), since that's a real, immediate new output; turning
+        one off never asks (always the safe direction)."""
+        if not self._require_link():
+            return
+        parts = shlex.split(arg)
+        if len(parts) != 2 or parts[1].lower() not in ("on", "off"):
+            print("usage: enable <ch> <on|off>")
+            return
+        ch, state = parts
+        turning_on = state.lower() == "on"
+        if turning_on and not self._confirm(
+                f"Enabling channel {ch}'s output -- if the loop is already running, "
+                f"this takes effect immediately. Proceed?"):
+            print("Cancelled.")
+            return
+        reply = self._query_print(f"PID:CHANNEL:ENABLE {ch} {1 if turning_on else 0}")
+        if reply and not is_err(reply):
+            self.channel_config.setdefault(int(ch), {})["enabled"] = turning_on
 
     def do_setpoint(self, arg):
         """setpoint <ch> <hz>  -- wrapper for PID:SETPOINT."""
@@ -1067,8 +1106,9 @@ class WhamConsole(cmd.Cmd):
 
     def do_shot(self, arg):
         """shot  -- guided wizard to program and run a full shot
-        profile (Ramp Time / Flat Top Time / per-channel Demand
-        Current, loop mode, gains), then watches it run and
+        profile (Ramp Time / Flat Top Time / per-channel enable/
+        disable, Demand Current, loop mode, gains), then watches it run
+        and
         automatically fetches + plots the result. Logging can target
         one channel or 'all' -- 'all' arms every channel from the SAME
         real ticks (PID:LOG 0 ...) and produces ONE combined plot with
@@ -1089,6 +1129,15 @@ class WhamConsole(cmd.Cmd):
             per_channel = {}
             for ch in range(1, n + 1):
                 prev = self.channel_config.get(ch, {})
+                prev_enabled = prev.get("enabled", True)
+                raw = input(f"  Ch{ch} enabled? yes/no [{'yes' if prev_enabled else 'no'}]: ").strip().lower()
+                enabled = prev_enabled if not raw else (raw not in ("n", "no"))
+                if not enabled:
+                    print(f"  Ch{ch}: DISABLED -- no PFM waveform at all, skipping its other prompts.")
+                    per_channel[ch] = dict(enabled=False, demand_a=0.0, loop_mode="open",
+                                            kp=None, ki=None, kd=None)
+                    continue
+
                 demand_a = self._prompt_float(f"  Ch{ch} Demand Current (A)", prev.get("demand_a", 0.0))
                 loop_mode = prev.get("loop_mode", "closed")
                 if demand_a > 0:
@@ -1106,11 +1155,13 @@ class WhamConsole(cmd.Cmd):
                                 kp, ki, kd = (float(x) for x in raw.split())
                             except ValueError:
                                 print("  couldn't parse 3 numbers, keeping previous")
-                    per_channel[ch] = dict(demand_a=demand_a, loop_mode=loop_mode, kp=kp, ki=ki, kd=kd)
+                    per_channel[ch] = dict(enabled=True, demand_a=demand_a, loop_mode=loop_mode,
+                                            kp=kp, ki=ki, kd=kd)
                 else:
-                    per_channel[ch] = dict(demand_a=0.0, loop_mode="open", kp=None, ki=None, kd=None)
+                    per_channel[ch] = dict(enabled=True, demand_a=0.0, loop_mode="open",
+                                            kp=None, ki=None, kd=None)
 
-            active = [ch for ch, c in per_channel.items() if c["demand_a"] > 0]
+            active = [ch for ch, c in per_channel.items() if c["enabled"] and c["demand_a"] > 0]
             if self.last_log_all:
                 default_log = "all"
             elif self.last_log_channel:
@@ -1134,9 +1185,13 @@ class WhamConsole(cmd.Cmd):
             print("\n--- Summary ---")
             print(f"  Ramp={ramp_s:g}s  FlatTop={flat_s:g}s  Total={total_s:g}s")
             for ch, c in per_channel.items():
-                if c["demand_a"] > 0:
+                if not c["enabled"]:
+                    print(f"  Ch{ch}: DISABLED -- no output")
+                elif c["demand_a"] > 0:
                     g = f"Kp={c['kp']:g} Ki={c['ki']:g} Kd={c['kd']:g}" if c["kp"] is not None else "gains unchanged"
                     print(f"  Ch{ch}: {c['demand_a']:g}A, {c['loop_mode']}-loop, {g}")
+                else:
+                    print(f"  Ch{ch}: enabled, idle (0A)")
             if log_all:
                 log_desc = f"ALL {n} channels, decim={decim}"
             elif log_channel:
@@ -1155,12 +1210,21 @@ class WhamConsole(cmd.Cmd):
         # -- program it --
         self.link.query("PID:STOP")
         for ch, c in per_channel.items():
-            bit = 1 if c["loop_mode"] == "closed" else 0
-            self.link.query(f"PID:LOOPMODE {ch} {bit}")
-            self.link.query(f"PID:PROFILE:CURRENT {ch} {c['demand_a']}")
-            if c["kp"] is not None:
-                self.link.query(f"PID:GAINS {ch} {c['kp']} {c['ki']} {c['kd']}")
-            self.channel_config[ch] = dict(demand_a=c["demand_a"], loop_mode=c["loop_mode"],
+            # Sent explicitly every time, enabled or not -- matches this
+            # project's "explicit, no implicit magic" convention (same
+            # reasoning as TABLE:BEGIN before every upload, FAULT:CLEAR
+            # even after a condition clears) -- so a channel enabled in
+            # a previous session/shot doesn't silently stay enabled (or
+            # vice versa) just because this wizard run didn't mention it.
+            self.link.query(f"PID:CHANNEL:ENABLE {ch} {1 if c['enabled'] else 0}")
+            if c["enabled"]:
+                bit = 1 if c["loop_mode"] == "closed" else 0
+                self.link.query(f"PID:LOOPMODE {ch} {bit}")
+                self.link.query(f"PID:PROFILE:CURRENT {ch} {c['demand_a']}")
+                if c["kp"] is not None:
+                    self.link.query(f"PID:GAINS {ch} {c['kp']} {c['ki']} {c['kd']}")
+            self.channel_config[ch] = dict(enabled=c["enabled"], demand_a=c["demand_a"],
+                                            loop_mode=c["loop_mode"],
                                             kp=c["kp"], ki=c["ki"], kd=c["kd"])
         if log_all:
             self.link.query(f"PID:LOG 0 1000 {decim}")

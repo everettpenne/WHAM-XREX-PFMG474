@@ -614,6 +614,30 @@ void HRTIM1_PWM_Start(const uint8_t *channelEnabled)
        so no output is exactly correct here. */
 }
 
+void HRTIM1_SetChannelOutputEnable(uint8_t channel, uint8_t enable)
+{
+    uint32_t outputMask = kOutput1[channel] | kOutput2[channel];
+
+    if (enable != 0U)
+    {
+        /* Same one-time complementary-level force HRTIM1_PWM_Start()
+           does at cold start -- see this function's own doc comment in
+           hrtim.h for why it's needed whenever DeadTimeInsertion is
+           enabled and a pair's outputs are coming from a disconnected/
+           undefined state (which re-enabling live always is, same as
+           cold start). */
+        HAL_HRTIM_WaveformSetOutputLevel(&hhrtim1, kTimerIndex[channel], kOutput1[channel], HRTIM_OUTPUTLEVEL_ACTIVE);
+        HAL_HRTIM_WaveformSetOutputLevel(&hhrtim1, kTimerIndex[channel], kOutput2[channel], HRTIM_OUTPUTLEVEL_INACTIVE);
+        hhrtim1.Instance->sCommonRegs.OENR |= outputMask;
+    }
+    else
+    {
+        HAL_HRTIM_WaveformOutputStop(&hhrtim1, outputMask);
+    }
+    /* Deliberately does NOT touch this channel's counter (kTimerId[channel])
+       either way -- see this function's own doc comment in hrtim.h. */
+}
+
 void HRTIM1_EnableMasterInterrupt(void)
 {
     /* Priority scheme, originally matching the sibling PFM-STM32G474

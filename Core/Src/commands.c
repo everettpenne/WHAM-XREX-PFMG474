@@ -1074,6 +1074,71 @@ void cmd_pid_loopmode_query(uart_instance_t *inst, char *args)
     uart_send(inst, buf);
 }
 
+/* Added 2026-09-11, per direct request -- see PID_SetChannelEnable()'s
+   own doc comment in pid.h for exactly what this does (a genuine "no
+   PFM waveform at all" switch, distinct from PID:LOOPMODE). Takes
+   effect immediately if the loop is already running -- see that
+   function's own comment. */
+void cmd_pid_channel_enable(uart_instance_t *inst, char *args)
+{
+    char *tok;
+    long  chArg;
+    long  enableArg;
+    uint8_t ch;
+
+    tok = (args != NULL) ? strtok(args, " \r\n") : NULL;
+    if (tok == NULL)
+    {
+        SendErr(inst, 12, "PID:CHANNEL:ENABLE needs two arguments: channel 0|1");
+        return;
+    }
+    chArg = atol(tok);
+
+    tok = strtok(NULL, " \r\n");
+    if (tok == NULL)
+    {
+        SendErr(inst, 12, "PID:CHANNEL:ENABLE needs two arguments: channel 0|1");
+        return;
+    }
+    enableArg = atol(tok);
+
+    if ((chArg < 1L) || (chArg > (long)HRTIM_NUM_CHANNELS))
+    {
+        SendErr(inst, 11, "Invalid PID channel");
+        return;
+    }
+    ch = (uint8_t)(chArg - 1L);
+
+    (void)PID_SetChannelEnable(ch, (enableArg != 0L) ? 1U : 0U);
+    uart_send(inst, "OK\r\n");
+}
+
+void cmd_pid_channel_enable_query(uart_instance_t *inst, char *args)
+{
+    char buf[32];
+    char *tok;
+    long  chArg;
+    uint8_t ch;
+
+    tok = (args != NULL) ? strtok(args, " \r\n") : NULL;
+    if (tok == NULL)
+    {
+        SendErr(inst, 12, "PID:CHANNEL:ENABLE? needs one argument: channel");
+        return;
+    }
+    chArg = atol(tok);
+
+    if ((chArg < 1L) || (chArg > (long)HRTIM_NUM_CHANNELS))
+    {
+        SendErr(inst, 11, "Invalid PID channel");
+        return;
+    }
+    ch = (uint8_t)(chArg - 1L);
+
+    snprintf(buf, sizeof(buf), "OK %u\r\n", (unsigned int)PID_GetChannelEnable(ch));
+    uart_send(inst, buf);
+}
+
 void cmd_pid_profile_timing(uart_instance_t *inst, char *args)
 {
     char *tok;

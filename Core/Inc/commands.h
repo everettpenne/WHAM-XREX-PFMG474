@@ -247,6 +247,22 @@ void cmd_pid_loopmode_query(uart_instance_t *inst, char *args); /* PID:LOOPMODE?
                                                                      -- OK <0|1> --
                                                                      added 2026-09-10,
                                                                      see PID_GetLoopMode() */
+
+/* Per-channel output enable/disable, added 2026-09-11 per direct
+   request -- see PID_SetChannelEnable()'s own doc comment in pid.h
+   for exactly what this does and doesn't do (distinct from
+   PID:LOOPMODE -- this is "no PFM waveform at all", not "uncorrected
+   PFM waveform"). */
+void cmd_pid_channel_enable(uart_instance_t *inst, char *args);       /* PID:CHANnel:ENAble
+                                                                           <ch> <0|1> -- OK,
+                                                                           0 = output fully
+                                                                           disabled (no PFM
+                                                                           waveform at all),
+                                                                           1 = enabled
+                                                                           (default) */
+void cmd_pid_channel_enable_query(uart_instance_t *inst, char *args); /* PID:CHANnel:ENAble?
+                                                                           <ch> -- OK <0|1> */
+
 void cmd_pid_profile_timing(uart_instance_t *inst, char *args);  /* PID:PROFILE:TIMING
                                                                       <rampTimeS>
                                                                       <flatTopTimeS> --
