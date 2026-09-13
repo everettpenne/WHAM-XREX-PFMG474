@@ -1278,12 +1278,14 @@ class WhamConsole(cmd.Cmd):
         # Optional DSLogic cross-check plot (see dslogic_shot_capture.py's own
         # docstring) -- armed here, right before START, matching the
         # arm-then-fire timing this was validated with. Cleanly skipped if no
-        # DSLogic is connected, or none of this shot's active channels have
-        # DSLogic wiring (only WHAM ch 1/2/3 -- Phase U/V/W -- are wired).
+        # DSLogic is connected. Once connected, it always captures the fixed
+        # DSLogic-wired channels (WHAM ch 1/2/3 -- Phase U/V/W) regardless of
+        # which channels are active this shot -- a disabled/idle channel
+        # still gets a panel showing its output stayed silent.
         dsl_capture = None
         if HAVE_DSLOGIC_MODULE and dslogic_shot_capture.is_available():
             dsl_capture = dslogic_shot_capture.ShotCapture()
-            if not dsl_capture.arm(active, total_s):
+            if not dsl_capture.arm(per_channel, total_s):
                 dsl_capture = None
 
         reply = self.link.query("PID:PROFILE:START")
@@ -1301,12 +1303,12 @@ class WhamConsole(cmd.Cmd):
             watch_ch = active[0]
         else:
             watch_ch = 1
-        # For the DSLogic plot's ground-truth panel: poll every channel it
-        # actually captured (dsl_capture.wham_channels), not just watch_ch --
-        # console output below still only prints watch_ch, to keep the
-        # existing UX unchanged.
+        # For the DSLogic plot's per-channel ground-truth panels: poll
+        # EVERY channel (the plot shows one panel per channel regardless
+        # of enable state), not just watch_ch -- console output below
+        # still only prints watch_ch, to keep the existing UX unchanged.
         dsl_fw_log = []
-        dsl_poll_channels = dsl_capture.wham_channels if dsl_capture else []
+        dsl_poll_channels = list(per_channel) if dsl_capture else []
         print(f"Shot running -- watching channel {watch_ch} (Ctrl-C to stop watching, "
               "shot keeps running)...")
         t0 = time.time()
