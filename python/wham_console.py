@@ -62,6 +62,22 @@ try:
 except ImportError:
     HAVE_MPL = False
 
+try:
+    import dslogic_shot_capture  # optional DSLogic cross-check plot for `shot` --
+                                  # see that module's own docstring; it never
+                                  # raises and no-ops cleanly if no DSLogic is
+                                  # connected. Guarded the same as the
+                                  # matplotlib import above -- this file should
+                                  # always ship alongside wham_console.py, but a
+                                  # missing/broken sibling file shouldn't take
+                                  # down the whole console over an optional
+                                  # feature.
+    HAVE_DSLOGIC_MODULE = True
+except ImportError as exc:
+    HAVE_DSLOGIC_MODULE = False
+    print(f"[warn] dslogic_shot_capture.py not importable ({exc}) -- "
+          f"`shot` will skip the DSLogic cross-check plot")
+
 # --------------------------------------------------------------------------
 # Defaults / constants
 # --------------------------------------------------------------------------
@@ -976,12 +992,12 @@ class WhamConsole(cmd.Cmd):
             meta["ramp_time_s"] = meta["flat_top_time_s"] = meta["demand_current_a"] = None
         return meta
 
-    def _save_and_plot(self, channel, rows, rate_hz, count):
+    def _save_and_plot(self, channel, rows, rate_hz, count, ts=None):
         if count == 0:
             print("Log is empty (PID:LOGDATA? returned 0 samples) -- nothing to plot. "
                   "Did you arm logging (`log`) before the shot/test ran?")
             return
-        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+        ts = ts or datetime.now().strftime("%Y%m%d_%H%M%S")
         base = os.path.join(SHOTS_DIR, f"{ts}_ch{channel}")
         meta = self._shot_meta(channel)
         meta["rate_hz"] = rate_hz
@@ -1006,7 +1022,7 @@ class WhamConsole(cmd.Cmd):
         except WhamError as exc:
             print(f"[error] plotting: {exc}")
 
-    def _fetch_save_plot_all(self):
+    def _fetch_save_plot_all(self, ts=None):
         """Fetches PID:LOGDATA? for every channel (all-channels mode
         must be currently/previously armed -- PID_ArmLogAll()), saves
         one combined wide-format CSV + one metadata JSON + ONE PNG
@@ -1035,7 +1051,7 @@ class WhamConsole(cmd.Cmd):
             meta["rate_hz"] = rate_hz
             meta["log_count"] = count
 
-        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+        ts = ts or datetime.now().strftime("%Y%m%d_%H%M%S")
         base = os.path.join(SHOTS_DIR, f"{ts}_allch")
 
         # One wide CSV: t_s, then setpoint/measured/output per channel --
@@ -1119,7 +1135,14 @@ class WhamConsole(cmd.Cmd):
         than N separate runs. Re-running `shot` reuses your previous
         answers as the new defaults (just press Enter to repeat a shot
         unchanged). Ctrl-C at any prompt cancels without sending
-        anything."""
+        anything.
+
+        If a DreamSourceLab DSLogic is connected (Phase U/V/W wired to
+        its Ch0/Ch1/Ch2, see dslogic_shot_capture.py), this also arms a
+        DSLogic capture right before firing and saves an independent
+        frequency-vs-firmware-ground-truth cross-check plot to shots/
+        (<timestamp>_dslogic.png) alongside the usual CSV/JSON/PNG --
+        silently skipped if no DSLogic is plugged in."""
         if not self._require_link():
             return
         n = self.num_channels or 4
@@ -1240,6 +1263,10 @@ class WhamConsole(cmd.Cmd):
         self.link.query(f"PID:PROFILE:TIMING {ramp_s} {flat_s}")
         self.profile_timing = dict(ramp_s=ramp_s, flat_s=flat_s)
 
+        ts = datetime.now().strftime("%Y%m%d_%H%M%S")  # shared across every artifact
+                                                         # this one shot produces, so
+                                                         # they're easy to find together
+
         # State machine (added 2026-09-13, firmware side): PID:PROFILE:START
         # now only works from ARMED -- see ARM's own reply for why, if it
         # fails (e.g. a fault is already latched).
@@ -1247,11 +1274,24 @@ class WhamConsole(cmd.Cmd):
         if is_err(reply):
             print(explain_err(reply))
             return
+
+        # Optional DSLogic cross-check plot (see dslogic_shot_capture.py's own
+        # docstring) -- armed here, right before START, matching the
+        # arm-then-fire timing this was validated with. Cleanly skipped if no
+        # DSLogic is connected, or none of this shot's active channels have
+        # DSLogic wiring (only WHAM ch 1/2/3 -- Phase U/V/W -- are wired).
+        dsl_capture = None
+        if HAVE_DSLOGIC_MODULE and dslogic_shot_capture.is_available():
+            dsl_capture = dslogic_shot_capture.ShotCapture()
+            if not dsl_capture.arm(active, total_s):
+                dsl_capture = None
+
         reply = self.link.query("PID:PROFILE:START")
         if is_err(reply):
             print(explain_err(reply))
             return
         print(reply)
+        fire_t0 = time.time()
 
         if log_channel:
             watch_ch = log_channel
@@ -1261,6 +1301,12 @@ class WhamConsole(cmd.Cmd):
             watch_ch = active[0]
         else:
             watch_ch = 1
+        # For the DSLogic plot's ground-truth panel: poll every channel it
+        # actually captured (dsl_capture.wham_channels), not just watch_ch --
+        # console output below still only prints watch_ch, to keep the
+        # existing UX unchanged.
+        dsl_fw_log = []
+        dsl_poll_channels = dsl_capture.wham_channels if dsl_capture else []
         print(f"Shot running -- watching channel {watch_ch} (Ctrl-C to stop watching, "
               "shot keeps running)...")
         t0 = time.time()
@@ -1272,15 +1318,29 @@ class WhamConsole(cmd.Cmd):
                 print(f"  t+{time.time()-t0:5.2f}s  running={row['running']}  "
                       f"setpoint={row['setpoint']}  measured={row['measured']}  "
                       f"output={row['output']}")
+                if dsl_poll_channels:
+                    fw_row = {"t_s": time.time() - fire_t0}
+                    for ch in dsl_poll_channels:
+                        r = row if ch == watch_ch else self._status_row(ch)
+                        if r is not None:
+                            fw_row[ch] = dict(setpoint=r["setpoint"], measured=r["measured"])
+                    dsl_fw_log.append(fw_row)
                 if row["running"] == 0 and time.time() - t0 > 0.5:
                     break
                 time.sleep(0.3)
         except KeyboardInterrupt:
             print("\n(stopped watching -- shot itself keeps running on the device)")
 
+        if dsl_capture is not None:
+            print("Waiting for DSLogic capture and plotting cross-check...")
+            out_path = os.path.join(SHOTS_DIR, f"{ts}_dslogic.png")
+            saved = dsl_capture.finish_and_plot(dsl_fw_log, out_path)
+            if saved:
+                print(f"Saved {saved}")
+
         if log_all:
             print("Fetching all-channel log and plotting...")
-            self._fetch_save_plot_all()
+            self._fetch_save_plot_all(ts=ts)
         elif log_channel:
             print("Fetching log and plotting...")
             try:
@@ -1288,7 +1348,7 @@ class WhamConsole(cmd.Cmd):
             except WhamError as exc:
                 print(f"[error] {exc}")
                 return
-            self._save_and_plot(log_channel, rows, rate_hz, count)
+            self._save_and_plot(log_channel, rows, rate_hz, count, ts=ts)
 
     # -- reflash integration -------------------------------------------
 

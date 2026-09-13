@@ -194,6 +194,19 @@ decision (see `docs/command_reference.md`'s `FIRE` entry).
     requires `pip install matplotlib numpy`. See its own header
     comment for the `.dsl` format details (reverse-engineered from real
     captures, not from any DSView spec) and full usage.
+  - `dslogic_shot_capture.py` -- added 2026-09-13, LIVE (not saved-file)
+    DSLogic cross-check for `shot` (see `wham_console.py` above): if a
+    DSLogic is connected, arms a free-running capture right before a
+    shot fires (Phase U/V/W <-> DSLogic Ch0/1/2, the user's own fixed
+    wiring) and saves a frequency-vs-firmware-ground-truth comparison
+    PNG to `shots/` once the shot completes. Depends on `~/dslogic-tool`
+    (kept outside this repo -- vendors ~10MB of DreamSourceLab GPL
+    source unrelated to WHAM firmware; see that project's own README).
+    Every public function degrades to a clean no-op if no DSLogic is
+    connected, `~/dslogic-tool` isn't present, or numpy/matplotlib
+    aren't installed -- a shot behaves identically either way. Verified
+    end-to-end on real hardware through the actual `shot` command (not
+    just called directly) -- see `docs/changelog.txt`'s 2026-09-13 entry.
   - `pfm_input_plot.py` -- pulls whatever `PFMIN:DATA?` capture is
     currently sitting in the controller and plots it per channel
     (period + frequency, outlier-robust y-scaling). Read-only: doesn't

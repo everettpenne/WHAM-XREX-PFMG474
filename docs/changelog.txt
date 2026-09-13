@@ -1,6 +1,60 @@
 WHAM-XREX-PFMG474 Firmware Changelog
 =====================================
 
+2026-09-13  —  wham_console.py's `shot` now saves an optional DSLogic
+               cross-check plot alongside the usual CSV/JSON/PNG
+               (tooling only, no firmware change)
+-----------------------------------------------------------------------
+  Change:  Direct request: whenever a shot is taken (via `shot`), if a
+        DreamSourceLab DSLogic logic analyzer is physically connected,
+        automatically arm a capture across whatever active channels have
+        real DSLogic wiring (Phase U/V/W <-> Ch0/Ch1/Ch2, per the user's
+        own direct hardware setup -- see ~/dslogic-tool, a separate,
+        already-validated tool built earlier this session), and once the
+        shot completes, save a comparison plot (DSLogic-decoded
+        frequency-vs-time next to the firmware's own PID:STATus? self-
+        report) to shots/<timestamp>_dslogic.png -- the same style as
+        that tool's own final_validation.png, now generated automatically
+        for every real shot instead of by hand. If no DSLogic is
+        connected (or none of the active channels have DSLogic wiring),
+        this is a clean, silent no-op -- a shot behaves identically
+        either way.
+
+  New file:  python/dslogic_shot_capture.py -- imports dslogic_capture
+        from ~/dslogic-tool (kept outside this repo deliberately; see
+        that project's own README for why: it vendors ~10MB of
+        DreamSourceLab GPL source unrelated to WHAM firmware). Every
+        public function degrades to a no-op if that import fails, no
+        DSLogic is enumerated over USB, or numpy/matplotlib aren't
+        installed -- guarded the same way the existing HAVE_MPL check
+        already guards matplotlib. wham_console.py's own import of this
+        new module is likewise guarded (HAVE_DSLOGIC_MODULE) so a
+        missing/broken sibling file can't take down the whole console.
+
+  Where it hooks in:  do_shot() arms the DSLogic capture right after ARM
+        succeeds and right before PID:PROFILE:START is sent (matching the
+        arm-then-fire timing validated earlier this session), free-running
+        (not triggered -- dslogic_capture.py's own trigger support is
+        confirmed not to gate yet, a separate known issue). The existing
+        per-tick PID:STATus? watch loop was extended to also poll every
+        DSLogic-wired active channel (not just the one channel it already
+        printed to the console) so the plot's ground-truth panel has real
+        data without a second round of polling. A single ts (timestamp)
+        is now computed once at shot-start and threaded through
+        _save_and_plot()/_fetch_save_plot_all() (both gained an optional
+        ts= parameter, backward compatible) so every artifact one shot
+        produces -- CSV, JSON, the usual PNG(s), and now the DSLogic PNG
+        -- shares one filename prefix.
+
+  Verified on real hardware:  ran `shot` twice (channels 1/2/3 @ 3000A,
+        1s ramp / 1s flat / 1s ramp, matching this session's earlier
+        validation shots) through the actual console (scripted stdin,
+        not just calling the plotting function directly) -- both runs
+        completed cleanly and saved a DSLogic plot whose decoded
+        frequency trapezoid matches the firmware's own self-reported
+        setpoint/measured curves closely, same as the manually-driven
+        validation earlier this session.
+
 2026-09-13  —  Fixed a real race condition in SM_PollFaults() that could
                silently replace a General-Fault ramp-down with an abrupt
                cutoff (build verified; real-hardware verification PENDING
