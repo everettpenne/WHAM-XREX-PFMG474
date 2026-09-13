@@ -29,14 +29,17 @@ channel's HRTIM output really did stay low for the whole shot (no
 switching at all, not just 0A) is exactly the kind of thing this
 cross-check should be able to show at a glance.
 
-WIRING ASSUMPTION (fixed, per the user's own direct hardware setup):
+WIRING ASSUMPTION (fixed, per the user's own direct hardware setup,
+corrected 2026-09-13 -- see that day's dslogic-tool memory note for the
+earlier Ch2/Ch3 mixup this superseded):
     WHAM channel 1 (Phase U) <-> DSLogic Ch0
     WHAM channel 2 (Phase V) <-> DSLogic Ch1
     WHAM channel 3 (Phase W) <-> DSLogic Ch2
-WHAM channel 4 (if used) has no DSLogic wiring -- its panel shows the
-firmware's own self-report only, clearly labeled as unwired rather than
-silently missing DSLogic data. See WHAM_TO_DSLOGIC_CHANNEL below if the
-physical wiring ever changes.
+    WHAM channel 4 (Phase X) <-> DSLogic Ch3
+All four WHAM channels have DSLogic wiring -- the "no DSLogic wiring on
+this channel" panel note only fires for a channel number outside this
+map (e.g. if HRTIM_NUM_CHANNELS is ever raised past 4). See
+WHAM_TO_DSLOGIC_CHANNEL below if the physical wiring ever changes again.
 """
 
 import os
@@ -47,7 +50,7 @@ import time
 
 DSLOGIC_TOOL_DIR = os.path.expanduser("~/dslogic-tool")
 
-WHAM_TO_DSLOGIC_CHANNEL = {1: 0, 2: 1, 3: 2}
+WHAM_TO_DSLOGIC_CHANNEL = {1: 0, 2: 1, 3: 2, 4: 3}
 
 DEFAULT_SAMPLERATE_HZ = 2_000_000
 DSLOGIC_ATOMIC_SIZE = 8  # bytes of one channel's own data per rotation --

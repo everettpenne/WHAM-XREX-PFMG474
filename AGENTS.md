@@ -197,13 +197,16 @@ decision (see `docs/command_reference.md`'s `FIRE` entry).
   - `dslogic_shot_capture.py` -- added 2026-09-13, LIVE (not saved-file)
     DSLogic cross-check for `shot` (see `wham_console.py` above): if a
     DSLogic is connected, arms a free-running capture right before a
-    shot fires (Phase U/V/W <-> DSLogic Ch0/1/2, the user's own fixed
-    wiring) and saves a frequency-vs-firmware-ground-truth comparison
-    PNG to `shots/` once the shot completes. Depends on `~/dslogic-tool`
-    (kept outside this repo -- vendors ~10MB of DreamSourceLab GPL
-    source unrelated to WHAM firmware; see that project's own README).
-    Every public function degrades to a clean no-op if no DSLogic is
-    connected, `~/dslogic-tool` isn't present, or numpy/matplotlib
+    shot fires (Phase U/V/W/X <-> DSLogic Ch0/1/2/3, the user's own
+    fixed wiring -- corrected same-day from an initial Ch2/Ch3 mixup,
+    see docs/changelog.txt) and saves a frequency-vs-firmware-ground-
+    truth comparison PNG (one panel per WHAM channel, including
+    disabled/idle ones) to `shots/` once the shot completes. Depends on
+    `~/dslogic-tool` (kept outside this repo -- vendors ~10MB of
+    DreamSourceLab GPL source unrelated to WHAM firmware; see that
+    project's own README). Every public function degrades to a clean
+    no-op if no DSLogic is connected, `~/dslogic-tool` isn't present, or
+    numpy/matplotlib
     aren't installed -- a shot behaves identically either way. Verified
     end-to-end on real hardware through the actual `shot` command (not
     just called directly) -- see `docs/changelog.txt`'s 2026-09-13 entry.

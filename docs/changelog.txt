@@ -1,6 +1,48 @@
 WHAM-XREX-PFMG474 Firmware Changelog
 =====================================
 
+2026-09-13  —  DSLogic shot plot: corrected Ch/Phase wiring map (now
+               all 4 channels), one panel per channel instead of 2
+               combined panels (tooling only, no firmware change)
+-----------------------------------------------------------------------
+  Change:  Two direct requests, same conversation. First: the plot
+        (previously 2 combined panels -- all channels' DSLogic data
+        overlaid, all channels' firmware data overlaid) is now one
+        panel per WHAM channel, each overlaying that channel's own
+        DSLogic-decoded frequency with its own firmware PID:STATus?
+        self-report. A disabled channel still gets a panel (labeled
+        DISABLED), an enabled-but-idle (0A) channel is labeled as such,
+        and if a wired channel shows literally zero switching activity
+        its panel says so explicitly ("output confirmed low") instead
+        of rendering an ambiguous empty plot -- this was the actual
+        motivating case: confirming a disabled channel's HRTIM output
+        really did stay silent for the whole shot, not just that its
+        current demand was zero.
+
+        Testing this (Ch1+Ch3 active, Ch2+Ch4 disabled) surfaced a real
+        discrepancy: Ch2's and Ch3's DSLogic panels showed swapped
+        activity relative to the assumed Phase V/Phase W <-> DSLogic
+        Ch1/Ch2 wiring. Checked for a firmware bug first -- ruled out:
+        cmd_pid_channel_enable() and cmd_pid_profile_current()
+        (commands.c) convert the wire channel argument identically
+        (ch = chArg - 1), so PID:CHANnel:ENAble and PID:PROFILE:CURRENT
+        agree on what "channel 2"/"channel 3" mean internally. Flagged
+        to the user rather than guessed at. Second direct request,
+        same conversation: the corrected wiring map -- WHAM channel 4
+        ("Phase X") also has DSLogic wiring (Ch3), which this tooling
+        had wrongly assumed didn't exist at all (treated as always
+        "no DSLogic wiring on this channel"). Whether the original
+        Ch2/Ch3 swap was a physical lead mixup now fixed, or something
+        else, hasn't been independently re-verified with another shot
+        yet -- worth confirming next time a shot is taken with the
+        DSLogic connected.
+
+  Changed:  WHAM_TO_DSLOGIC_CHANNEL (python/dslogic_shot_capture.py) is
+        now {1: 0, 2: 1, 3: 2, 4: 3} (was {1: 0, 2: 1, 3: 2}, channel 4
+        excluded entirely). Doc comments (this module, wham_console.py's
+        do_shot(), AGENTS.md) updated to match -- all four WHAM channels
+        now have DSLogic wiring, not three.
+
 2026-09-13  —  wham_console.py's `shot` now saves an optional DSLogic
                cross-check plot alongside the usual CSV/JSON/PNG
                (tooling only, no firmware change)

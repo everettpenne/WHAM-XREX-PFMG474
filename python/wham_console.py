@@ -1137,10 +1137,11 @@ class WhamConsole(cmd.Cmd):
         unchanged). Ctrl-C at any prompt cancels without sending
         anything.
 
-        If a DreamSourceLab DSLogic is connected (Phase U/V/W wired to
-        its Ch0/Ch1/Ch2, see dslogic_shot_capture.py), this also arms a
-        DSLogic capture right before firing and saves an independent
-        frequency-vs-firmware-ground-truth cross-check plot to shots/
+        If a DreamSourceLab DSLogic is connected (Phase U/V/W/X wired to
+        its Ch0/Ch1/Ch2/Ch3, see dslogic_shot_capture.py), this also arms
+        a DSLogic capture right before firing and saves an independent
+        frequency-vs-firmware-ground-truth cross-check plot -- one panel
+        per channel, including disabled/idle ones -- to shots/
         (<timestamp>_dslogic.png) alongside the usual CSV/JSON/PNG --
         silently skipped if no DSLogic is plugged in."""
         if not self._require_link():
@@ -1279,7 +1280,7 @@ class WhamConsole(cmd.Cmd):
         # docstring) -- armed here, right before START, matching the
         # arm-then-fire timing this was validated with. Cleanly skipped if no
         # DSLogic is connected. Once connected, it always captures the fixed
-        # DSLogic-wired channels (WHAM ch 1/2/3 -- Phase U/V/W) regardless of
+        # DSLogic-wired channels (WHAM ch 1/2/3/4 -- Phase U/V/W/X) regardless of
         # which channels are active this shot -- a disabled/idle channel
         # still gets a panel showing its output stayed silent.
         dsl_capture = None
