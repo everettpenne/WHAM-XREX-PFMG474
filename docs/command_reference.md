@@ -29,6 +29,7 @@ Ported from the sibling PFM-STM32G474 project, per project decision:
 | 11 | Invalid `PID` channel |
 | 12 | Invalid `PID:*` argument count/value -- see the specific command's own usage |
 | 13 | Invalid state-machine transition for the current state (`ARM`/`DISARM`/`PID:PROFile:STARt`, see that section) |
+| 14 | Invalid `PID:CHANnel:NICKname` -- name must be 1-`PID_CHANNEL_NICKNAME_MAX_LEN` chars, no spaces, and not the reserved value `-` |
 
 Codes are never renumbered or reused once assigned, matching the
 sibling project's convention.
@@ -549,6 +550,25 @@ cover yet.
   PID state (integral, setpoint, gains) -- re-enabling resumes exactly
   where it left off, not from a fresh reset.
 - **`PID:CHANnel:ENAble? <ch>`** -- `OK <0|1>` -- see `PID_GetChannelEnable()`.
+- **`PID:CHANnel:NICKname <ch> <name>`** -- added 2026-09-13, per direct
+  request: assigns a purely cosmetic, human-readable name to a channel
+  (e.g. `TINKYWINKY`) -- no effect whatsoever on control behavior. This
+  is separate from the `Ch1`..`Ch4` numbering used everywhere else on
+  the wire (that numbering never changes) -- it's an extra label
+  operator tooling (`wham_console.py`, the DSLogic shot plots) can show
+  alongside the channel number, not a replacement for it. `name` must
+  be 1-`PID_CHANNEL_NICKNAME_MAX_LEN` (15) characters, contain no
+  whitespace (the wire protocol is space-tokenized, so a space would
+  just look like extra/wrong argument count), and not be the literal
+  string `-` (reserved, see the query below). `ERR 14` if `name` fails
+  any of those checks -- the channel's existing nickname (if any) is
+  left unchanged on a rejected attempt. Persists for the session (same
+  model as gains/demand current -- no flash/EEPROM persistence anywhere
+  in this firmware) -- cleared back to "no nickname" only by a reboot,
+  survives across multiple shots.
+- **`PID:CHANnel:NICKname? <ch>`** -- `OK <name>`, or literally `OK -`
+  if no nickname has been assigned to this channel yet -- see
+  `PID_GetChannelNickname()`.
 
 ```
 > PID:CHANNEL:ENABLE 3 0
@@ -562,6 +582,15 @@ cover yet.
 < OK
   (channel 3 resumes output immediately, from where its own PID state
    left off -- not a fresh start)
+> PID:CHANNEL:NICKNAME? 1
+< OK -
+  (no nickname assigned yet)
+> PID:CHANNEL:NICKNAME 1 TINKYWINKY
+< OK
+> PID:CHANNEL:NICKNAME? 1
+< OK TINKYWINKY
+> PID:CHANNEL:NICKNAME 1 -
+< ERR 14 Invalid nickname -- 1-PID_CHANNEL_NICKNAME_MAX_LEN chars, no spaces, and not the reserved value '-'
 ```
 
 - **`PID:PROFile:TIMing <rampTimeS> <flatTopTimeS>`** -- sets the

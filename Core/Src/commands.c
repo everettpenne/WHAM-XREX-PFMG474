@@ -1238,6 +1238,81 @@ void cmd_pid_channel_enable_query(uart_instance_t *inst, char *args)
     uart_send(inst, buf);
 }
 
+void cmd_pid_channel_nickname(uart_instance_t *inst, char *args)
+{
+    char *tok;
+    long  chArg;
+    uint8_t ch;
+
+    tok = (args != NULL) ? strtok(args, " \r\n") : NULL;
+    if (tok == NULL)
+    {
+        SendErr(inst, 12, "PID:CHANNEL:NICKNAME needs two arguments: channel name");
+        return;
+    }
+    chArg = atol(tok);
+
+    tok = strtok(NULL, " \r\n");
+    if (tok == NULL)
+    {
+        SendErr(inst, 12, "PID:CHANNEL:NICKNAME needs two arguments: channel name");
+        return;
+    }
+
+    if ((chArg < 1L) || (chArg > (long)HRTIM_NUM_CHANNELS))
+    {
+        SendErr(inst, 11, "Invalid PID channel");
+        return;
+    }
+    ch = (uint8_t)(chArg - 1L);
+
+    if (PID_SetChannelNickname(ch, tok) == 0U)
+    {
+        SendErr(inst, 14, "Invalid nickname -- 1-PID_CHANNEL_NICKNAME_MAX_LEN chars, "
+                          "no spaces, and not the reserved value '-'");
+        return;
+    }
+    uart_send(inst, "OK\r\n");
+}
+
+void cmd_pid_channel_nickname_query(uart_instance_t *inst, char *args)
+{
+    char buf[24U + PID_CHANNEL_NICKNAME_MAX_LEN];
+    char *tok;
+    long  chArg;
+    uint8_t ch;
+    const char *name;
+
+    tok = (args != NULL) ? strtok(args, " \r\n") : NULL;
+    if (tok == NULL)
+    {
+        SendErr(inst, 12, "PID:CHANNEL:NICKNAME? needs one argument: channel");
+        return;
+    }
+    chArg = atol(tok);
+
+    if ((chArg < 1L) || (chArg > (long)HRTIM_NUM_CHANNELS))
+    {
+        SendErr(inst, 11, "Invalid PID channel");
+        return;
+    }
+    ch = (uint8_t)(chArg - 1L);
+
+    /* "-" is the wire sentinel for "no nickname set" -- see
+       PID_SetChannelNickname()'s own doc comment in pid.h for why: an
+       empty second token ("OK \r\n") would be ambiguous to parse on the
+       client side, so this always emits exactly two space-separated
+       tokens. */
+    name = PID_GetChannelNickname(ch);
+    if (name[0] == '\0')
+    {
+        name = "-";
+    }
+
+    snprintf(buf, sizeof(buf), "OK %s\r\n", name);
+    uart_send(inst, buf);
+}
+
 void cmd_pid_profile_timing(uart_instance_t *inst, char *args)
 {
     char *tok;

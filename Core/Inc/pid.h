@@ -281,6 +281,43 @@ uint8_t PID_GetLoopMode(uint8_t channel);
 uint8_t PID_SetChannelEnable(uint8_t channel, uint8_t enabled);
 uint8_t PID_GetChannelEnable(uint8_t channel);
 
+/* Per-channel human-readable nickname (e.g. "TINKYWINKY") -- added
+ * 2026-09-13, per direct request: purely a label, no effect whatsoever
+ * on control behavior. Exists so an operator can assign a name to each
+ * physical Transrex/phase output (independent of this firmware's own
+ * Ch1..HRTIM_NUM_CHANNELS numbering) and have that name show up in
+ * logged/plotted output instead of (alongside) the bare channel number.
+ *
+ * PID_CHANNEL_NICKNAME_MAX_LEN chosen to comfortably fit the specific
+ * names given as examples ("TINKYWINKY" is 10 chars) with headroom, not
+ * derived from any hardware constraint.
+ *
+ * Defaults to empty (no nickname) for every channel at boot -- PID_Init()
+ * clears it, nothing else does (same persistence model as kp/ki/kd/
+ * demandCurrentA: set once, survives across shots in the same session,
+ * cleared only by a reboot -- there is no flash/EEPROM persistence
+ * anywhere in this firmware, and this doesn't add any).
+ *
+ * The wire protocol (commands.c's cmd_pid_channel_nickname*()) is
+ * whitespace-tokenized, so a nickname literally cannot contain spaces
+ * (the parser would just see it as extra arguments) -- not separately
+ * enforced here beyond the length check, since the parser already
+ * can't hand this function a multi-word string. The literal string "-"
+ * is reserved (PID:CHANnel:NICKname? uses it to mean "no nickname set"
+ * on the wire) and rejected as a nickname value.
+ *
+ * PID_SetChannelNickname() returns 1 on success, 0 if `channel` is out
+ * of range, `name` (or its length) is NULL/too long, or `name` is the
+ * reserved "-" sentinel -- the channel's existing nickname (if any) is
+ * left untouched on failure. PID_GetChannelNickname() returns a pointer
+ * to this channel's own persistent buffer (NOT a copy -- valid as long
+ * as the firmware runs, but treat as read-only) -- empty string ""
+ * (not NULL) for both an unset nickname and an out-of-range channel, so
+ * callers can always safely check name[0] without a NULL check. */
+#define PID_CHANNEL_NICKNAME_MAX_LEN  (15U)
+uint8_t PID_SetChannelNickname(uint8_t channel, const char *name);
+const char *PID_GetChannelNickname(uint8_t channel);
+
 /* --------------------------------------------------------------------------
  * General-Fault open-loop ramp-down -- added 2026-09-13, per direct
  * instruction (state_machine.h's HandleGeneralFault(), state_machine.c).

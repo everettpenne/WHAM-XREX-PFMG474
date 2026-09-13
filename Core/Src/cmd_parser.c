@@ -153,6 +153,8 @@ static const command_t command_table[] = {
     { "PID:LOOPMODE?",       cmd_pid_loopmode_query        },
     { "PID:CHANnel:ENAble",  cmd_pid_channel_enable        },
     { "PID:CHANnel:ENAble?", cmd_pid_channel_enable_query  },
+    { "PID:CHANnel:NICKname",  cmd_pid_channel_nickname        },
+    { "PID:CHANnel:NICKname?", cmd_pid_channel_nickname_query  },
     { "PID:PROFile:TIMing",  cmd_pid_profile_timing  },
     { "PID:PROFile:TIMing?", cmd_pid_profile_timing_query  },
     { "PID:PROFile:CURRent", cmd_pid_profile_current },

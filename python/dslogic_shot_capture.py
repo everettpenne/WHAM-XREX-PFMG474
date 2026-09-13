@@ -5,12 +5,14 @@ WHAM-XREX-PFMG474 shots.
 
 If a DreamSourceLab DSLogic is physically connected, this module arms a
 capture spanning a shot (right before it fires) and, once the shot
-completes, saves a plot -- one panel per WHAM channel -- comparing the
-DSLogic's own decoded frequency against the firmware's own
-PID:STATus? self-report, the same comparison style validated on real
-hardware in this session (see the project memory note "dslogic-tool"
-and ~/dslogic-tool/README.md for the full story of how that capture-
-and-decode pipeline was debugged and confirmed correct).
+completes, saves a plot -- one ROW per WHAM channel, two panels per row
+(firmware's own demand/measured feedback on the left, this channel's
+independently-captured DSLogic frequency on the right) -- rather than
+overlaying both sources on one axis, so each source's own shape stays
+legible on its own scale. Validated against real hardware this session
+(see the project memory note "dslogic-tool" and ~/dslogic-tool/
+README.md for the full story of how the underlying capture-and-decode
+pipeline was debugged and confirmed correct).
 
 If the DSLogic isn't connected, or ~/dslogic-tool isn't present, or
 numpy/matplotlib aren't installed, every public function here degrades
@@ -21,13 +23,19 @@ call is_available() before deciding whether to bother, but every other
 function is itself safe to call unconditionally.
 
 Once a DSLogic IS connected, though, a plot always gets generated for
-every shot, with one panel per WHAM channel regardless of whether that
+every shot, with one row per WHAM channel regardless of whether that
 channel is enabled this shot -- a disabled (PID:CHANnel:ENAble 0) or
-idle (0A demand) channel still gets a panel, labeled as such, rather
-than being silently dropped. This is deliberate: confirming a disabled
+idle (0A demand) channel still gets a row, labeled as such, rather than
+being silently dropped. This is deliberate: confirming a disabled
 channel's HRTIM output really did stay low for the whole shot (no
 switching at all, not just 0A) is exactly the kind of thing this
 cross-check should be able to show at a glance.
+
+Each row's title also shows that channel's PID:CHANnel:NICKname, if one
+has been assigned (e.g. "Ch1 (TINKYWINKY)") -- see _channel_label()
+below. The bare Ch<N> label is never dropped even when a nickname is
+set; the nickname is purely an extra, human-friendly label alongside
+it, matching wham_console.py's own channel_label() convention.
 
 WIRING ASSUMPTION (fixed, per the user's own direct hardware setup,
 corrected 2026-09-13 -- see that day's dslogic-tool memory note for the
@@ -55,6 +63,19 @@ WHAM_TO_DSLOGIC_CHANNEL = {1: 0, 2: 1, 3: 2, 4: 3}
 DEFAULT_SAMPLERATE_HZ = 2_000_000
 DSLOGIC_ATOMIC_SIZE = 8  # bytes of one channel's own data per rotation --
                           # see dslogic_capture.py's CaptureResult docstring.
+
+
+def _channel_label(channel, nickname=None):
+    """'Ch3' or 'Ch3 (TINKYWINKY)' -- mirrors wham_console.py's own
+    channel_label() (kept as a separate copy rather than importing from
+    there, since this module is meant to be usable standalone). The
+    bare Ch<N> label is never dropped even when a nickname is set --
+    it's the real wire-protocol channel identity; the nickname is a
+    purely cosmetic extra label alongside it, per direct instruction."""
+    if nickname:
+        return f"Ch{channel} ({nickname})"
+    return f"Ch{channel}"
+
 
 _dsl_mod = None
 _import_attempted = False
@@ -251,6 +272,12 @@ class ShotCapture:
         return edge_t[1:], freq
 
     def _plot(self, fw_log, out_path):
+        """One row per WHAM channel, two columns: left = firmware's own
+        demand (setpoint) and measured feedback (PID:STATus?), right =
+        this same channel's independently-captured DSLogic frequency --
+        side by side rather than overlaid, per direct request, so each
+        source's own shape is legible on its own axes rather than
+        competing for the same one."""
         import numpy as np
         import matplotlib
         matplotlib.use("Agg")
@@ -266,45 +293,51 @@ class ShotCapture:
         wired_order = sorted(WHAM_TO_DSLOGIC_CHANNEL, key=lambda ch: WHAM_TO_DSLOGIC_CHANNEL[ch])
         dsl_position = {ch: i for i, ch in enumerate(wired_order)}
 
-        fig, axes = plt.subplots(n, 1, figsize=(11, 2.6 * n), sharex=True, squeeze=False)
-        axes = [row[0] for row in axes]
+        fig, axes = plt.subplots(n, 2, figsize=(15, 2.6 * n), sharex=True, squeeze=False)
 
-        for ax, ch in zip(axes, channels):
+        for row, ch in zip(axes, channels):
+            ax_fw, ax_dsl = row
             cfg = self.per_channel.get(ch, {})
             enabled = cfg.get("enabled", True)
             demand_a = cfg.get("demand_a", 0.0)
+            nickname = cfg.get("nickname")
             wired = ch in WHAM_TO_DSLOGIC_CHANNEL
             dsl_ch = WHAM_TO_DSLOGIC_CHANNEL.get(ch)
 
-            notes = []
-            plotted_anything = False
-
-            if wired:
-                edge_t, freq = self._decode_channel(dsl_position[ch], n_captured, np)
-                if edge_t is None:
-                    notes.append("DSLogic data unavailable this shot")
-                elif len(edge_t) == 0:
-                    notes.append("no switching detected on DSLogic Ch"
-                                 f"{dsl_ch} (output confirmed low)")
-                else:
-                    ax.plot(edge_t, freq, ".", ms=2, alpha=0.6, color="#1f77b4",
-                             label=f"DSLogic Ch{dsl_ch}")
-                    plotted_anything = True
-            else:
-                notes.append("no DSLogic wiring on this channel")
-
+            # -- left: firmware's own demand + measured feedback --
             ts, sp, ms = [], [], []
-            for row in fw_log:
-                entry = row.get(ch)
+            for fw_row in fw_log:
+                entry = fw_row.get(ch)
                 if entry is None:
                     continue
-                ts.append(row["t_s"])
+                ts.append(fw_row["t_s"])
                 sp.append(entry["setpoint"])
                 ms.append(entry["measured"])
             if ts:
-                ax.plot(ts, sp, "-", color="#ff7f0e", alpha=0.6, label="setpoint (fw)")
-                ax.plot(ts, ms, "--", color="#2ca02c", alpha=0.9, label="measured (fw)")
-                plotted_anything = True
+                ax_fw.plot(ts, sp, "-", color="#ff7f0e", alpha=0.7, label="demand (setpoint)")
+                ax_fw.plot(ts, ms, "--", color="#2ca02c", alpha=0.9, label="measured (feedback)")
+                ax_fw.legend(fontsize=8, loc="upper right")
+            else:
+                ax_fw.text(0.5, 0.5, "no firmware log for this channel", transform=ax_fw.transAxes,
+                            ha="center", va="center", fontsize=9, color="gray", style="italic")
+
+            # -- right: this channel's own DSLogic-captured frequency --
+            dsl_note = None
+            if wired:
+                edge_t, freq = self._decode_channel(dsl_position[ch], n_captured, np)
+                if edge_t is None:
+                    dsl_note = "DSLogic data unavailable this shot"
+                elif len(edge_t) == 0:
+                    dsl_note = f"no switching detected on DSLogic Ch{dsl_ch} (output confirmed low)"
+                else:
+                    ax_dsl.plot(edge_t, freq, ".", ms=2, alpha=0.6, color="#1f77b4",
+                                 label=f"DSLogic Ch{dsl_ch}")
+                    ax_dsl.legend(fontsize=8, loc="upper right")
+            else:
+                dsl_note = "no DSLogic wiring on this channel"
+            if dsl_note:
+                ax_dsl.text(0.5, 0.5, dsl_note, transform=ax_dsl.transAxes,
+                             ha="center", va="center", fontsize=9, color="gray", style="italic")
 
             if not enabled:
                 status = "DISABLED"
@@ -312,17 +345,15 @@ class ShotCapture:
                 status = "enabled, idle (0A)"
             else:
                 status = f"{demand_a:g}A"
-            ax.set_title(f"Ch{ch} -- {status}", fontsize=10, loc="left")
-            ax.set_ylabel("Hz")
-            ax.grid(alpha=0.3)
-            if plotted_anything:
-                ax.legend(fontsize=8, loc="upper right")
-            if notes:
-                ax.text(0.5, 0.5, " / ".join(notes), transform=ax.transAxes,
-                         ha="center", va="center", fontsize=9, color="gray",
-                         style="italic")
+            label = f"{_channel_label(ch, nickname)} -- {status}"
+            ax_fw.set_title(f"{label}  (firmware self-report)", fontsize=10, loc="left")
+            ax_dsl.set_title(f"{label}  (DSLogic)", fontsize=10, loc="left")
+            ax_fw.set_ylabel("Hz")
+            ax_fw.grid(alpha=0.3)
+            ax_dsl.grid(alpha=0.3)
 
-        axes[-1].set_xlabel("time since shot start (s)")
+        axes[-1][0].set_xlabel("time since shot start (s)")
+        axes[-1][1].set_xlabel("time since shot start (s)")
         fig.suptitle("DSLogic vs. firmware self-report, per channel")
         plt.tight_layout()
         plt.savefig(out_path, dpi=130)

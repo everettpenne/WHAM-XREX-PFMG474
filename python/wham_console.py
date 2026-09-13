@@ -296,6 +296,17 @@ def hz_to_amps(hz):
     return max(0.0, a)
 
 
+def channel_label(channel, nickname=None):
+    """'Ch3' or 'Ch3 (TINKYWINKY)' -- per direct instruction, the bare
+    Ch<N> label is ALWAYS kept even when a nickname is set (it's the
+    actual wire-protocol channel identity; PID:CHANnel:NICKname is a
+    purely cosmetic extra label, never a replacement for the channel
+    number everywhere else on the wire)."""
+    if nickname:
+        return f"Ch{channel} ({nickname})"
+    return f"Ch{channel}"
+
+
 def _find_glitches(measured, threshold=15000):
     """Isolated single-tick spikes -- see docs/changelog.txt's
     2026-09-10 entries for what these are (a real, DSLogic-confirmed
@@ -333,7 +344,8 @@ def generate_plot(rows, meta, out_path):
 
     gains_str = (f"Kp={meta['kp']:g} Ki={meta['ki']:g} Kd={meta['kd']:g}"
                  if meta.get("kp") is not None else "gains unknown this session")
-    title_top = (f"WHAM-XREX-PFMG474 channel {meta['channel']} -- {meta.get('idn', '')}\n"
+    title_top = (f"WHAM-XREX-PFMG474 {channel_label(meta['channel'], meta.get('nickname'))} "
+                 f"-- {meta.get('idn', '')}\n"
                  f"{meta.get('timestamp', '')}   |   {gains_str}")
 
     if have_profile:
@@ -467,7 +479,7 @@ def generate_multi_channel_plot(channel_rows, metas, out_path):
 
         demand_a = meta.get("demand_current_a")
         loop_mode = meta.get("loop_mode") or "?"
-        subtitle = f"Ch{ch}  {loop_mode}-loop"
+        subtitle = f"{channel_label(ch, meta.get('nickname'))}  {loop_mode}-loop"
         if demand_a is not None:
             subtitle += f"  demand={demand_a:g}A"
         ax.set_ylabel("Hz", fontsize=9)
@@ -765,6 +777,23 @@ class WhamConsole(cmd.Cmd):
         return dict(running=int(parts[1]), setpoint=int(parts[2]),
                     measured=int(parts[3]), output=int(parts[4]))
 
+    def _get_nickname(self, channel):
+        """Fetches this channel's PID:CHANnel:NICKname? fresh from the
+        device -- "-" (the wire's "no nickname set" sentinel) comes back
+        as None. Queried fresh each time rather than cached client-side,
+        matching *IDN? in _shot_meta() -- avoids ever showing a stale
+        nickname if it was changed mid-session."""
+        try:
+            reply = self.link.query(f"PID:CHANNEL:NICKNAME? {channel}", timeout=1.0)
+        except WhamError:
+            return None
+        if is_err(reply):
+            return None
+        parts = reply.split()
+        if len(parts) < 2 or parts[1] == "-":
+            return None
+        return parts[1]
+
     def do_status(self, arg):
         """status [channel]  -- top-level state (STATE?) plus live
         PID:STATus? for one channel, or every channel if none given
@@ -893,6 +922,25 @@ class WhamConsole(cmd.Cmd):
         if reply and not is_err(reply):
             self.channel_config.setdefault(int(ch), {})["enabled"] = turning_on
 
+    def do_nickname(self, arg):
+        """nickname <ch> [name]  -- wrapper for PID:CHANnel:NICKname:
+        assigns a purely cosmetic label to a channel (e.g. `nickname 1
+        TINKYWINKY`) -- no effect on control behavior. The bare Ch<N>
+        label is never dropped, on the wire or in plots -- a nickname
+        is always shown ALONGSIDE it (`Ch1 (TINKYWINKY)`), never instead
+        of it. With no `name`, queries and prints the channel's current
+        nickname (PID:CHANnel:NICKname?) instead of setting one."""
+        if not self._require_link():
+            return
+        parts = shlex.split(arg)
+        if len(parts) == 1:
+            self._query_print(f"PID:CHANNEL:NICKNAME? {parts[0]}")
+            return
+        if len(parts) != 2:
+            print("usage: nickname <ch> [name]  (no name = query the current one)")
+            return
+        self._query_print(f"PID:CHANNEL:NICKNAME {parts[0]} {parts[1]}")
+
     def do_setpoint(self, arg):
         """setpoint <ch> <hz>  -- wrapper for PID:SETPOINT."""
         if not self._require_link():
@@ -979,6 +1027,7 @@ class WhamConsole(cmd.Cmd):
             pass
         meta = dict(
             channel=channel,
+            nickname=self._get_nickname(channel),
             timestamp=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             idn=idn,
             kp=cfg.get("kp"), ki=cfg.get("ki"), kd=cfg.get("kd"),
@@ -1187,6 +1236,9 @@ class WhamConsole(cmd.Cmd):
                 else:
                     per_channel[ch] = dict(enabled=True, demand_a=0.0, loop_mode="open",
                                             kp=None, ki=None, kd=None)
+
+            for ch, c in per_channel.items():
+                c["nickname"] = self._get_nickname(ch)
 
             active = [ch for ch, c in per_channel.items() if c["enabled"] and c["demand_a"] > 0]
             if self.last_log_all:

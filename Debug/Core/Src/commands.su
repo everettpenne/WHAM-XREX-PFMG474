@@ -35,8 +35,10 @@
 ../Core/Src/commands.c:1150:6:cmd_pid_loopmode_query	64	static
 ../Core/Src/commands.c:1181:6:cmd_pid_channel_enable	32	static
 ../Core/Src/commands.c:1215:6:cmd_pid_channel_enable_query	64	static
-../Core/Src/commands.c:1241:6:cmd_pid_profile_timing	48	static
-../Core/Src/commands.c:1286:6:cmd_pid_profile_timing_query	96	static
-../Core/Src/commands.c:1307:6:cmd_pid_profile_current	40	static
-../Core/Src/commands.c:1355:6:cmd_pid_profile_current_query	72	static
-../Core/Src/commands.c:1390:6:cmd_pid_profile_start	16	static
+../Core/Src/commands.c:1241:6:cmd_pid_channel_nickname	32	static
+../Core/Src/commands.c:1278:6:cmd_pid_channel_nickname_query	72	static
+../Core/Src/commands.c:1316:6:cmd_pid_profile_timing	48	static
+../Core/Src/commands.c:1361:6:cmd_pid_profile_timing_query	96	static
+../Core/Src/commands.c:1382:6:cmd_pid_profile_current	40	static
+../Core/Src/commands.c:1430:6:cmd_pid_profile_current_query	72	static
+../Core/Src/commands.c:1465:6:cmd_pid_profile_start	16	static

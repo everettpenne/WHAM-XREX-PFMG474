@@ -1,6 +1,63 @@
 WHAM-XREX-PFMG474 Firmware Changelog
 =====================================
 
+2026-09-13  —  New PID:CHANnel:NICKname command; DSLogic shot plot now
+               8 panels (firmware + DSLogic side by side per channel)
+               and shows nicknames
+-----------------------------------------------------------------------
+  Change:  Direct request: the ability to assign a purely cosmetic,
+        human-readable nickname to each channel via SCPI (e.g. Ch1 =
+        "TINKYWINKY", Ch2 = "LAALAA", Ch3 = "DIPSY", Ch4 = "NOONOO" --
+        the example names from the request itself). New commands
+        PID:CHANnel:NICKname <ch> <name> (set) and
+        PID:CHANnel:NICKname? <ch> (query, "-" sentinel for "none set"
+        -- see cmd_pid_channel_nickname_query()'s own comment on why an
+        explicit sentinel beats an ambiguous empty second token). No
+        effect whatsoever on control behavior -- purely a label.
+        PID_CHANNEL_NICKNAME_MAX_LEN (15) chosen to comfortably fit the
+        example names with headroom, not derived from any hardware
+        constraint. Same persistence model as gains/demand current: set
+        once, survives across shots in the session, cleared only by a
+        reboot -- no flash/EEPROM persistence anywhere in this firmware.
+        New PidChannelState_t.nickname field (pid.c), cleared in
+        PID_Init(). New error code 14 (invalid nickname -- too long, has
+        whitespace, or is the reserved "-" value).
+
+        Second direct request, same conversation: after a shot, every
+        logged/plotted channel should show its nickname (still ALONGSIDE
+        the bare Ch<N> label, never replacing it -- Ch<N> is the real
+        wire-protocol identity). wham_console.py's generate_plot()/
+        generate_multi_channel_plot() titles now read e.g.
+        "Ch1 (TINKYWINKY)" via a new shared channel_label() helper; a
+        new do_nickname console command wraps the SCPI command
+        (`nickname <ch> [name]` -- no name = query instead of set).
+        _shot_meta() now fetches the channel's current nickname fresh
+        from the device (same pattern as its existing *IDN? fetch, not
+        cached client-side) on every plot.
+
+        Third direct request, same conversation: the DSLogic cross-check
+        plot changed from 4 combined panels (DSLogic + firmware overlaid
+        on one axis per channel) to 8 panels -- one row per channel, two
+        columns: firmware's own demand/measured feedback on the left,
+        that channel's independently-captured DSLogic frequency on the
+        right -- rather than overlaid, so each source's own shape stays
+        legible on its own scale instead of competing for one axis.
+        Row titles now include the nickname too, matching the console's
+        own plots.
+
+  Verified on real hardware:  PID:CHANnel:NICKname round-tripped
+        correctly for all 4 channels with the exact example names, and
+        rejected a too-long name, the reserved "-" value, an invalid
+        channel, and a missing argument -- all without corrupting the
+        channel's existing (valid) nickname. Ran a real shot (Ch1+Ch3
+        active, Ch2+Ch4 disabled, same scenario as the earlier Ch2/Ch3
+        wiring investigation) through the actual `shot` command with all
+        four nicknames set -- the resulting 8-panel plot correctly
+        showed "Ch1 (TINKYWINKY)" / "Ch2 (LAALAA)" / "Ch3 (DIPSY)" /
+        "Ch4 (NOONOO)" as row titles, firmware and DSLogic data side by
+        side. Build clean (zero warnings), flashed and confirmed via
+        *IDN? before the SCPI round-trip tests above.
+
 2026-09-13  —  DSLogic shot plot: corrected Ch/Phase wiring map (now
                all 4 channels), one panel per channel instead of 2
                combined panels (tooling only, no firmware change)

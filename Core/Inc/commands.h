@@ -276,6 +276,18 @@ void cmd_pid_channel_enable(uart_instance_t *inst, char *args);       /* PID:CHA
 void cmd_pid_channel_enable_query(uart_instance_t *inst, char *args); /* PID:CHANnel:ENAble?
                                                                            <ch> -- OK <0|1> */
 
+/* Per-channel human-readable nickname, added 2026-09-13 per direct
+   request -- purely a label, see PID_SetChannelNickname()'s own doc
+   comment in pid.h for the full story (max length, reserved "-"
+   sentinel, why it can't contain spaces). */
+void cmd_pid_channel_nickname(uart_instance_t *inst, char *args);       /* PID:CHANnel:NICKname
+                                                                             <ch> <name> -- OK,
+                                                                             or ERR 14 if name
+                                                                             is invalid */
+void cmd_pid_channel_nickname_query(uart_instance_t *inst, char *args); /* PID:CHANnel:NICKname?
+                                                                             <ch> -- OK <name>,
+                                                                             or OK - if none set */
+
 void cmd_pid_profile_timing(uart_instance_t *inst, char *args);  /* PID:PROFILE:TIMING
                                                                       <rampTimeS>
                                                                       <flatTopTimeS> --

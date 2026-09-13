@@ -10,6 +10,7 @@
 #include "hrtim.h"
 #include "pfm_input.h"
 #include "state_machine.h"
+#include <string.h>   /* strlen/strcpy/strcmp -- PID_SetChannelNickname() */
 
 typedef struct
 {
@@ -63,6 +64,11 @@ typedef struct
        disabled. See PID_SetChannelEnable()'s own doc comment in pid.h
        for exactly what "disabled" does and doesn't do. */
     uint8_t  outputEnabled;
+
+    /* Human-readable nickname -- added 2026-09-13, see PID_SetChannelNickname()'s
+       own doc comment in pid.h. Purely a label, no effect on control
+       behavior. Empty string ("") means no nickname assigned. */
+    char     nickname[PID_CHANNEL_NICKNAME_MAX_LEN + 1U];
 
     /* General-Fault open-loop ramp-down -- added 2026-09-13, see
        PID_BeginFaultRampDown()/ProcessFaultRampDown()'s own comments
@@ -324,6 +330,7 @@ void PID_Init(void)
         g_ch[ch].demandCurrentA     = 0.0f;
         g_ch[ch].closedLoopEnabled  = 1U;   /* default: closed-loop, prior-only behavior */
         g_ch[ch].outputEnabled      = 1U;   /* default: enabled, prior-only behavior */
+        g_ch[ch].nickname[0]        = '\0';  /* default: no nickname assigned */
         g_ch[ch].faultRampStartHz        = 0U;
         g_ch[ch].faultRampParticipating  = 0U;
     }
@@ -1173,6 +1180,50 @@ uint8_t PID_GetChannelEnable(uint8_t channel)
     }
 
     return g_ch[channel].outputEnabled;
+}
+
+uint8_t PID_SetChannelNickname(uint8_t channel, const char *name)
+{
+    size_t len;
+
+    if (channel >= HRTIM_NUM_CHANNELS)
+    {
+        return 0U;
+    }
+    if (name == NULL)
+    {
+        return 0U;
+    }
+
+    len = strlen(name);
+    if ((len == 0U) || (len > (size_t)PID_CHANNEL_NICKNAME_MAX_LEN))
+    {
+        return 0U;
+    }
+    if (strcmp(name, "-") == 0)
+    {
+        /* reserved -- see this function's own doc comment in pid.h */
+        return 0U;
+    }
+
+    /* len already checked <= PID_CHANNEL_NICKNAME_MAX_LEN, and the
+       buffer is PID_CHANNEL_NICKNAME_MAX_LEN+1 bytes, so this always
+       fits with room for the NUL -- strcpy, not strncpy, deliberately:
+       a silently-truncated nickname would be a worse failure mode than
+       just rejecting an over-length one up front (already done above). */
+    (void)strcpy(g_ch[channel].nickname, name);
+
+    return 1U;
+}
+
+const char *PID_GetChannelNickname(uint8_t channel)
+{
+    if (channel >= HRTIM_NUM_CHANNELS)
+    {
+        return "";
+    }
+
+    return g_ch[channel].nickname;
 }
 
 uint8_t PID_SetProfileTiming(uint32_t rampTimeMs, uint32_t flatTopTimeMs)
