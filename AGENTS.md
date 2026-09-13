@@ -462,9 +462,12 @@ decision (see `docs/command_reference.md`'s `FIRE` entry).
   arm-none-eabi-gcc 13.3.
 - `Core/Src|Inc/` -- all project code. Currently: `main.c`, `uart.c`,
   `cmd_parser.c`, `commands.c`, `boot_jump.c`, `hrtim.c`, `pfm.c`,
-  `gate_driver.c`, `qspi_test.c`, `pfm_input.c`, plus CubeMX-generated
-  `stm32g4xx_hal_msp.c`/`stm32g4xx_it.c`/`system_stm32g4xx.c`/
-  `syscalls.c`/`sysmem.c`.
+  `gate_driver.c`, `qspi_test.c`, `pfm_input.c`, `pid.c`,
+  `state_machine.c` (added 2026-09-13 -- the top-level IDLE/ARMED/
+  FIRING/FAULT operating-state machine, see `docs/command_reference.md`'s
+  `ARM`/`DISARM`/`STATE?` section and that file's own header comment),
+  plus CubeMX-generated `stm32g4xx_hal_msp.c`/`stm32g4xx_it.c`/
+  `system_stm32g4xx.c`/`syscalls.c`/`sysmem.c`.
 - `python/` -- host-side tooling (see above).
 - `docs/` -- this documentation set.
 

@@ -122,6 +122,19 @@ void cmd_pfm_gaplog(uart_instance_t *inst, char *args); /* PFM:GAPLOG? -- OK
 void cmd_fault_query(uart_instance_t *inst, char *args); /* FAULT? -- OK 0|1 */
 void cmd_fault_clear(uart_instance_t *inst, char *args);  /* FAULT:CLEar -- OK */
 
+/* Top-level operating-state machine (state_machine.h), added
+ * 2026-09-13 -- IDLE/ARMED/FIRING/FAULT. Bare, top-level commands
+ * (system-wide state, not one subsystem), matching this project's
+ * existing bare FIRE. ERR 13 (new): invalid state-machine transition
+ * for the current state. */
+void cmd_arm(uart_instance_t *inst, char *args);          /* ARM -- OK, IDLE -> ARMED */
+void cmd_disarm(uart_instance_t *inst, char *args);       /* DISARM -- OK, ARMED -> IDLE,
+                                                                no-op if not ARMED */
+void cmd_state_query(uart_instance_t *inst, char *args);  /* STATE? -- OK <IDLE|ARMED|
+                                                                FIRING|FAULT>, or
+                                                                OK FAULT <GENERAL|
+                                                                OVERCURRENT> */
+
 /* Reports HRTIM_NUM_CHANNELS (ctrlr_config.h), the compile-time HRTIM
  * channel count this specific firmware build was configured for --
  * lets host tooling (python/pfm_table_upload.py) confirm what a board

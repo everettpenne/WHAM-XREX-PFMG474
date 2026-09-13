@@ -101,6 +101,13 @@ static const command_t command_table[] = {
     { "FAULT?",              cmd_fault_query  },
     { "FAULT:CLEar",         cmd_fault_clear  },
 
+    /* Top-level operating-state machine (IDLE/ARMED/FIRING/FAULT) --
+       see commands.c's own header comment on cmd_arm()/cmd_disarm()/
+       cmd_state_query() and state_machine.h for the full design. */
+    { "ARM",                 cmd_arm          },
+    { "DISARM",              cmd_disarm       },
+    { "STATE?",              cmd_state_query  },
+
     /* Raw GateDriverStatus_01..12 (PE0..PE11) diagnostic readback --
        see commands.c's own header comment on cmd_gds_query(). */
     { "GDS?",                cmd_gds_query    },

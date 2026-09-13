@@ -1,6 +1,177 @@
 WHAM-XREX-PFMG474 Firmware Changelog
 =====================================
 
+2026-09-13  —  Top-level operating-state machine: IDLE/ARMED/FIRING/
+               FAULT, new state_machine.c/h module, ARM/DISARM/STATE?
+               commands, two fault-type handlers stubbed (*** NEEDS
+               REVISIT -- see below ***) (build verified; real-
+               hardware verification PENDING -- board still
+               disconnected)
+-----------------------------------------------------------------------
+  Change:  Direct request: start building an explicit state machine
+        for this controller, sitting above pid.c/hrtim.c/gate_driver.c/
+        pfm.c as the thing that ties them into one coherent "what is
+        this controller doing right now" answer. Design settled via a
+        short clarifying exchange before writing any code (the user's
+        own answers, verbatim reasoning below):
+
+          - Fault-type routing (General vs. Overcurrent Protection):
+            explicitly left UNDECIDED, per direct instruction -- "stub
+            only, route later." Both stub handlers exist; which real
+            condition should ever call which is NOT decided.
+          - How FIRING is entered: reuse PID:PROFile:STARt (already
+            does "start the ramp profile for every enabled channel"),
+            not a new command.
+          - Module location: a new, dedicated state_machine.c/h,
+            calling into pid.c/hrtim.c/gate_driver.c/pfm.c rather than
+            being folded into any one of them.
+          - A THIRD state, ARMED, added per direct suggestion during
+            the same exchange -- between IDLE and FIRING, entered via a
+            NEW `ARM` command, gated by conditions "we will populate
+            later." PID:PROFile:STARt ("a FIRE command") now only
+            works from ARMED.
+
+        NEW MODULE, Core/Inc/state_machine.h + Core/Src/state_machine.c
+        (added to Debug/Core/Src/subdir.mk + Debug/objects.list by
+        hand -- this project's own established CubeIDE-Makefile
+        gotcha, see AGENTS.md):
+
+          SM_State_t: SM_STATE_IDLE / SM_STATE_ARMED / SM_STATE_FIRING /
+          SM_STATE_FAULT. SM_FaultType_t: SM_FAULT_NONE / SM_FAULT_GENERAL /
+          SM_FAULT_OVERCURRENT.
+
+          - IDLE -- boot (SM_Init()), after a shot completes
+            (SM_NotifyShotComplete(), called from pid.c's PID_Update()
+            at the exact point a profile naturally finishes -- FIRING
+            -> IDLE), or after FAULT:CLEAR (SM_ClearFault(), only if
+            the underlying condition is actually gone). Every HRTIM
+            channel output disabled.
+          - ARMED -- SM_Arm() (`ARM`, IDLE -> ARMED only), gated by
+            ArmConditionsMet() -- a STUB, always returns 1 today, no
+            real interlock logic exists yet (see "NEEDS REVISIT"
+            below). Outputs stay disabled here, identically to IDLE --
+            nothing electrical changes on entry, ARMED is purely a
+            software readiness gate. Left via SM_Fire()
+            (PID:PROFile:STARt -> FIRING, only from here), SM_Disarm()
+            (`DISARM`, stand down -> IDLE), or SM_Stop() (PID:STOP,
+            abort -> IDLE).
+          - FIRING -- SM_Fire() calls PID_ProfileStart() (pid.c,
+            unchanged) internally, only transitions to FIRING if that
+            actually succeeds (stays ARMED otherwise -- e.g. profile
+            timing never set). Returns to IDLE automatically at shot
+            completion, or on a manual PID:STOP abort.
+          - FAULT -- entered from ANY state the instant EITHER existing
+            fault source trips (SM_PollFaults(), checks
+            HRTIM1_FaultIsTripped() and GateDriver_FaultIsLatched(),
+            the same two sources PID_Update() already checked before
+            this change -- see the 2026-09-11 GateDriverStatus-fix
+            entry). Calls BOTH PID_Stop() AND PFM_ForceStop() on entry
+            (belt and suspenders -- covers both this project's current
+            PID:* output path and the legacy pfm.c TABLE:*/FIRE path,
+            regardless of which was actually active; both are already
+            idempotent/safe to call when nothing was running), then
+            dispatches to HandleGeneralFault() or
+            HandleOvercurrentFault() (state_machine.c) based on
+            g_faultType. *** BOTH HANDLERS ARE EMPTY STUBS ***, per
+            direct instruction -- populate later. Left only via
+            SM_ClearFault() (FAULT:CLEAR, extended), always back to
+            IDLE, never directly to ARMED/FIRING.
+
+        FAULT DETECTION "NO MATTER WHICH STATE" -- a real design
+        question the fault-mapping/module-location answers didn't
+        settle by themselves, worked out during implementation: pid.c's
+        PID_Update() (where the existing fault check lived) is only
+        ever CALLED while the HRTIM Master counter is running, which
+        under this new model only happens during FIRING -- so a fault
+        occurring while IDLE or ARMED would never have been noticed by
+        that check alone, directly contradicting "at any point, no
+        matter which state." Fixed by calling SM_PollFaults() from TWO
+        places: pid.c's PID_Update() (unchanged rate, now routed
+        through the state machine instead of calling PID_Stop()
+        directly -- see below) for FIRING, AND main.c's main loop,
+        every iteration, unconditionally, for IDLE/ARMED. *** NOTE TO
+        REVISIT ***: the main-loop polling rate is whatever the loop's
+        own cadence happens to be (currently just next to
+        uart_process()) -- not a bounded, guaranteed interval. Not a
+        regression (both underlying sources already protect themselves
+        independently of this -- PC10 in silicon, GateDriverStatus via
+        its own EXTI edge, regardless of when this next runs), but
+        worth a harder look (a dedicated periodic timer?) if tighter
+        latency is ever needed.
+
+        pid.c's own fault-check block (the one fixed 2026-09-11) is now
+        a call to SM_PollFaults() + a SM_GetState() check, instead of
+        directly calling HRTIM1_FaultIsTripped()/GateDriver_FaultIsLatched()/
+        PID_Stop() itself -- consolidates fault-handling into ONE place
+        (state_machine.c) instead of it being spread across pid.c and
+        gate_driver.c. pid.c no longer includes gate_driver.h directly
+        (nothing left in that file using it).
+
+        NEW COMMANDS (commands.c/commands.h/cmd_parser.c): `ARM`,
+        `DISARM`, `STATE?` -- bare, top-level, matching this project's
+        existing bare `FIRE` (system-wide state, not one subsystem's
+        namespace). New error code 13: an invalid state-machine
+        transition for the current state. PID:PROFile:STARt now checks
+        SM_GetState()==ARMED first (ERR 13 if not) before calling
+        SM_Fire(). PID:STOP now also calls SM_Stop() (abort, ->IDLE,
+        never touches FAULT). FAULT:CLEAR now also calls SM_ClearFault().
+
+        wham_console.py updated to match: the `shot` wizard now sends
+        `ARM` immediately before `PID:PROFILE:START` (without this
+        fix, every existing `shot` run would have started failing with
+        ERR 13 the moment this firmware change landed); `status`/
+        `monitor` now show `STATE?` at the top. The module's own
+        "Adding a new console command" naming-safety list updated to
+        include `arm`/`disarm`/`state` -- these are bare, single-level
+        commands with no `*`-prefix exception the way `*IDN?` has, so
+        the same collision rule applies to them as literally as to
+        `fire`/`pid`.
+
+        *** THINGS ADDED BEYOND THE LITERAL REQUEST, FLAGGED FOR
+        REVIEW, NOT SILENTLY ASSUMED WANTED ***:
+          - `DISARM` itself -- the user's description covered ARM and
+            FIRE explicitly but not a way to stand down from ARMED
+            without either firing or faulting; added as ARM's obvious
+            companion (a real usability/safety gap without it), but
+            flagging it since it wasn't explicitly requested.
+          - `HandleGeneralFault()`/`HandleOvercurrentFault()` being
+            called from state_machine.c's EnterFault() with BOTH
+            PID_Stop() AND PFM_ForceStop() (not just one) -- a
+            deliberate "belt and suspenders" choice given this codebase
+            still has two coexisting output paths, not something the
+            user specified explicitly.
+
+        *** KNOWN GAP, NOT FIXED THIS ROUND ***: PID:START (the
+        simpler, non-profile closed-loop start) is NOT gated by this
+        state machine at all -- it can start real output regardless of
+        STATE?'s value, and never moves the state machine out of IDLE/
+        ARMED. Only PID:PROFile:STARt was wired up as "fire," per
+        direct instruction to reuse that specific command -- this
+        inconsistency is real and worth resolving later, not an
+        oversight to silently paper over.
+
+        *** REMINDER, PER DIRECT INSTRUCTION: this state machine is
+        explicitly a first pass -- revisit once the work described in
+        this entry is complete. Open items, all flagged above and
+        collected here for one place to check: (1) fault-type routing
+        (General vs. Overcurrent) is completely undecided; (2) both
+        fault handlers are empty; (3) ArmConditionsMet() is a stub,
+        always allows arming; (4) main-loop fault-poll cadence is
+        unbounded; (5) PID:START bypasses the state machine entirely.
+        ***
+
+        Build verified: clean rebuild via wham_build.py (all source
+        files, since a new one was added), zero warnings. REAL-
+        HARDWARE VERIFICATION NOT YET DONE -- board's USB-serial
+        adapter is STILL disconnected as of this entry (the fifth
+        change in a row made without hardware access -- see the four
+        entries above, all still also pending). Once reconnected, work
+        through all five pending verification items in order (per-
+        channel current calibration, GateDriverStatus fault fix,
+        PID:CHANnel:ENAble, FW_GIT_COMMIT, then this entry's own new
+        ARM/DISARM/STATE?/PID:PROFile:STARt-gating/fault-detection
+        behavior) before assuming any is solid.
+
 2026-09-11  —  *IDN? now reports the exact git commit a firmware build
                was made from (FW_GIT_COMMIT); new wham_build.py closes
                the stale-.bin gotcha as a side effect (build verified;

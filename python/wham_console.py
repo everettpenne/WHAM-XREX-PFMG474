@@ -750,11 +750,14 @@ class WhamConsole(cmd.Cmd):
                     measured=int(parts[3]), output=int(parts[4]))
 
     def do_status(self, arg):
-        """status [channel]  -- live PID:STATus? for one channel, or
-        every channel if none given (uses CONFig:CHANnels?'s count).
-        Pretty-printed table: Ch | Running | Setpoint | Measured | Output (Hz)."""
+        """status [channel]  -- top-level state (STATE?) plus live
+        PID:STATus? for one channel, or every channel if none given
+        (uses CONFig:CHANnels?'s count). Pretty-printed table: Ch |
+        Running | Setpoint | Measured | Output (Hz)."""
         if not self._require_link():
             return
+        state_reply = self.link.query("STATE?")
+        print(f"State: {state_reply[3:] if state_reply.startswith('OK ') else state_reply}")
         channels = [int(arg)] if arg.strip() else range(1, (self.num_channels or 4) + 1)
         print(f"{'Ch':>3} {'Running':>8} {'Setpoint(Hz)':>13} {'Measured(Hz)':>13} {'Output(Hz)':>11}")
         for ch in channels:
@@ -1237,6 +1240,13 @@ class WhamConsole(cmd.Cmd):
         self.link.query(f"PID:PROFILE:TIMING {ramp_s} {flat_s}")
         self.profile_timing = dict(ramp_s=ramp_s, flat_s=flat_s)
 
+        # State machine (added 2026-09-13, firmware side): PID:PROFILE:START
+        # now only works from ARMED -- see ARM's own reply for why, if it
+        # fails (e.g. a fault is already latched).
+        reply = self.link.query("ARM")
+        if is_err(reply):
+            print(explain_err(reply))
+            return
         reply = self.link.query("PID:PROFILE:START")
         if is_err(reply):
             print(explain_err(reply))
@@ -1351,13 +1361,17 @@ class WhamConsole(cmd.Cmd):
 #    whatever identchar run starts the input line (stopping at the
 #    first ':', '?', '*', digit-after-nothing, or space). Concretely:
 #    do NOT name a command (in any case) boot, table, tab, fire, pfm,
-#    config, conf, fault, gds, qspi, pfmin, or pid -- those are the
-#    current first tokens of real multi-level commands, and shadowing
-#    one would silently break raw passthrough for that entire command
-#    family whenever an operator happens to type it in the matching
-#    case. (idn is fine: the real command is "*IDN?", and a leading
-#    '*' is never an identchar, so it always reaches default()
-#    regardless of what do_idn exists.)
+#    config, conf, fault, gds, qspi, pfmin, pid, arm, disarm, or state
+#    -- those are the current first (and, for arm/disarm/state, ONLY)
+#    tokens of real commands, and shadowing one would silently break
+#    raw passthrough for that command (or whole family) whenever an
+#    operator happens to type it in the matching case -- ARM/DISARM/
+#    STATE? (state_machine.h, added 2026-09-13) are bare, single-level
+#    commands with no further exception the way *IDN? has, so this
+#    applies to them exactly as literally as to fire/pfm/pid. (idn is
+#    fine: the real command is "*IDN?", and a leading '*' is never an
+#    identchar, so it always reaches default() regardless of what
+#    do_idn exists.)
 # 3. Update docs/command_reference.md if the underlying firmware
 #    command is new -- this console should never be the only place a
 #    command's behavior is documented.

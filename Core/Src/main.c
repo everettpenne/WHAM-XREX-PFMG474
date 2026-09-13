@@ -30,6 +30,7 @@
 #include "qspi_test.h"
 #include "pfm_input.h"
 #include "pid.h"
+#include "state_machine.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -160,6 +161,18 @@ int main(void)
      serial command (not yet added, see docs/changelog.txt). */
   PID_Init();
 
+  /* Top-level operating-state machine (state_machine.h), added
+     2026-09-13 -- see that header for the full design (IDLE/ARMED/
+     FIRING/FAULT). SM_Init() alone would set IDLE unconditionally,
+     which would be WRONG if the GateDriver_CheckFault() call above
+     (line ~141, deliberately earlier -- boot-time GateDriverStatus
+     check, before this state machine even existed) already found a
+     real pre-existing fault: an immediate SM_PollFaults() right after
+     SM_Init() picks that up, so a board that boots with a fault
+     already present correctly starts in FAULT, not IDLE. */
+  SM_Init();
+  SM_PollFaults();
+
   uart_init(&uart2, &huart2);
 
   /* The HRTIM master-repetition interrupt must be enabled now, at
@@ -179,6 +192,12 @@ int main(void)
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
+    /* Fault detection that must work regardless of state -- see
+       state_machine.h's own SM_PollFaults() comment for why this needs
+       to run here too, not just from PID_Update() (which only runs
+       while FIRING). Cheap: both underlying reads are simple flag
+       checks, not full re-scans. */
+    SM_PollFaults();
     /* Polls for a completed serial command line and dispatches it. */
     uart_process(&uart2);
   }

@@ -28,6 +28,7 @@ Ported from the sibling PFM-STM32G474 project, per project decision:
 | 10 | `TABLE:STEP` `per` value implies a carrier frequency above `PFM_MAX_CARRIER_FREQ_HZ` |
 | 11 | Invalid `PID` channel |
 | 12 | Invalid `PID:*` argument count/value -- see the specific command's own usage |
+| 13 | Invalid state-machine transition for the current state (`ARM`/`DISARM`/`PID:PROFile:STARt`, see that section) |
 
 Codes are never renumbered or reused once assigned, matching the
 sibling project's convention.
@@ -257,7 +258,90 @@ separate:
   of it. The PC10/HRTIM1_FLT6 path is verified idle-safe (doesn't
   spuriously trip) and does not yet have its own real low-drive bench
   trip confirmed on scope/DSLogic — see `docs/changelog.txt` for what
-  specifically remains open there.
+  specifically remains open there. `FAULT:CLEAR` now also clears the
+  top-level state machine (below) back to `IDLE`, if the underlying
+  condition is actually gone.
+
+### `ARM`, `DISARM`, `STATE?`
+
+Added 2026-09-13, per direct request: a top-level **operating-state
+machine** — `IDLE` → `ARMED` → `FIRING` → back to `IDLE`, with `FAULT`
+reachable from any of the three the instant a fault is detected (both
+sources above, checked continuously — not just while firing). See
+`Core/Inc/state_machine.h` for the full design writeup; this is a
+first pass, explicitly flagged for revisit (see its own "NOTE TO
+REVISIT" comments).
+
+- **`IDLE`** — the normal state: boot, after a shot completes, or
+  after `FAULT:CLEAR`. Every channel's HRTIM output is disabled.
+- **`ARMED`** — entered via `ARM` (only from `IDLE`), gated by a
+  readiness check that is currently a **STUB** (always allows arming
+  today — no real interlock conditions exist yet). Outputs are still
+  disabled here, identically to `IDLE` — nothing electrical changes on
+  entry; `ARMED` exists purely as a separately-confirmable "ready to
+  fire" step before `PID:PROFile:STARt` is allowed to do anything.
+  Left via `PID:PROFile:STARt` (→ `FIRING`), `DISARM` (→ `IDLE`, stand
+  down without firing), or `PID:STOP` (→ `IDLE`, abort).
+- **`FIRING`** — entered only from `ARMED`, via `PID:PROFile:STARt`
+  (unchanged command, now gated: `ERR 13` if not currently `ARMED`).
+  Every currently-enabled channel (`PID:CHANnel:ENAble` — a separate,
+  per-channel concern) begins its ramp profile. Returns to `IDLE`
+  automatically when the shot completes, or on a manual `PID:STOP`.
+- **`FAULT`** — entered from ANY state the instant either fault source
+  trips. Forces a full stop across both the current (`PID:*`) and
+  legacy (`TABLE:*`/`FIRE`) output paths regardless of which was
+  active, then dispatches to one of two **STUB** fault-type handlers
+  (`SM_FAULT_GENERAL`/`SM_FAULT_OVERCURRENT`, both currently empty —
+  see `state_machine.h`). Both of this project's existing fault
+  sources currently route to `GENERAL` unconditionally; there is no
+  overcurrent-specific detection mechanism wired up anywhere yet, and
+  no decision has been made about what eventually should produce
+  `OVERCURRENT` instead. Left only via `FAULT:CLEAR`, always back to
+  `IDLE` — never directly to `ARMED`/`FIRING`.
+
+```
+> STATE?
+< OK IDLE
+> ARM
+< OK
+> STATE?
+< OK ARMED
+> PID:PROFILE:START
+< OK
+> STATE?
+< OK FIRING
+  ... (shot runs, completes on its own) ...
+> STATE?
+< OK IDLE
+> PID:PROFILE:START
+< ERR 13 Must ARM first -- see the ARM command
+  ... (a fault trips, from any state) ...
+> STATE?
+< OK FAULT GENERAL
+> FAULT:CLEAR
+< OK
+> STATE?
+< OK IDLE
+```
+
+- **`ARM`** — `OK`, `IDLE` → `ARMED`. `ERR 13` if not currently `IDLE`,
+  or if the (currently stub) readiness check refuses.
+- **`DISARM`** — `OK`, `ARMED` → `IDLE`. No-op (still `OK`, not an
+  error) if not currently `ARMED`.
+- **`STATE?`** — `OK <IDLE|ARMED|FIRING>`, or `OK FAULT <GENERAL|OVERCURRENT>`
+  while faulted.
+- New error code **13**: an invalid state-machine transition for the
+  current state (e.g. `PID:PROFile:STARt` sent while not `ARMED`;
+  `ARM` sent while not `IDLE`).
+
+**Known gap, flagged not fixed**: `PID:START` (the simpler, non-profile
+closed-loop start, distinct from `PID:PROFile:STARt`) is **not** gated
+by this state machine at all — it can start real output regardless of
+`STATE?`'s current value, and does not move the state machine out of
+`IDLE`/`ARMED`. Per direct instruction, only `PID:PROFile:STARt` was
+wired up as the "fire" trigger this round; `PID:START` bypassing the
+whole state machine is a known, real inconsistency worth resolving
+later, not an oversight to silently work around.
 
 ### `CONFig:CHANnels?`
 

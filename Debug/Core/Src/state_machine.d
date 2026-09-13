@@ -1,4 +1,6 @@
-Core/Src/main.o: ../Core/Src/main.c ../Core/Inc/main.h \
+Core/Src/state_machine.o: ../Core/Src/state_machine.c \
+ ../Core/Inc/state_machine.h ../Core/Inc/pid.h ../Core/Inc/ctrlr_config.h \
+ ../Core/Inc/hrtim.h ../Core/Inc/main.h \
  ../Drivers/STM32G4xx_HAL_Driver/Inc/stm32g4xx_hal.h \
  ../Core/Inc/stm32g4xx_hal_conf.h \
  ../Drivers/STM32G4xx_HAL_Driver/Inc/stm32g4xx_hal_rcc.h \
@@ -30,11 +32,11 @@ Core/Src/main.o: ../Core/Src/main.c ../Core/Inc/main.h \
  ../Drivers/STM32G4xx_HAL_Driver/Inc/stm32g4xx_hal_tim_ex.h \
  ../Drivers/STM32G4xx_HAL_Driver/Inc/stm32g4xx_hal_uart.h \
  ../Drivers/STM32G4xx_HAL_Driver/Inc/stm32g4xx_hal_uart_ex.h \
- ../Core/Inc/uart.h ../Core/Inc/main.h ../Core/Inc/cmd_parser.h \
- ../Core/Inc/uart.h ../Core/Inc/boot_jump.h ../Core/Inc/hrtim.h \
- ../Core/Inc/ctrlr_config.h ../Core/Inc/pfm.h ../Core/Inc/gate_driver.h \
- ../Core/Inc/qspi_test.h ../Core/Inc/pfm_input.h ../Core/Inc/pid.h \
- ../Core/Inc/state_machine.h
+ ../Core/Inc/gate_driver.h ../Core/Inc/pfm.h
+../Core/Inc/state_machine.h:
+../Core/Inc/pid.h:
+../Core/Inc/ctrlr_config.h:
+../Core/Inc/hrtim.h:
 ../Core/Inc/main.h:
 ../Drivers/STM32G4xx_HAL_Driver/Inc/stm32g4xx_hal.h:
 ../Core/Inc/stm32g4xx_hal_conf.h:
@@ -67,16 +69,5 @@ Core/Src/main.o: ../Core/Src/main.c ../Core/Inc/main.h \
 ../Drivers/STM32G4xx_HAL_Driver/Inc/stm32g4xx_hal_tim_ex.h:
 ../Drivers/STM32G4xx_HAL_Driver/Inc/stm32g4xx_hal_uart.h:
 ../Drivers/STM32G4xx_HAL_Driver/Inc/stm32g4xx_hal_uart_ex.h:
-../Core/Inc/uart.h:
-../Core/Inc/main.h:
-../Core/Inc/cmd_parser.h:
-../Core/Inc/uart.h:
-../Core/Inc/boot_jump.h:
-../Core/Inc/hrtim.h:
-../Core/Inc/ctrlr_config.h:
-../Core/Inc/pfm.h:
 ../Core/Inc/gate_driver.h:
-../Core/Inc/qspi_test.h:
-../Core/Inc/pfm_input.h:
-../Core/Inc/pid.h:
-../Core/Inc/state_machine.h:
+../Core/Inc/pfm.h:

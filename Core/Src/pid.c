@@ -9,7 +9,7 @@
 #include "pid.h"
 #include "hrtim.h"
 #include "pfm_input.h"
-#include "gate_driver.h"
+#include "state_machine.h"
 
 typedef struct
 {
@@ -383,48 +383,26 @@ void PID_Update(void)
         return;
     }
 
-    /* Hardware fault check, BOTH independent sources -- see
-       gate_driver.h's own header comment for why there are two at all
-       (PC10/HRTIM1_FLT6: autonomous in silicon, works even with the
-       CPU hung; GateDriverStatus_01..12: software/EXTI-driven). By the
-       time either ever reads tripped, HRTIM output has ALREADY been
-       force-stopped -- PC10 by the peripheral itself, in silicon;
-       GateDriverStatus by GateDriver_CheckFault()'s own
-       PFM_ForceStop() call, at the moment the EXTI fired (which may
-       have been ticks ago, not necessarily this one). This check is
-       bookkeeping either way: stop the Master counter (PID_Stop(), via
-       HRTIM1_PWM_Stop()) so this ISR doesn't keep firing forever at
-       PID_LOOP_RATE_HZ underneath outputs that are already safed, and
-       get PID_IsRunning()/g_running out of a stale "running" state.
-       Neither this check nor PID_Stop() clears either fault latch
-       itself -- commands.c's existing FAULT?/FAULT:CLEAR already work
-       for status/clearing both latches; nothing here calls PID_Start()
-       or PID_ProfileStart() again afterward -- an operator must do
-       that explicitly once cleared.
-
-       REAL BUG, found and fixed 2026-09-11 (GateDriverStatus half of
-       this check is NEW -- see docs/changelog.txt): GateDriver_
-       CheckFault()'s PFM_ForceStop() predates this PID architecture
-       and was never integrated with it -- it stops the Master
-       counter directly (so PID_Update() genuinely stops being called),
-       but with no corresponding check here, g_running was NEVER
-       cleared. Confirmed real, not just theoretical: PID_IsRunning()
-       kept reporting 1 after a GateDriverStatus fault with hardware
-       output already stopped, and -- much worse -- PID_Start()'s own
-       idempotency check (`if (g_running != 0U) return 1U;`) then
-       silently no-opped every subsequent PID:START: no reconnect, no
-       restarted feedback capture, nothing. FAULT:CLEAR didn't help
-       either -- it only ever touched the two hardware/EXTI latches,
-       never g_running. An operator had NO way to resume closed-loop
-       operation after this specific fault short of a reboot. Checking
-       GateDriver_FaultIsLatched() here, the same way HRTIM1_FaultIsTripped()
-       already was, closes the gap using the exact same, already-
-       proven mechanism -- no new recovery path to design, just
-       extending the existing one to the fault source it had always
-       been missing. */
-    if ((HRTIM1_FaultIsTripped() != 0U) || (GateDriver_FaultIsLatched() != 0U))
+    /* Hardware fault check, BOTH independent sources -- now routed
+       through state_machine.c's SM_PollFaults() (added 2026-09-13),
+       which is the one place either fault source actually gets
+       latched into a stop + the explicit top-level state machine (see
+       state_machine.h's own header comment for the full design and
+       why this same check ALSO runs from main.c's main loop, not just
+       here -- fault detection must work "no matter which state the
+       supply is in," including while nothing is firing and this ISR
+       isn't even the thing driving PID_Update() calls). SM_PollFaults()
+       itself calls PID_Stop() (among other things) when it detects a
+       fault, so checking SM_GetState() afterward is enough to know
+       whether this tick should stop here -- no need to duplicate the
+       HRTIM1_FaultIsTripped()/GateDriver_FaultIsLatched() check
+       directly in this file anymore (see docs/changelog.txt's
+       2026-09-11 entry for the real bug this exact check fixed, and
+       2026-09-13 for this refactor -- the underlying protection is
+       unchanged, just consolidated into one place instead of two). */
+    SM_PollFaults();
+    if (SM_GetState() == SM_STATE_FAULT)
     {
-        PID_Stop();
         return;
     }
 
@@ -434,13 +412,17 @@ void PID_Update(void)
        FIRST, before any channel is touched: per direct instruction,
        end-of-shot means a full stop (PID_Stop(), output off entirely),
        not hold-at-floor -- so this tick does no further work at all
-       once the shot's total duration has elapsed. */
+       once the shot's total duration has elapsed. Also notifies the
+       state machine (SM_NotifyShotComplete(), added 2026-09-13) --
+       this is the automatic, no-fault, no-operator-action shot end,
+       FIRING -> IDLE. */
     uint32_t profileElapsedThisTick = 0U;
     if (g_profileActive != 0U)
     {
         if (g_profileElapsedTicks >= g_profileTotalTicks)
         {
             PID_Stop();
+            SM_NotifyShotComplete();
             return;
         }
         profileElapsedThisTick = g_profileElapsedTicks;

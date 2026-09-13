@@ -20,6 +20,7 @@
 #include "qspi_test.h"
 #include "pfm_input.h"
 #include "pid.h"
+#include "state_machine.h"
 #include "git_version.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -419,10 +420,85 @@ void cmd_fault_clear(uart_instance_t *inst, char *args)
 {
     (void)args;
 
-    HRTIM1_FaultClear();
-    GateDriver_FaultClear();
+    /* SM_ClearFault() (state_machine.h, added 2026-09-13) now owns
+       actually calling HRTIM1_FaultClear()/GateDriver_FaultClear() and
+       re-checking both sources -- see its own doc comment. Reply stays
+       unconditional "OK" either way, matching this command's existing,
+       already-documented convention (a still-present condition
+       re-latches immediately, before this even returns -- an operator
+       checks FAULT?/STATE? afterward to see the real result, same as
+       before this change). */
+    (void)SM_ClearFault();
 
     uart_send(inst, "OK\r\n");
+}
+
+/* --------------------------------------------------------------------------
+ * ARM / DISARM / STATE? -- the top-level operating-state machine
+ * (state_machine.h), added 2026-09-13. See that header for the full
+ * design (IDLE/ARMED/FIRING/FAULT). Bare, top-level commands (no
+ * `PID:`/other namespace prefix) -- system-wide state, not specific to
+ * any one subsystem, matching this project's existing bare `FIRE`
+ * (pfm.c's legacy table-based output path, unrelated). Error code 13
+ * (new): an invalid state-machine transition for the current state.
+ * -------------------------------------------------------------------------- */
+
+/* IDLE -> ARMED. See SM_Arm()'s own doc comment for exactly what
+   "the appropriate conditions" currently checks (a stub, always
+   allows arming today). */
+void cmd_arm(uart_instance_t *inst, char *args)
+{
+    (void)args;
+
+    if (SM_Arm() == 0U)
+    {
+        SendErr(inst, 13, "Can't ARM -- not currently IDLE, or arm conditions not met");
+        return;
+    }
+    uart_send(inst, "OK\r\n");
+}
+
+/* ARMED -> IDLE, without firing -- stand down. No-op (still replies
+   OK) if not currently ARMED, matching SM_Disarm()'s own convention
+   and this project's general "idempotent, no error for a harmless
+   no-op" style (e.g. FAULT:CLEAR clearing an already-clear latch). */
+void cmd_disarm(uart_instance_t *inst, char *args)
+{
+    (void)args;
+
+    SM_Disarm();
+    uart_send(inst, "OK\r\n");
+}
+
+/* OK <IDLE|ARMED|FIRING|FAULT>, or OK FAULT <GENERAL|OVERCURRENT> when
+   in FAULT -- see SM_GetFaultType()'s own doc comment (meaningful only
+   in that state). */
+void cmd_state_query(uart_instance_t *inst, char *args)
+{
+    char buf[32];
+    const char *name;
+    (void)args;
+
+    switch (SM_GetState())
+    {
+        case SM_STATE_IDLE:   name = "IDLE";   break;
+        case SM_STATE_ARMED:  name = "ARMED";  break;
+        case SM_STATE_FIRING: name = "FIRING"; break;
+        case SM_STATE_FAULT:  name = "FAULT";  break;
+        default:              name = "UNKNOWN"; break;
+    }
+
+    if (SM_GetState() == SM_STATE_FAULT)
+    {
+        const char *faultName = (SM_GetFaultType() == SM_FAULT_OVERCURRENT)
+                                     ? "OVERCURRENT" : "GENERAL";
+        snprintf(buf, sizeof(buf), "OK %s %s\r\n", name, faultName);
+    }
+    else
+    {
+        snprintf(buf, sizeof(buf), "OK %s\r\n", name);
+    }
+    uart_send(inst, buf);
 }
 
 /* --------------------------------------------------------------------------
@@ -649,6 +725,11 @@ void cmd_pid_stop(uart_instance_t *inst, char *args)
 {
     (void)args;
     PID_Stop();
+    /* SM_Stop() (state_machine.h, added 2026-09-13) -- a manual abort,
+       ARMED/FIRING -> IDLE. No-op if already IDLE; deliberately does
+       NOT clear FAULT (see its own doc comment -- FAULT:CLEAR is the
+       only way out of a real fault latch). */
+    SM_Stop();
     uart_send(inst, "OK\r\n");
 }
 
@@ -1300,11 +1381,23 @@ void cmd_pid_profile_current_query(uart_instance_t *inst, char *args)
     uart_send(inst, buf);
 }
 
+/* Now gated on the state machine (state_machine.h, added 2026-09-13) --
+   per direct instruction, this only ever starts outputs from ARMED
+   (ARM first, see cmd_arm()). SM_Fire() calls PID_ProfileStart()
+   internally and only actually transitions to FIRING if that
+   succeeds -- two distinct failure reasons, reported distinctly here
+   rather than collapsing both into one generic error. */
 void cmd_pid_profile_start(uart_instance_t *inst, char *args)
 {
     (void)args;
 
-    if (PID_ProfileStart() == 0U)
+    if (SM_GetState() != SM_STATE_ARMED)
+    {
+        SendErr(inst, 13, "Must ARM first -- see the ARM command");
+        return;
+    }
+
+    if (SM_Fire() == 0U)
     {
         SendErr(inst, 12, "PID:PROFILE:TIMING must be set before PID:PROFILE:START");
         return;
