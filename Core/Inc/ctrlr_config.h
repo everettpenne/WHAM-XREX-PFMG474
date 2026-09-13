@@ -298,6 +298,32 @@
 #define PID_OUTPUT_MAX_SLEW_HZ_PER_TICK  (2000UL)
 
 /* --------------------------------------------------------------------------
+ * FAULT_RAMP_DOWN_TIME_S -- General Fault open-loop ramp-down duration
+ * (compile-time, PLACEHOLDER -- "a pre-defined period of seconds
+ * chosen for the ramp," per direct instruction, 2026-09-13)
+ *
+ * On a General Fault (state_machine.c's HandleGeneralFault()) detected
+ * while FIRING, every channel that was actively outputting immediately
+ * begins an OPEN-LOOP linear ramp from whatever frequency it happened
+ * to be at down to PFM_TURNON_FREQ_HZ (0A) over exactly this many
+ * seconds -- regardless of where in the programmed shot profile it
+ * was, and with no PID/feedback correction at all (see
+ * PID_BeginFaultRampDown()/ProcessFaultRampDown(), pid.c). Once every
+ * participating channel reaches the floor, its HRTIM output is
+ * disabled (HRTIM1_SetChannelOutputEnable()) and the controller
+ * settles into a fully-stopped FAULT state.
+ *
+ * 1.0 second is a first, reasonable-sounding guess -- fast enough to
+ * reach a safe state quickly, not so fast it's effectively a step
+ * change. NOT derived from any real Transrex/magnet requirement (how
+ * fast can this hardware actually tolerate ramping down? is there a
+ * reason it should be faster/slower than a normal shot's own down-ramp,
+ * 5-15s nominal?) -- unknown from here, needs a real decision, same
+ * "placeholder, revisit" status as PFM_TURNON_FREQ_HZ/PFM_MAX_FREQ_HZ/
+ * PID_OUTPUT_MAX_SLEW_HZ_PER_TICK above. */
+#define FAULT_RAMP_DOWN_TIME_S  (1.0f)
+
+/* --------------------------------------------------------------------------
  * GateDriverStatus fault polarity (compile-time)
  *
  * GDS_NORMALLY_HIGH -- pins read HIGH in good operation;

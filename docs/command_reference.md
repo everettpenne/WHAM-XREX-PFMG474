@@ -288,16 +288,31 @@ REVISIT" comments).
   per-channel concern) begins its ramp profile. Returns to `IDLE`
   automatically when the shot completes, or on a manual `PID:STOP`.
 - **`FAULT`** — entered from ANY state the instant either fault source
-  trips. Forces a full stop across both the current (`PID:*`) and
-  legacy (`TABLE:*`/`FIRE`) output paths regardless of which was
-  active, then dispatches to one of two **STUB** fault-type handlers
-  (`SM_FAULT_GENERAL`/`SM_FAULT_OVERCURRENT`, both currently empty —
-  see `state_machine.h`). Both of this project's existing fault
-  sources currently route to `GENERAL` unconditionally; there is no
-  overcurrent-specific detection mechanism wired up anywhere yet, and
-  no decision has been made about what eventually should produce
-  `OVERCURRENT` instead. Left only via `FAULT:CLEAR`, always back to
-  `IDLE` — never directly to `ARMED`/`FIRING`.
+  trips. Always stops the legacy (`TABLE:*`/`FIRE`) output path
+  immediately (it isn't part of this state machine at all). The
+  current (`PID:*`) output path's own stop depends on the fault type:
+  - **`GENERAL`** (`SM_FAULT_GENERAL`) — populated 2026-09-13, per
+    direct instruction: if the fault hit while `FIRING`, every
+    actively-outputting channel immediately begins an **open-loop**
+    linear ramp-down (no PID/feedback correction at all) to
+    `PFM_TURNON_FREQ_HZ` (0A) over `FAULT_RAMP_DOWN_TIME_S`
+    (`ctrlr_config.h`, currently 1.0s, a placeholder) seconds — from
+    wherever it actually was in its own shot profile, not from a
+    shared/synchronized point. Once every participating channel
+    reaches the floor, its output is disconnected and the controller
+    settles into `FAULT` to wait for `FAULT:CLEAR`. If the fault hit
+    while `IDLE`/`ARMED` (nothing was actually outputting), stops
+    immediately instead.
+  - **`OVERCURRENT`** (`SM_FAULT_OVERCURRENT`) — still a **STUB**: an
+    immediate, unconditional stop (no ramp) as a safe default, pending
+    a real decision on its own distinct behavior.
+
+  Both of this project's existing fault sources currently route to
+  `GENERAL` unconditionally; there is no overcurrent-specific detection
+  mechanism wired up anywhere yet, and no decision has been made about
+  what eventually should produce `OVERCURRENT` instead. Left only via
+  `FAULT:CLEAR`, always back to `IDLE` — never directly to
+  `ARMED`/`FIRING`.
 
 ```
 > STATE?

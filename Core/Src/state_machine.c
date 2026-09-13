@@ -11,31 +11,73 @@
 #include "gate_driver.h"
 #include "pfm.h"
 
-static SM_State_t     g_state     = SM_STATE_IDLE;
-static SM_FaultType_t g_faultType = SM_FAULT_NONE;
+static SM_State_t     g_state         = SM_STATE_IDLE;
+static SM_FaultType_t g_faultType     = SM_FAULT_NONE;
 
-/* -- fault-type handler stubs, per direct instruction: empty for now -- */
+/* Captured by EnterFault(), before it transitions g_state to
+   SM_STATE_FAULT -- lets the fault-type handlers below tell whether
+   there was real output in progress (SM_STATE_FIRING) at the exact
+   moment the fault was detected, without needing g_state itself (which
+   is already SM_STATE_FAULT by the time either handler runs) to carry
+   that information. */
+static SM_State_t g_stateBeforeFault = SM_STATE_IDLE;
+
+/* -- fault-type handlers -- */
 
 /* Called on entering SM_STATE_FAULT with g_faultType == SM_FAULT_GENERAL.
    Currently every fault this codebase can detect routes here -- see
    state_machine.h's own "NOTE TO REVISIT" on why, and SM_PollFaults()
-   below. EMPTY -- populate with real General Fault handling later
-   (whatever that turns out to mean: a specific recovery sequence,
-   logging, an operator notification path, etc. -- not yet decided). */
+   below.
+
+   POPULATED 2026-09-13, per direct instruction: if the fault hit while
+   FIRING (real output in progress, ANY channel, anywhere in its own
+   shot profile), every actively-outputting channel immediately begins
+   an OPEN-LOOP linear ramp-down to PFM_TURNON_FREQ_HZ (0A) over
+   FAULT_RAMP_DOWN_TIME_S seconds (PID_BeginFaultRampDown()/
+   ProcessFaultRampDown(), pid.c) -- explicitly NOT via the normal PID
+   feedback loop, per direct instruction. PID_Update() keeps ticking
+   (g_running stays 1) to drive this ramp forward, one tick at a time,
+   until every participating channel reaches the floor, at which point
+   pid.c calls PID_Stop() itself (disconnecting every HRTIM output
+   unconditionally) and the controller settles into FAULT to wait for
+   FAULT:CLEAR -- exactly "disable the HRTIM output channels and wait
+   in the FAULT state," per direct instruction.
+
+   If the fault hit while IDLE or ARMED, nothing was actually
+   outputting for it to have interrupted -- an immediate PID_Stop() is
+   all that's needed (also covers the case where every channel happened
+   to already be disabled/idle even during FIRING -- see
+   PID_BeginFaultRampDown()'s own "anyParticipating" check). */
 static void HandleGeneralFault(void)
 {
-    /* TODO (2026-09-13): populate. */
+    if (g_stateBeforeFault == SM_STATE_FIRING)
+    {
+        PID_BeginFaultRampDown();
+    }
+    else
+    {
+        PID_Stop();
+    }
 }
 
 /* Called on entering SM_STATE_FAULT with g_faultType == SM_FAULT_OVERCURRENT.
    Nothing in this codebase currently produces this fault type -- see
-   state_machine.h's own "NOTE TO REVISIT". EMPTY -- populate once both
-   (a) a real overcurrent-detection mechanism exists and is routed here,
-   and (b) the real handling behavior (distinct from General Fault) is
-   decided. */
+   state_machine.h's own "NOTE TO REVISIT". Its own DISTINCT behavior
+   (as opposed to General Fault's open-loop ramp-down, above) is still
+   undecided -- an immediate, unconditional PID_Stop() is kept here as
+   the safe default in the meantime (matching this function's own
+   behavior before General Fault was populated) -- an "overcurrent
+   protection fault" sounds, if anything, like it should be MORE
+   aggressive/immediate than General Fault's graceful ramp-down, not
+   less, so defaulting to the fastest possible stop until a real
+   decision is made seems like the safer placeholder of the two
+   options, not an oversight. */
 static void HandleOvercurrentFault(void)
 {
-    /* TODO (2026-09-13): populate. */
+    PID_Stop();
+    /* TODO (2026-09-13): populate this fault type's own distinct
+       behavior, once decided -- see state_machine.h's own
+       "NOTE TO REVISIT". */
 }
 
 /* Readiness gate for SM_Arm() -- STUB, per direct instruction: always
@@ -56,20 +98,26 @@ static uint8_t ArmConditionsMet(void)
    PID_Update()) noticed it. */
 static void EnterFault(SM_FaultType_t type)
 {
+    g_stateBeforeFault = g_state;   /* captured BEFORE transitioning --
+                                        see this variable's own comment
+                                        above for why the handlers need it */
     g_state     = SM_STATE_FAULT;
     g_faultType = type;
 
-    /* Full stop across BOTH the current (pid.c) and legacy (pfm.c)
-       output paths, regardless of which was actually in use -- belt
-       and suspenders. Both are already idempotent/safe to call when
-       nothing was running (PID_Stop(): "idempotent" per its own doc
-       comment; PFM_ForceStop(): the same, matching
-       HRTIM1_FaultClear()'s own established pattern) -- see
-       state_machine.h's own comment on why this project's two output
-       paths (old table-based FIRE, new PID:PROFile:STARt) both get
-       stopped unconditionally here rather than trying to track which
-       one was actually active. */
-    PID_Stop();
+    /* Legacy (pfm.c TABLE:STEP/FIRE) output path -- always stopped
+       immediately and unconditionally here, regardless of fault type
+       or which state pid.c's own state machine was in. This path is
+       NOT part of the new IDLE/ARMED/FIRING/FAULT model at all (the
+       legacy FIRE command never calls SM_Fire()), so it has no
+       ramp-down concept to preserve -- an instant stop is correct for
+       it either way. Idempotent/safe to call when nothing was running
+       (matching HRTIM1_FaultClear()'s own established pattern). The
+       CURRENT (pid.c PID:*) output path's own stop is now each fault
+       type's OWN responsibility (see HandleGeneralFault()/
+       HandleOvercurrentFault(), below) -- General Fault's whole point
+       (2026-09-13, per direct instruction) is NOT stopping it
+       immediately here, but instead beginning a controlled ramp-down
+       that keeps Master's counter running until it finishes. */
     PFM_ForceStop();
 
     switch (type)
@@ -188,9 +236,25 @@ uint8_t SM_ClearFault(void)
        either call even returns, so SM_PollFaults()'s next check would
        just re-detect it and re-enter FAULT again anyway. Re-check
        directly here instead, for an honest return value on THIS call
-       rather than making the caller poll again to find out. */
-    HRTIM1_FaultClear();
-    GateDriver_FaultClear();
+       rather than making the caller poll again to find out.
+
+       Also unconditionally calls PID_Stop() (added 2026-09-13,
+       alongside the General-Fault ramp-down): a General Fault caught
+       while FIRING leaves g_running deliberately 1 -- and possibly a
+       ramp-down actively in progress -- for as long as
+       PID_BeginFaultRampDown()'s own ramp hasn't finished yet (see
+       pid.c). HRTIM1_FaultClear()/GateDriver_FaultClear() above
+       already force-stop HRTIM unconditionally regardless (same as
+       PFM_ForceStop() in EnterFault()), so an operator clearing the
+       fault mid-ramp already gets an immediate hard stop physically --
+       but without this PID_Stop() call, pid.c's own g_running/
+       g_faultRampActive bookkeeping would be left stale (g_running
+       still 1 with nothing actually running), which is exactly the
+       2026-09-11 bug (docs/changelog.txt) all over again if left
+       unfixed. Idempotent/harmless if the ramp had already finished
+       normally (PID_Stop() would have already been called then, by
+       pid.c itself). */
+    PID_Stop();
 
     if ((HRTIM1_FaultIsTripped() != 0U) || (GateDriver_FaultIsLatched() != 0U))
     {

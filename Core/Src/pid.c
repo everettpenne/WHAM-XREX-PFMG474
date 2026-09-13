@@ -63,10 +63,43 @@ typedef struct
        disabled. See PID_SetChannelEnable()'s own doc comment in pid.h
        for exactly what "disabled" does and doesn't do. */
     uint8_t  outputEnabled;
+
+    /* General-Fault open-loop ramp-down -- added 2026-09-13, see
+       PID_BeginFaultRampDown()/ProcessFaultRampDown()'s own comments
+       below for the full mechanism. faultRampStartHz is this
+       channel's actual output Hz at the exact instant the fault was
+       detected (captured once, at ramp start -- NOT recomputed) --
+       the ramp interpolates from here down to PFM_TURNON_FREQ_HZ,
+       wherever in the normal shot profile this channel happened to
+       be. faultRampParticipating is 1 only for channels that were
+       actually enabled (outputEnabled != 0) at the moment the fault
+       hit -- an already-disabled/idle channel has nothing to ramp and
+       is left alone entirely. Both meaningless unless g_faultRampActive. */
+    uint32_t faultRampStartHz;
+    uint8_t  faultRampParticipating;
 } PidChannelState_t;
 
 static PidChannelState_t g_ch[HRTIM_NUM_CHANNELS];
 static uint8_t g_running = 0U;
+
+/* --------------------------------------------------------------------------
+ * General-Fault ramp-down -- SHARED clock, same reasoning as the
+ * shot-profile's own g_profile* globals above: every participating
+ * channel begins ramping at the exact same tick (whenever the fault
+ * was detected) and ramps for the exact same fixed duration
+ * (FAULT_RAMP_DOWN_TIME_S, ctrlr_config.h) -- only each channel's own
+ * START point (faultRampStartHz, per-channel, above) differs, since
+ * each channel could genuinely be at a different frequency/point in
+ * its own shot profile when the fault hit. One shared elapsed/total
+ * tick pair is enough; no per-channel clock needed. This is
+ * deliberately a SEPARATE mechanism from g_profile* -- the fault ramp
+ * does not care where the normal profile was or resume it; see
+ * PID_BeginFaultRampDown()'s own comment on why g_profileActive is
+ * cleared outright rather than paused.
+ * -------------------------------------------------------------------------- */
+static uint8_t  g_faultRampActive       = 0U;
+static uint32_t g_faultRampElapsedTicks = 0U;
+static uint32_t g_faultRampTotalTicks   = 0U;
 
 /* --------------------------------------------------------------------------
  * Demand profile -- SHARED shot clock. Deliberately ONE global elapsed-
@@ -291,6 +324,8 @@ void PID_Init(void)
         g_ch[ch].demandCurrentA     = 0.0f;
         g_ch[ch].closedLoopEnabled  = 1U;   /* default: closed-loop, prior-only behavior */
         g_ch[ch].outputEnabled      = 1U;   /* default: enabled, prior-only behavior */
+        g_ch[ch].faultRampStartHz        = 0U;
+        g_ch[ch].faultRampParticipating  = 0U;
     }
     g_running               = 0U;
     g_profileActive          = 0U;
@@ -298,6 +333,9 @@ void PID_Init(void)
     g_profileRampTicks       = 0U;
     g_profileFlatTopTicks    = 0U;
     g_profileTotalTicks      = 0U;
+    g_faultRampActive        = 0U;
+    g_faultRampElapsedTicks  = 0U;
+    g_faultRampTotalTicks    = 0U;
 }
 
 uint8_t PID_Start(void)
@@ -369,11 +407,161 @@ void PID_Stop(void)
                                 (see PID_Update()) -- always ends any
                                 profile in progress too; an operator
                                 must send PID:PROFILE:START again */
+
+    /* A General-Fault ramp-down (added 2026-09-13, see
+       PID_BeginFaultRampDown()) in progress when PID_Stop() is called
+       for some OTHER reason (a manual PID:STOP abort during the ramp
+       -- allowed, deliberately: an operator asking for an immediate
+       stop should get one, overriding the graceful ramp) is simply
+       abandoned here -- HRTIM1_PWM_Stop() above already disconnects
+       every channel's output unconditionally regardless of which ones
+       were mid-ramp, so there's nothing left for the ramp to finish
+       doing. Clearing this state (rather than leaving it stale) keeps
+       a later PID_Start() from getting confused by leftover
+       "participating" flags from a ramp that never got to complete
+       normally. */
+    g_faultRampActive       = 0U;
+    g_faultRampElapsedTicks = 0U;
+    for (uint8_t ch = 0U; ch < HRTIM_NUM_CHANNELS; ch++)
+    {
+        g_ch[ch].faultRampParticipating = 0U;
+    }
 }
 
 uint8_t PID_IsRunning(void)
 {
     return g_running;
+}
+
+/* General-Fault open-loop ramp-down -- added 2026-09-13, per direct
+   instruction. Called ONCE, by state_machine.c's HandleGeneralFault(),
+   the instant a General Fault is detected while FIRING with real
+   output. Captures each currently-enabled channel's ACTUAL output Hz
+   right now (wherever it happened to be in the normal shot profile)
+   as that channel's ramp start point, sets up the shared ramp clock,
+   and hands off to ProcessFaultRampDown() (PID_Update(), below) to
+   actually drive it, one tick at a time, from here on.
+
+   Deliberately does NOT call PID_Stop() itself -- the whole point is
+   for g_running to stay 1 and Master's counter to keep running, so
+   PID_Update() keeps being called and ProcessFaultRampDown() can keep
+   ticking the ramp forward. PID_Stop() only happens once, at the far
+   end, when the ramp actually finishes (see ProcessFaultRampDown()).
+
+   Clears g_profileActive outright (not "paused, resume later") -- a
+   fault ramp-down replaces the normal shot profile's own trapezoid
+   completely; there is no resuming a shot after a fault, an operator
+   must clear the fault and start a fresh one. */
+void PID_BeginFaultRampDown(void)
+{
+    g_faultRampTotalTicks = (uint32_t)(FAULT_RAMP_DOWN_TIME_S * (float)PID_LOOP_RATE_HZ);
+    if (g_faultRampTotalTicks == 0U)
+    {
+        g_faultRampTotalTicks = 1U;   /* defensive -- a zero-tick ramp would
+                                          divide-by-zero below */
+    }
+    g_faultRampElapsedTicks = 0U;
+    g_profileActive         = 0U;
+
+    uint8_t anyParticipating = 0U;
+    for (uint8_t ch = 0U; ch < HRTIM_NUM_CHANNELS; ch++)
+    {
+        PidChannelState_t *st = &g_ch[ch];
+        if (st->outputEnabled != 0U)
+        {
+            st->faultRampStartHz       = st->lastOutputHz;
+            st->faultRampParticipating = 1U;
+            anyParticipating           = 1U;
+        }
+        else
+        {
+            st->faultRampParticipating = 0U;
+        }
+    }
+
+    if (anyParticipating == 0U)
+    {
+        /* Every channel was already disabled/idle -- nothing was
+           actually outputting for this fault to have interrupted, so
+           there's nothing to ramp. Stop immediately, same as a fault
+           caught while IDLE/ARMED. */
+        PID_Stop();
+        return;
+    }
+
+    g_faultRampActive = 1U;
+}
+
+/* Drives one tick of an already-armed General-Fault ramp-down (see
+   PID_BeginFaultRampDown() above) -- called from PID_Update(), once
+   per Master heartbeat, for as long as g_faultRampActive stays 1.
+   OPEN LOOP throughout, per direct instruction: no feedback is
+   consumed or considered here at all, purely a linear interpolation
+   from each participating channel's own faultRampStartHz down to
+   PFM_TURNON_FREQ_HZ (0A), using the SAME elapsed/total-ticks fraction
+   convention as every other ramp in this file (PID_StartRamp(),
+   TrapezoidalCurrentA()) -- lands exactly on the floor on the final
+   tick regardless of rounding, not a fixed per-tick decrement
+   accumulated forward -- the UNCLAMPED interpolated value lands
+   exactly on PFM_TURNON_FREQ_HZ when elapsed reaches total. Still
+   passes through the hard slew-rate clamp (ClampOutputSlew(), same as
+   every other output-Hz write in this file) as defense-in-depth --
+   for any sane FAULT_RAMP_DOWN_TIME_S this never actually binds (the
+   ramp's own math already produces per-tick steps far below
+   PID_OUTPUT_MAX_SLEW_HZ_PER_TICK), but if it somehow did, the
+   channel's real final value could land a few Hz short of the exact
+   floor rather than precisely on it -- harmless, since the channel's
+   output is disconnected entirely at the same fixed tick regardless
+   (see PID_Stop(), below) and being a few Hz above the floor for one
+   tick before disconnecting is not a safety concern. Once every
+   participating channel reaches the floor
+   (elapsed >= total), calls PID_Stop() -- which unconditionally
+   disconnects every channel's HRTIM output regardless of which ones
+   were mid-ramp, satisfying "disable the HRTIM output channels" with
+   the same mechanism every other stop in this codebase already uses,
+   not a new one -- and the controller settles into FAULT, waiting for
+   FAULT:CLEAR. */
+static void ProcessFaultRampDown(void)
+{
+    g_faultRampElapsedTicks++;
+
+    float frac = (float)g_faultRampElapsedTicks / (float)g_faultRampTotalTicks;
+    uint8_t rampDone = (g_faultRampElapsedTicks >= g_faultRampTotalTicks) ? 1U : 0U;
+    if (frac > 1.0f)
+    {
+        frac = 1.0f;
+    }
+
+    for (uint8_t ch = 0U; ch < HRTIM_NUM_CHANNELS; ch++)
+    {
+        PidChannelState_t *st = &g_ch[ch];
+        if (st->faultRampParticipating == 0U)
+        {
+            continue;
+        }
+
+        float startHz = (float)st->faultRampStartHz;
+        float endHz   = (float)PFM_TURNON_FREQ_HZ;
+        float hzF      = rampDone ? endHz : (startHz + frac * (endHz - startHz));
+
+        float clampedHzF = ClampOutputSlew(hzF, (float)st->lastOutputHz);
+        uint32_t outputHz = (uint32_t)clampedHzF;
+
+        st->lastOutputHz = outputHz;
+        st->setpointHz   = outputHz;   /* keep PID:STATus?'s reported setpoint/output
+                                           consistent -- this IS the target now, there's
+                                           no separate PID error to report during an
+                                           open-loop ramp */
+
+        uint16_t per = (uint16_t)((HRTIM_TIMER_CLK_HZ / outputHz) - 1U);
+        HRTIM1_SetChannelPeriod(ch, per);
+    }
+
+    if (rampDone != 0U)
+    {
+        g_faultRampActive = 0U;
+        PID_Stop();
+    }
 }
 
 void PID_Update(void)
@@ -386,23 +574,38 @@ void PID_Update(void)
     /* Hardware fault check, BOTH independent sources -- now routed
        through state_machine.c's SM_PollFaults() (added 2026-09-13),
        which is the one place either fault source actually gets
-       latched into a stop + the explicit top-level state machine (see
+       latched into the explicit top-level state machine (see
        state_machine.h's own header comment for the full design and
        why this same check ALSO runs from main.c's main loop, not just
        here -- fault detection must work "no matter which state the
        supply is in," including while nothing is firing and this ISR
-       isn't even the thing driving PID_Update() calls). SM_PollFaults()
-       itself calls PID_Stop() (among other things) when it detects a
-       fault, so checking SM_GetState() afterward is enough to know
-       whether this tick should stop here -- no need to duplicate the
-       HRTIM1_FaultIsTripped()/GateDriver_FaultIsLatched() check
-       directly in this file anymore (see docs/changelog.txt's
-       2026-09-11 entry for the real bug this exact check fixed, and
-       2026-09-13 for this refactor -- the underlying protection is
-       unchanged, just consolidated into one place instead of two). */
+       isn't even the thing driving PID_Update() calls).
+
+       UPDATED 2026-09-13, General-Fault ramp-down: SM_PollFaults()
+       does NOT always stop this channel's ticking anymore the instant
+       a fault is detected -- HandleGeneralFault() (state_machine.c),
+       called from inside SM_PollFaults() the first tick a fault is
+       seen, starts an open-loop ramp-down (PID_BeginFaultRampDown()
+       below) INSTEAD of calling PID_Stop() when the fault hit while
+       FIRING with real output -- Master must keep running (g_running
+       stays 1) for ProcessFaultRampDown() below to keep being called
+       every tick until that ramp actually completes. So: once faulted,
+       this function now branches on g_faultRampActive instead of
+       returning unconditionally -- a channel with nothing to ramp
+       (fault while IDLE/ARMED, or the ramp already finished) still
+       gets PID_Stop() called somewhere (by HandleGeneralFault()
+       directly, or by ProcessFaultRampDown() at the end of a ramp),
+       which clears g_running -- so the check at the very top of this
+       function (`if (g_running == 0U) return;`) already covers that
+       case on the NEXT call; this SM_GetState() check below only
+       needs to handle "faulted, ramp not (or no longer) active." */
     SM_PollFaults();
     if (SM_GetState() == SM_STATE_FAULT)
     {
+        if (g_faultRampActive != 0U)
+        {
+            ProcessFaultRampDown();
+        }
         return;
     }
 

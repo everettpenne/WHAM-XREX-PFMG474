@@ -1,6 +1,158 @@
 WHAM-XREX-PFMG474 Firmware Changelog
 =====================================
 
+2026-09-13  —  General Fault populated: open-loop linear ramp-down to
+               0A on every actively-outputting channel, then disable
+               (build verified; real-hardware verification PENDING --
+               board still disconnected)
+-----------------------------------------------------------------------
+  Change:  Direct request: populate the General Fault handler (left as
+        an empty stub in the previous entry). Exact behavior specified:
+        on a General Fault while FIRING, every HRTIM channel actively
+        outputting PFM -- no matter what frequency or point in the shot
+        profile it's currently at -- immediately begins a ramp to 0A
+        (whatever frequency that corresponds to), linearly, over a
+        pre-defined period of seconds, OPEN LOOP (not via the feedback
+        algorithm) down to the minimum output frequency. Once reached,
+        disable the HRTIM output channels and wait in FAULT.
+
+        REAL ARCHITECTURAL PROBLEM, worked out before writing the ramp
+        itself: the existing fault-entry path (previous entry)
+        unconditionally called PID_Stop() the instant a fault was
+        detected -- which stops HRTIM's Master counter immediately,
+        meaning PID_Update() (the only thing that could drive a
+        multi-tick ramp) would never be called again. A "ramp over
+        several seconds" needs the opposite: Master must keep running
+        THROUGH the fault until the ramp actually finishes. Restructured
+        accordingly:
+
+          - pid.c: new per-channel faultRampStartHz/faultRampParticipating
+            and shared g_faultRampActive/g_faultRampElapsedTicks/
+            g_faultRampTotalTicks (same shared-clock pattern as the
+            shot profile's own g_profile* globals -- every participating
+            channel starts ramping at the same tick and ramps for the
+            same fixed duration, only each channel's own START Hz
+            differs).
+          - New PID_BeginFaultRampDown() (pid.h/pid.c): called ONCE, by
+            HandleGeneralFault(), the instant a General Fault hits
+            while FIRING. Captures each currently-enabled channel's
+            ACTUAL output Hz right now (st->lastOutputHz -- wherever it
+            really was, not the profile's own idealized setpoint) as
+            that channel's ramp start; deliberately does NOT call
+            PID_Stop() -- g_running stays 1 so Master keeps ticking.
+            If no channel was actually enabled/outputting (nothing for
+            the fault to have interrupted), stops immediately instead.
+          - New static ProcessFaultRampDown() (pid.c): called from
+            PID_Update() once per tick for as long as g_faultRampActive
+            -- linear interpolation from each participating channel's
+            faultRampStartHz down to PFM_TURNON_FREQ_HZ using the same
+            elapsed/total-ticks fraction convention as every other ramp
+            in this file (PID_StartRamp(), TrapezoidalCurrentA()) --
+            genuinely open-loop, no PfmInput/feedback consumption
+            anywhere in this path at all. Still passes through the
+            existing ClampOutputSlew() as defense-in-depth (never
+            actually binds for any sane FAULT_RAMP_DOWN_TIME_S, given
+            the ramp's own math already produces small per-tick steps).
+            Once every participating channel's elapsed ticks reach the
+            shared total, calls PID_Stop() -- which ALREADY
+            unconditionally disconnects every channel's HRTIM output
+            regardless of which were mid-ramp, so "disable the HRTIM
+            output channels" (per direct instruction) needed no NEW
+            per-channel disable call, just reusing the existing stop
+            mechanism at the right moment.
+          - pid.c's PID_Update() restructured: the fault check
+            (SM_PollFaults()) no longer unconditionally returns once
+            faulted -- it now calls ProcessFaultRampDown() first if a
+            ramp is active, THEN returns. The g_running==0 check at the
+            very top of the function is what actually stops further
+            calls from doing anything, once PID_Stop() (called by
+            ProcessFaultRampDown() at ramp completion, or by
+            HandleGeneralFault() directly when there's nothing to ramp)
+            has run.
+          - state_machine.c: EnterFault() no longer unconditionally
+            calls PID_Stop() for the current (PID:*) output path --
+            that decision now belongs to each fault type's OWN handler
+            (HandleGeneralFault()/HandleOvercurrentFault()), captured
+            via a new g_stateBeforeFault (set right before the
+            transition to SM_STATE_FAULT, since g_state itself is
+            already SM_STATE_FAULT by the time either handler runs).
+            PFM_ForceStop() (the legacy pfm.c output path, not part of
+            this state machine at all) stays unconditional and
+            immediate in EnterFault() itself -- unaffected by any of
+            this, no ramp-down concept applies to it.
+          - HandleGeneralFault() (state_machine.c) now genuinely
+            populated: calls PID_BeginFaultRampDown() if the fault hit
+            while FIRING, PID_Stop() immediately otherwise (IDLE/
+            ARMED -- nothing to ramp).
+          - HandleOvercurrentFault() STILL A STUB -- kept calling
+            PID_Stop() immediately as a safe default (an "overcurrent
+            protection fault" sounds like it should be MORE aggressive
+            than General Fault's graceful ramp, not less, so defaulting
+            to the fastest stop until its own real behavior is decided
+            seemed like the safer placeholder).
+          - SM_ClearFault() now also calls PID_Stop() unconditionally
+            (a REAL bug caught during design, not yet hit on hardware:
+            an operator sending FAULT:CLEAR while a General-Fault ramp
+            was still mid-flight would have left g_running/
+            g_faultRampActive stale at 1 even after the state machine
+            itself correctly returned to IDLE -- the exact same failure
+            shape as the 2026-09-11 GateDriverStatus bug, just via a
+            different path. HRTIM1_FaultClear()/GateDriver_FaultClear()
+            already force-stop HRTIM physically regardless, so the fix
+            is purely about keeping pid.c's own bookkeeping honest).
+
+        New FAULT_RAMP_DOWN_TIME_S (ctrlr_config.h, currently 1.0
+        second) -- "a pre-defined period of seconds chosen for the
+        ramp," per direct instruction. PLACEHOLDER, explicitly flagged:
+        not derived from any real Transrex/magnet requirement (how fast
+        can this hardware actually tolerate ramping down?) -- same
+        "revisit once real hardware characterization exists" status as
+        every other placeholder constant in this file.
+
+        A REAL BUG caught and fixed BEFORE it could ship, during
+        implementation, not found on hardware: an early draft of a
+        comment in state_machine.c contained the literal substring
+        `TABLE:*/FIRE` -- the exact same "*/ inside a comment
+        prematurely closes the enclosing /* */ block" bug this project
+        already hit once before (hrtim.c/hrtim.h, earlier session, see
+        this file's own history) and specifically checks for in review
+        since. Caught by grepping for the pattern before building, not
+        by the compiler failing -- fixed to `TABLE:STEP/FIRE` before it
+        ever reached a build.
+
+        A narrow, IDENTIFIED-NOT-FIXED race condition, documented in
+        state_machine.h's own "NOTE TO REVISIT": g_state is a plain,
+        unguarded global read/written from both main.c's main loop and
+        PID_Update() (HRTIM1_Master_IRQn, priority 1, can preempt the
+        main loop at any instruction). A narrow timing window exists
+        where both call sites could observe "not yet FAULT" before
+        either transitions, and the main loop could end up calling
+        EnterFault() a second, redundant time immediately after the ISR
+        already completed it -- which would abort a just-started
+        ramp-down with an immediate PID_Stop() instead. SAFETY-NEUTRAL
+        if it ever actually happens (the physical outcome is still
+        "output off," just via the immediate path instead of the
+        graceful ramp in that one narrow window) -- not fixed this
+        round, flagged for a real look (a critical section around
+        SM_PollFaults()'s read-check-transition) if this state
+        machine's timing guarantees ever need to be more rigorous than
+        "safe in the worst case."
+
+        Build verified: clean rebuild via wham_build.py, zero warnings.
+        REAL-HARDWARE VERIFICATION NOT YET DONE -- board's USB-serial
+        adapter is STILL disconnected as of this entry (the sixth
+        change in a row made without hardware access). Once
+        reconnected, this entry specifically needs: ARM + PID:PROFILE:
+        START a real shot, trigger a GateDriverStatus fault mid-shot
+        (the only real-hardware-triggerable fault source currently
+        wired up), and confirm on a scope/DSLogic that the affected
+        channel's actual output frequency genuinely ramps linearly to
+        the PFM_TURNON_FREQ_HZ floor over approximately
+        FAULT_RAMP_DOWN_TIME_S seconds -- not an instant cutoff, not a
+        hold -- before the output disconnects. Also confirm PID:STATus?
+        tracks the ramp in real time, and that a channel NOT enabled at
+        fault time is left untouched throughout.
+
 2026-09-13  —  Top-level operating-state machine: IDLE/ARMED/FIRING/
                FAULT, new state_machine.c/h module, ARM/DISARM/STATE?
                commands, two fault-type handlers stubbed (*** NEEDS

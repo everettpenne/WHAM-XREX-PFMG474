@@ -57,22 +57,50 @@ extern "C" {
  *              condition is detected (SM_PollFaults(), see its own
  *              comment for exactly when this runs) -- per direct
  *              instruction, "no matter which state the supply is in".
- *              Forces a full stop across both the current (pid.c) and
- *              legacy (pfm.c) output paths regardless of which was
- *              actually active, then dispatches to one of two STUB
- *              fault-type handlers (see below). Left only via
- *              SM_ClearFault() (`FAULT:CLEAR`, existing command,
- *              extended) -- always back to IDLE, never directly to
- *              ARMED/FIRING; a fresh ARM+PID:PROFile:STARt is always
- *              required after any fault.
+ *              Always stops the legacy (pfm.c TABLE:STEP/FIRE) output
+ *              path immediately, unconditionally (it isn't part of
+ *              this state machine at all -- the legacy FIRE command
+ *              never calls SM_Fire() -- so it has no ramp-down concept
+ *              to preserve). The CURRENT (pid.c PID:*) output path's
+ *              own stop is each fault type's OWN responsibility -- see
+ *              the two handlers below, only one of which is still a
+ *              pure stub. Left only via SM_ClearFault() (`FAULT:CLEAR`,
+ *              existing command, extended) -- always back to IDLE,
+ *              never directly to ARMED/FIRING; a fresh
+ *              ARM+PID:PROFile:STARt is always required after any
+ *              fault.
  *
- * TWO FAULT TYPES, STUBBED, NOT YET ROUTED -- per direct instruction,
- * write empty handler functions now, decide the real behavior later:
+ * TWO FAULT TYPES:
  *
- *   SM_FAULT_GENERAL       -- HandleGeneralFault() (state_machine.c),
- *                              currently empty.
+ *   SM_FAULT_GENERAL       -- HandleGeneralFault() (state_machine.c).
+ *                              POPULATED 2026-09-13, per direct
+ *                              instruction: if the fault hit while
+ *                              FIRING, every channel that was actively
+ *                              outputting immediately begins an
+ *                              OPEN-LOOP linear ramp-down to
+ *                              PFM_TURNON_FREQ_HZ (0A) -- no PID/
+ *                              feedback correction at all -- over
+ *                              FAULT_RAMP_DOWN_TIME_S (ctrlr_config.h)
+ *                              seconds, from wherever it actually was
+ *                              in its own shot profile (see
+ *                              PID_BeginFaultRampDown()/
+ *                              ProcessFaultRampDown(), pid.c). Once
+ *                              every participating channel reaches the
+ *                              floor, its output is disconnected
+ *                              (PID_Stop(), unconditional across every
+ *                              channel) and the controller settles
+ *                              into FAULT to wait for FAULT:CLEAR. If
+ *                              the fault hit while IDLE/ARMED (nothing
+ *                              was actually outputting), stops
+ *                              immediately instead -- nothing to ramp.
  *   SM_FAULT_OVERCURRENT   -- HandleOvercurrentFault() (state_machine.c),
- *                              currently empty.
+ *                              STILL A STUB -- its own distinct
+ *                              behavior (presumably more aggressive
+ *                              than General Fault's graceful ramp, not
+ *                              less, given the name) is not yet
+ *                              decided. Currently just calls
+ *                              PID_Stop() immediately as a safe
+ *                              default in the meantime.
  *
  * *** NOTE TO REVISIT *** -- per direct instruction, both of this
  * project's existing fault sources (PC10/HRTIM1_FLT6 hardware input,
@@ -81,15 +109,39 @@ extern "C" {
  * overcurrent-specific detection mechanism wired up anywhere in this
  * codebase yet, and no decision has been made about which real-world
  * condition(s) should ever produce SM_FAULT_OVERCURRENT instead of
- * SM_FAULT_GENERAL. Both stub handlers are empty either way today, so
- * this routing has zero behavioral effect right now -- it will matter
- * once real handling logic is written into either stub. Revisit both
- * the routing decision and the handler bodies together.
+ * SM_FAULT_GENERAL, or what that fault type's own distinct handling
+ * should actually be. Revisit both the routing decision and
+ * HandleOvercurrentFault()'s body together.
  *
  * ALSO NOTE TO REVISIT: SM_Arm()'s ArmConditionsMet() is a stub that
  * always allows arming (see its own comment) -- no real interlock
  * logic (fault-free, profile timing configured, sane gains, etc.)
- * exists yet.
+ * exists yet. AND: FAULT_RAMP_DOWN_TIME_S (ctrlr_config.h, currently
+ * 1.0s) is a first guess, not derived from any real Transrex/magnet
+ * requirement -- see that macro's own comment.
+ *
+ * ALSO NOTE TO REVISIT -- a narrow, identified-not-fixed race: g_state
+ * is a plain (non-volatile, unguarded) global read/written from BOTH
+ * main.c's main loop AND PID_Update() (HRTIM1_Master_IRQn, priority 1
+ * -- can preempt the main loop at any instruction). SM_PollFaults()'s
+ * own "if already FAULT, return" check makes a genuine double-entry
+ * INTO FAULT impossible, but a narrow window remains where the main
+ * loop reads g_state (not yet FAULT), gets preempted by Master's own
+ * regular 1kHz interrupt right there, that ISR's own SM_PollFaults()
+ * call detects the same real fault and completes EnterFault() first
+ * (possibly starting a General-Fault ramp-down), and THEN the main
+ * loop resumes and -- since ITS OWN check already passed, before
+ * preemption -- calls EnterFault() a second, redundant time, which
+ * would see g_stateBeforeFault == SM_STATE_FAULT (not SM_STATE_FIRING)
+ * and call PID_Stop() immediately, aborting a ramp-down that had just
+ * legitimately started. SAFETY-NEUTRAL, not a hazard, if this ever
+ * actually happens: the physical outcome is still "output off," just
+ * via an immediate hard stop instead of the intended graceful ramp in
+ * this one narrow, low-probability timing window -- not fixed this
+ * round given that outcome, but a real gap worth closing properly
+ * (e.g. a critical section around the read-check-transition in
+ * SM_PollFaults()) if this state machine's timing guarantees ever need
+ * to be more rigorous than "safe in the worst case."
  * -------------------------------------------------------------------------- */
 
 typedef enum

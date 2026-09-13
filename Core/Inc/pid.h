@@ -282,6 +282,37 @@ uint8_t PID_SetChannelEnable(uint8_t channel, uint8_t enabled);
 uint8_t PID_GetChannelEnable(uint8_t channel);
 
 /* --------------------------------------------------------------------------
+ * General-Fault open-loop ramp-down -- added 2026-09-13, per direct
+ * instruction (state_machine.h's HandleGeneralFault(), state_machine.c).
+ * On a General Fault detected while FIRING, every channel that was
+ * actively outputting immediately begins a linear, OPEN-LOOP ramp
+ * (no PID/feedback correction at all) from wherever it actually was
+ * down to PFM_TURNON_FREQ_HZ (0A) over FAULT_RAMP_DOWN_TIME_S
+ * (ctrlr_config.h) seconds -- regardless of where in the normal
+ * programmed shot profile it happened to be. Once every participating
+ * channel reaches the floor, PID_Stop() is called (disconnects every
+ * channel's HRTIM output unconditionally, same mechanism as every
+ * other stop in this codebase) and the controller settles into FAULT,
+ * waiting for FAULT:CLEAR.
+ * -------------------------------------------------------------------------- */
+
+/* Called ONCE by state_machine.c's HandleGeneralFault() the instant a
+ * General Fault is detected while FIRING with real output -- captures
+ * each currently-enabled channel's actual output Hz right now as its
+ * ramp start point and arms the shared ramp clock; PID_Update() (via
+ * its own internal ProcessFaultRampDown()) then drives the ramp
+ * forward, one tick at a time, from here on. Deliberately does NOT
+ * call PID_Stop() itself if any channel actually needs to ramp --
+ * g_running must stay 1 (Master's counter must keep running) for
+ * PID_Update() to keep being called at all. If no channel was actually
+ * enabled/outputting (nothing for this fault to have interrupted),
+ * stops immediately instead -- same as a fault caught while IDLE/
+ * ARMED. Not meaningful to call this directly for any other reason;
+ * it is not gated/validated the way the public SCPI-facing setters
+ * are, since it is only ever invoked from inside the fault path. */
+void PID_BeginFaultRampDown(void);
+
+/* --------------------------------------------------------------------------
  * Demand profile -- added 2026-09-10, the real production shot shape.
  * See this file's own header comment for the full picture. Ramp Time/
  * Flat Top Time are SHARED (one synchronized clock for all
