@@ -64,6 +64,33 @@ DEFAULT_SAMPLERATE_HZ = 2_000_000
 DSLOGIC_ATOMIC_SIZE = 8  # bytes of one channel's own data per rotation --
                           # see dslogic_capture.py's CaptureResult docstring.
 
+# Amps<->Hz mapping -- mirrors wham_console.py's own hz_to_amps() (kept
+# as a separate copy, same reasoning as _channel_label() below: this
+# module is meant to be usable standalone). PLACEHOLDER LINEAR mapping,
+# same caveat as wham_console.py's own copy: the real firmware's Amps
+# demand for the highest channel is per-channel
+# (PFM_MAX_CURRENT_A_PER_CHANNEL), but this Python-side constant is
+# still a single global value -- see pending-hardware-calibration
+# project memory. A channel's demand below PFM_TURNON_FREQ_HZ (e.g. a
+# disabled channel sitting at PID_OUTPUT_MIN_HZ, 3000 Hz -- see
+# ctrlr_config.h) maps to a clamped 0A, not a negative current.
+PFM_TURNON_FREQ_HZ = 5000.0
+PFM_MAX_FREQ_HZ = 100000.0
+PFM_MAX_CURRENT_A = 5000.0
+
+
+def _hz_to_amps(hz):
+    import numpy as np
+    hz = np.asarray(hz, dtype=float)
+    a = (hz - PFM_TURNON_FREQ_HZ) / (PFM_MAX_FREQ_HZ - PFM_TURNON_FREQ_HZ) * PFM_MAX_CURRENT_A
+    return np.maximum(0.0, a)
+
+
+def _amps_to_hz(a):
+    import numpy as np
+    a = np.asarray(a, dtype=float)
+    return a * (PFM_MAX_FREQ_HZ - PFM_TURNON_FREQ_HZ) / PFM_MAX_CURRENT_A + PFM_TURNON_FREQ_HZ
+
 
 def _channel_label(channel, nickname=None):
     """'Ch3' or 'Ch3 (TINKYWINKY)' -- mirrors wham_console.py's own
@@ -351,6 +378,17 @@ class ShotCapture:
             ax_fw.set_ylabel("Hz")
             ax_fw.grid(alpha=0.3)
             ax_dsl.grid(alpha=0.3)
+
+            # Dual-scaled right axis, current corresponding to each
+            # frequency -- direct request. secondary_yaxis (not twinx())
+            # keeps the Amps scale an exact live function of whatever
+            # the Hz axis ends up autoscaled to, no separate re-plot
+            # needed. Left (firmware) panels only, per the request --
+            # the right (DSLogic) panels already show a directly-
+            # measured frequency, not a commanded demand, so an Amps
+            # axis there wouldn't represent the same thing.
+            ax_fw_a = ax_fw.secondary_yaxis("right", functions=(_hz_to_amps, _amps_to_hz))
+            ax_fw_a.set_ylabel("A")
 
         axes[-1][0].set_xlabel("time since shot start (s)")
         axes[-1][1].set_xlabel("time since shot start (s)")
