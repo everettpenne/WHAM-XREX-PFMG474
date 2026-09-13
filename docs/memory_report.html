@@ -220,7 +220,7 @@
     <div class="eyebrow">WHAM-XREX-PFMG474 &middot; STM32G474QET6</div>
     <h1>Memory footprint</h1>
     <div class="subtitle">
-      As of <span class="mono">0efa18423a-dirty</span> &mdash; Add top-level state machine: IDLE/ARMED/FIRING/FAULT (state_machine.c/h)
+      As of <span class="mono">485c5b9e27-dirty</span> &mdash; Populate General Fault: open-loop linear ramp-down to 0A, then disable
       &middot; tracked every commit since 2026-09-09
     </div>
   </header>
@@ -231,24 +231,24 @@
         <div class="tile-label"><span class="dot" style="background:var(--flash)"></span>Flash (512 KiB)</div>
         <div class="tile-pct">14.9%</div>
       </div>
-      <div class="tile-value">76.1<span class="unit">KB used</span></div>
-      <div class="tile-of">77,960 / 524,288 bytes</div>
+      <div class="tile-value">76.4<span class="unit">KB used</span></div>
+      <div class="tile-of">78,280 / 524,288 bytes</div>
       <div class="meter-track"><div class="meter-fill" style="width:14.9%;background:var(--flash)"></div></div>
       <div class="tile-foot">
-        <span>435.9 KB remaining</span>
+        <span>435.6 KB remaining</span>
         <svg class="spark" width="96" height="24" viewBox="0 0 96 24" id="spark-flash"></svg>
       </div>
     </div>
     <div class="card tile">
       <div class="tile-top">
         <div class="tile-label"><span class="dot" style="background:var(--ram)"></span>RAM (128 KiB)</div>
-        <div class="tile-pct">87.0%</div>
+        <div class="tile-pct">87.1%</div>
       </div>
-      <div class="tile-value">111.4<span class="unit">KB used</span></div>
-      <div class="tile-of">114,088 / 131,072 bytes</div>
-      <div class="meter-track"><div class="meter-fill" style="width:87.0%;background:var(--ram)"></div></div>
+      <div class="tile-value">111.5<span class="unit">KB used</span></div>
+      <div class="tile-of">114,128 / 131,072 bytes</div>
+      <div class="meter-track"><div class="meter-fill" style="width:87.1%;background:var(--ram)"></div></div>
       <div class="tile-foot">
-        <span>16.6 KB remaining</span>
+        <span>16.5 KB remaining</span>
         <svg class="spark" width="96" height="24" viewBox="0 0 96 24" id="spark-ram"></svg>
       </div>
     </div>
@@ -258,7 +258,7 @@
     <div class="card">
       <div class="card-head">
         <div class="chart-title">Utilization over project lifetime</div>
-        <div class="chart-note">13 commits &middot; 2026-09-09 &ndash; 2026-09-13</div>
+        <div class="chart-note">14 commits &middot; 2026-09-09 &ndash; 2026-09-13</div>
       </div>
       <div class="legend">
         <div class="legend-item"><span class="legend-swatch" style="background:var(--flash)"></span>Flash</div>
@@ -275,11 +275,11 @@
     <h2>Current breakdown by module</h2>
     <div class="breakdown-grid">
       <div class="card">
-        <div class="chart-title" style="margin-bottom:12px">Flash &mdash; 76.1 KB</div>
+        <div class="chart-title" style="margin-bottom:12px">Flash &mdash; 76.4 KB</div>
         <div id="flash-bars"></div>
       </div>
       <div class="card">
-        <div class="chart-title" style="margin-bottom:12px">RAM &mdash; 111.4 KB</div>
+        <div class="chart-title" style="margin-bottom:12px">RAM &mdash; 111.5 KB</div>
         <div id="ram-bars"></div>
       </div>
     </div>
@@ -320,7 +320,7 @@
 
 </div>
 
-<script id="report-data" type="application/json">{"history": [{"commit": "72e5a1d6ea", "date": "2026-09-09T14:51:09-05:00", "subject": "Initial commit: reseeded from WHAM-PFMG474-V4 at de83324", "flash_used": 51316, "flash_total": 524288, "ram_used": 55368, "ram_total": 131072}, {"commit": "6cb03f50db", "date": "2026-09-09T15:20:15-05:00", "subject": "Implement closed-loop PID; fix a real anti-windup deadlock bug", "flash_used": 64140, "flash_total": 524288, "ram_used": 65912, "ram_total": 131072}, {"commit": "5467d36752", "date": "2026-09-10T09:39:20-05:00", "subject": "Add waveform logging (PID:LOG) and a linear setpoint ramp (PID:RAMP)", "flash_used": 66156, "flash_total": 524288, "ram_used": 77984, "ram_total": 131072}, {"commit": "baa93be705", "date": "2026-09-10T10:47:58-05:00", "subject": "Add windowed-average feedback + production shot profile + open/closed-loop mode", "flash_used": 68740, "flash_total": 524288, "ram_used": 78080, "ram_total": 131072}, {"commit": "d9ac49638a", "date": "2026-09-10T11:06:39-05:00", "subject": "Fix waveform-log timebase bug; re-tune gains; verify shot profile on real hardware", "flash_used": 68588, "flash_total": 524288, "ram_used": 78080, "ram_total": 131072}, {"commit": "807cf0d6cc", "date": "2026-09-10T11:28:10-05:00", "subject": "Add hard per-tick output slew-rate clamp, configurable in ctrlr_config.h", "flash_used": 68860, "flash_total": 524288, "ram_used": 78080, "ram_total": 131072}, {"commit": "ccb9d47c2d", "date": "2026-09-10T12:08:08-05:00", "subject": "Add PID:GAINS?/LOOPMODE?/PROFILE:TIMING?/PROFILE:CURRENT? query commands", "flash_used": 75152, "flash_total": 524288, "ram_used": 78080, "ram_total": 131072}, {"commit": "7e3e8a89f2", "date": "2026-09-10T14:10:25-05:00", "subject": "Add simultaneous all-channel waveform logging (PID_ArmLogAll)", "flash_used": 75936, "flash_total": 524288, "ram_used": 114080, "ram_total": 131072}, {"commit": "2dcb22a2f6", "date": "2026-09-11T08:51:12-05:00", "subject": "Per-channel Transrex full-range current -- MUST BE CALIBRATED BEFORE DEPLOYMENT", "flash_used": 75984, "flash_total": 524288, "ram_used": 114080, "ram_total": 131072}, {"commit": "8fc9115538", "date": "2026-09-11T12:17:52-05:00", "subject": "Fix: GateDriverStatus fault left no way to resume PID without a reboot", "flash_used": 75992, "flash_total": 524288, "ram_used": 114080, "ram_total": 131072}, {"commit": "35d4975c58", "date": "2026-09-11T12:36:34-05:00", "subject": "Add PID:CHANnel:ENAble -- per-channel output enable/disable", "flash_used": 76848, "flash_total": 524288, "ram_used": 114080, "ram_total": 131072}, {"commit": "8c74e9da28-dirty", "date": "2026-09-11T12:43:38-05:00", "subject": "Track which git commit is running: *IDN? now reports FW_GIT_COMMIT", "flash_used": 76880, "flash_total": 524288, "ram_used": 114080, "ram_total": 131072}, {"commit": "0efa18423a-dirty", "date": "2026-09-13T11:41:47-05:00", "subject": "Add top-level state machine: IDLE/ARMED/FIRING/FAULT (state_machine.c/h)", "flash_used": 77960, "flash_total": 524288, "ram_used": 114088, "ram_total": 131072}], "flash_modules": [{"name": "ST HAL library", "bytes": 28052}, {"name": "Toolchain (libc/libm/startup)", "bytes": 23349}, {"name": "Serial commands", "bytes": 7552}, {"name": "Other", "bytes": 5151}, {"name": "PFM_Input capture", "bytes": 4104}, {"name": "Padding / unattributed (alignment, vector table, anon symbols)", "bytes": 2917}, {"name": "HRTIM driver", "bytes": 2562}, {"name": "PFM table engine", "bytes": 811}, {"name": "IRQ vector dispatch", "bytes": 726}, {"name": "main() / init", "bytes": 710}, {"name": "CMSIS", "bytes": 458}, {"name": "QUADSPI test", "bytes": 448}, {"name": "Newlib syscalls", "bytes": 396}, {"name": "HAL MSP config", "bytes": 248}, {"name": "Bootloader jump", "bytes": 216}, {"name": "Gate driver / faults", "bytes": 136}, {"name": "CMSIS system init", "bytes": 64}, {"name": "Startup/vector table", "bytes": 60}], "ram_modules": [{"name": "PFM table engine", "bytes": 50836}, {"name": "Other", "bytes": 48254}, {"name": "PFM_Input capture", "bytes": 6658}, {"name": "Serial commands", "bytes": 5465}, {"name": "Padding / unattributed (alignment, vector table, anon symbols)", "bytes": 1563}, {"name": "Toolchain (libc/libm/startup)", "bytes": 811}, {"name": "HRTIM driver", "bytes": 252}, {"name": "main() / init", "bytes": 148}, {"name": "QUADSPI test", "bytes": 76}, {"name": "ST HAL library", "bytes": 12}, {"name": "Bootloader jump", "bytes": 4}, {"name": "CMSIS system init", "bytes": 4}, {"name": "Newlib syscalls", "bytes": 4}, {"name": "Gate driver / faults", "bytes": 1}]}</script>
+<script id="report-data" type="application/json">{"history": [{"commit": "72e5a1d6ea", "date": "2026-09-09T14:51:09-05:00", "subject": "Initial commit: reseeded from WHAM-PFMG474-V4 at de83324", "flash_used": 51316, "flash_total": 524288, "ram_used": 55368, "ram_total": 131072}, {"commit": "6cb03f50db", "date": "2026-09-09T15:20:15-05:00", "subject": "Implement closed-loop PID; fix a real anti-windup deadlock bug", "flash_used": 64140, "flash_total": 524288, "ram_used": 65912, "ram_total": 131072}, {"commit": "5467d36752", "date": "2026-09-10T09:39:20-05:00", "subject": "Add waveform logging (PID:LOG) and a linear setpoint ramp (PID:RAMP)", "flash_used": 66156, "flash_total": 524288, "ram_used": 77984, "ram_total": 131072}, {"commit": "baa93be705", "date": "2026-09-10T10:47:58-05:00", "subject": "Add windowed-average feedback + production shot profile + open/closed-loop mode", "flash_used": 68740, "flash_total": 524288, "ram_used": 78080, "ram_total": 131072}, {"commit": "d9ac49638a", "date": "2026-09-10T11:06:39-05:00", "subject": "Fix waveform-log timebase bug; re-tune gains; verify shot profile on real hardware", "flash_used": 68588, "flash_total": 524288, "ram_used": 78080, "ram_total": 131072}, {"commit": "807cf0d6cc", "date": "2026-09-10T11:28:10-05:00", "subject": "Add hard per-tick output slew-rate clamp, configurable in ctrlr_config.h", "flash_used": 68860, "flash_total": 524288, "ram_used": 78080, "ram_total": 131072}, {"commit": "ccb9d47c2d", "date": "2026-09-10T12:08:08-05:00", "subject": "Add PID:GAINS?/LOOPMODE?/PROFILE:TIMING?/PROFILE:CURRENT? query commands", "flash_used": 75152, "flash_total": 524288, "ram_used": 78080, "ram_total": 131072}, {"commit": "7e3e8a89f2", "date": "2026-09-10T14:10:25-05:00", "subject": "Add simultaneous all-channel waveform logging (PID_ArmLogAll)", "flash_used": 75936, "flash_total": 524288, "ram_used": 114080, "ram_total": 131072}, {"commit": "2dcb22a2f6", "date": "2026-09-11T08:51:12-05:00", "subject": "Per-channel Transrex full-range current -- MUST BE CALIBRATED BEFORE DEPLOYMENT", "flash_used": 75984, "flash_total": 524288, "ram_used": 114080, "ram_total": 131072}, {"commit": "8fc9115538", "date": "2026-09-11T12:17:52-05:00", "subject": "Fix: GateDriverStatus fault left no way to resume PID without a reboot", "flash_used": 75992, "flash_total": 524288, "ram_used": 114080, "ram_total": 131072}, {"commit": "35d4975c58", "date": "2026-09-11T12:36:34-05:00", "subject": "Add PID:CHANnel:ENAble -- per-channel output enable/disable", "flash_used": 76848, "flash_total": 524288, "ram_used": 114080, "ram_total": 131072}, {"commit": "8c74e9da28-dirty", "date": "2026-09-11T12:43:38-05:00", "subject": "Track which git commit is running: *IDN? now reports FW_GIT_COMMIT", "flash_used": 76880, "flash_total": 524288, "ram_used": 114080, "ram_total": 131072}, {"commit": "0efa18423a-dirty", "date": "2026-09-13T11:41:47-05:00", "subject": "Add top-level state machine: IDLE/ARMED/FIRING/FAULT (state_machine.c/h)", "flash_used": 77960, "flash_total": 524288, "ram_used": 114088, "ram_total": 131072}, {"commit": "485c5b9e27-dirty", "date": "2026-09-13T12:56:16-05:00", "subject": "Populate General Fault: open-loop linear ramp-down to 0A, then disable", "flash_used": 78280, "flash_total": 524288, "ram_used": 114128, "ram_total": 131072}], "flash_modules": [{"name": "ST HAL library", "bytes": 28052}, {"name": "Toolchain (libc/libm/startup)", "bytes": 23349}, {"name": "Serial commands", "bytes": 7552}, {"name": "Other", "bytes": 5527}, {"name": "PFM_Input capture", "bytes": 4104}, {"name": "Padding / unattributed (alignment, vector table, anon symbols)", "bytes": 2917}, {"name": "HRTIM driver", "bytes": 2534}, {"name": "PFM table engine", "bytes": 811}, {"name": "IRQ vector dispatch", "bytes": 726}, {"name": "main() / init", "bytes": 710}, {"name": "CMSIS", "bytes": 458}, {"name": "QUADSPI test", "bytes": 448}, {"name": "Newlib syscalls", "bytes": 396}, {"name": "HAL MSP config", "bytes": 248}, {"name": "Bootloader jump", "bytes": 216}, {"name": "Gate driver / faults", "bytes": 108}, {"name": "CMSIS system init", "bytes": 64}, {"name": "Startup/vector table", "bytes": 60}], "ram_modules": [{"name": "PFM table engine", "bytes": 50836}, {"name": "Other", "bytes": 48296}, {"name": "PFM_Input capture", "bytes": 6658}, {"name": "Serial commands", "bytes": 5465}, {"name": "Padding / unattributed (alignment, vector table, anon symbols)", "bytes": 1561}, {"name": "Toolchain (libc/libm/startup)", "bytes": 811}, {"name": "HRTIM driver", "bytes": 252}, {"name": "main() / init", "bytes": 148}, {"name": "QUADSPI test", "bytes": 76}, {"name": "ST HAL library", "bytes": 12}, {"name": "Bootloader jump", "bytes": 4}, {"name": "CMSIS system init", "bytes": 4}, {"name": "Newlib syscalls", "bytes": 4}, {"name": "Gate driver / faults", "bytes": 1}]}</script>
 <script>
 (function () {
   "use strict";

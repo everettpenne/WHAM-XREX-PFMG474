@@ -7,25 +7,25 @@ Idx Name          Size      VMA       LMA       File off  Algn
                   CONTENTS, ALLOC, LOAD, READONLY, DATA
   1 .text         00011b70  080001e0  080001e0  000011e0  2**4
                   CONTENTS, ALLOC, LOAD, READONLY, CODE
-  2 .rodata       000012a0  08011d50  08011d50  00012d50  2**3
+  2 .rodata       00001298  08011d50  08011d50  00012d50  2**3
                   CONTENTS, ALLOC, LOAD, READONLY, DATA
-  3 .ARM.extab    00000000  08012ff0  08012ff0  000141d8  2**0
+  3 .ARM.extab    00000000  08012fe8  08012fe8  000141d8  2**0
                   CONTENTS, READONLY
-  4 .ARM          00000008  08012ff0  08012ff0  00013ff0  2**2
+  4 .ARM          00000008  08012fe8  08012fe8  00013fe8  2**2
                   CONTENTS, ALLOC, LOAD, READONLY, DATA
-  5 .preinit_array 00000000  08012ff8  08012ff8  000141d8  2**0
+  5 .preinit_array 00000000  08012ff0  08012ff0  000141d8  2**0
                   CONTENTS, ALLOC, LOAD, DATA
-  6 .init_array   00000004  08012ff8  08012ff8  00013ff8  2**2
+  6 .init_array   00000004  08012ff0  08012ff0  00013ff0  2**2
                   CONTENTS, ALLOC, LOAD, READONLY, DATA
-  7 .fini_array   00000004  08012ffc  08012ffc  00013ffc  2**2
+  7 .fini_array   00000004  08012ff4  08012ff4  00013ff4  2**2
                   CONTENTS, ALLOC, LOAD, READONLY, DATA
-  8 .data         000001d8  20000000  08013000  00014000  2**2
+  8 .data         000001d8  20000000  08012ff8  00014000  2**2
                   CONTENTS, ALLOC, LOAD, DATA
-  9 .bss          0001b5f4  200001d8  080131d8  000141d8  2**2
+  9 .bss          0001b5f4  200001d8  080131d0  000141d8  2**2
                   ALLOC
- 10 .noinit       00000004  2001b7cc  080131d8  000147cc  2**2
+ 10 .noinit       00000004  2001b7cc  080131d0  000147cc  2**2
                   ALLOC
- 11 ._user_heap_stack 00000600  2001b7d0  080131d8  000147d0  2**0
+ 11 ._user_heap_stack 00000600  2001b7d0  080131d0  000147d0  2**0
                   ALLOC
  12 .ARM.attributes 00000030  00000000  00000000  000141d8  2**0
                   CONTENTS, READONLY
@@ -1654,7 +1654,7 @@ static int scpi_token_match(const char *pattern, const char *input)
  800120e:	3718      	adds	r7, #24
  8001210:	46bd      	mov	sp, r7
  8001212:	bd80      	pop	{r7, pc}
- 8001214:	08012df0 	.word	0x08012df0
+ 8001214:	08012de8 	.word	0x08012de8
 
 08001218 <scpi_match>:
  * strtok()'s single hidden save-pointer can't do that -- and because
@@ -1943,7 +1943,7 @@ void dispatch_command(uart_instance_t *inst, char *buf)
  800146e:	bd80      	pop	{r7, pc}
  8001470:	08011f5c 	.word	0x08011f5c
  8001474:	08011f60 	.word	0x08011f60
- 8001478:	080128b0 	.word	0x080128b0
+ 8001478:	080128ac 	.word	0x080128ac
  800147c:	08011f64 	.word	0x08011f64
 
 08001480 <SendErr>:
@@ -2025,9 +2025,9 @@ void cmd_idn(uart_instance_t *inst, char *args)
  80014f0:	46bd      	mov	sp, r7
  80014f2:	bd80      	pop	{r7, pc}
  80014f4:	08011fb0 	.word	0x08011fb0
- 80014f8:	08011fb8 	.word	0x08011fb8
- 80014fc:	08011fc4 	.word	0x08011fc4
- 8001500:	08011fcc 	.word	0x08011fcc
+ 80014f8:	08011fb4 	.word	0x08011fb4
+ 80014fc:	08011fc0 	.word	0x08011fc0
+ 8001500:	08011fc8 	.word	0x08011fc8
  8001504:	08011f88 	.word	0x08011f88
  8001508:	08011f9c 	.word	0x08011f9c
 
@@ -2060,7 +2060,7 @@ void cmd_boot(uart_instance_t *inst, char *args)
  8001526:	46bd      	mov	sp, r7
  8001528:	bd80      	pop	{r7, pc}
  800152a:	bf00      	nop
- 800152c:	08011fd4 	.word	0x08011fd4
+ 800152c:	08011fd0 	.word	0x08011fd0
 
 08001530 <cmd_table_begin>:
  * same principle applied elsewhere).
@@ -2093,7 +2093,7 @@ void cmd_table_begin(uart_instance_t *inst, char *args)
  8001550:	46bd      	mov	sp, r7
  8001552:	bd80      	pop	{r7, pc}
  8001554:	200001f4 	.word	0x200001f4
- 8001558:	08011ff0 	.word	0x08011ff0
+ 8001558:	08011fec 	.word	0x08011fec
 
 0800155c <SendTableStepCountErr>:
    expression, not a plain literal, so the standard #x/two-level
@@ -2126,7 +2126,7 @@ static void SendTableStepCountErr(uart_instance_t *inst)
  8001582:	3748      	adds	r7, #72	@ 0x48
  8001584:	46bd      	mov	sp, r7
  8001586:	bd80      	pop	{r7, pc}
- 8001588:	08011ff8 	.word	0x08011ff8
+ 8001588:	08011ff4 	.word	0x08011ff4
 
 0800158c <cmd_table_step>:
 
@@ -2333,13 +2333,13 @@ void cmd_table_step(uart_instance_t *inst, char *args)
  80016e0:	bd80      	pop	{r7, pc}
  80016e2:	bf00      	nop
  80016e4:	200001f4 	.word	0x200001f4
- 80016e8:	08012034 	.word	0x08012034
- 80016ec:	08012068 	.word	0x08012068
- 80016f0:	0801206c 	.word	0x0801206c
+ 80016e8:	08012030 	.word	0x08012030
+ 80016ec:	08012064 	.word	0x08012064
+ 80016f0:	08012068 	.word	0x08012068
  80016f4:	000186a0 	.word	0x000186a0
- 80016f8:	08012090 	.word	0x08012090
- 80016fc:	080120c4 	.word	0x080120c4
- 8001700:	08011ff0 	.word	0x08011ff0
+ 80016f8:	0801208c 	.word	0x0801208c
+ 80016fc:	080120c0 	.word	0x080120c0
+ 8001700:	08011fec 	.word	0x08011fec
 
 08001704 <cmd_table_end>:
 
@@ -2377,7 +2377,7 @@ void cmd_table_end(uart_instance_t *inst, char *args)
  8001738:	bd80      	pop	{r7, pc}
  800173a:	bf00      	nop
  800173c:	200001f4 	.word	0x200001f4
- 8001740:	080120d0 	.word	0x080120d0
+ 8001740:	080120cc 	.word	0x080120cc
 
 08001744 <cmd_table_query>:
 
@@ -2408,7 +2408,7 @@ void cmd_table_query(uart_instance_t *inst, char *args)
  800176e:	3738      	adds	r7, #56	@ 0x38
  8001770:	46bd      	mov	sp, r7
  8001772:	bd80      	pop	{r7, pc}
- 8001774:	080120d0 	.word	0x080120d0
+ 8001774:	080120cc 	.word	0x080120cc
 
 08001778 <AnyFaultLatched>:
    (gate_driver.h, PE0..PE11). One combined answer for FAULT?/FIRE's
@@ -2488,9 +2488,9 @@ void cmd_fire(uart_instance_t *inst, char *args)
  80017de:	3708      	adds	r7, #8
  80017e0:	46bd      	mov	sp, r7
  80017e2:	bd80      	pop	{r7, pc}
- 80017e4:	080120d8 	.word	0x080120d8
- 80017e8:	08012100 	.word	0x08012100
- 80017ec:	08011ff0 	.word	0x08011ff0
+ 80017e4:	080120d4 	.word	0x080120d4
+ 80017e8:	080120fc 	.word	0x080120fc
+ 80017ec:	08011fec 	.word	0x08011fec
 
 080017f0 <cmd_pfm_diag>:
  * starvation, not just "the table happened to hold one entry a
@@ -2549,7 +2549,7 @@ void cmd_pfm_diag(uart_instance_t *inst, char *args)
  8001840:	bd80      	pop	{r7, pc}
  8001842:	bf00      	nop
  8001844:	c0c0c0c1 	.word	0xc0c0c0c1
- 8001848:	0801213c 	.word	0x0801213c
+ 8001848:	08012138 	.word	0x08012138
 
 0800184c <cmd_pfm_gaplog>:
    investigation (docs/changelog.txt) is resolved and this diagnostic
@@ -2644,9 +2644,9 @@ void cmd_pfm_gaplog(uart_instance_t *inst, char *args)
  80018e0:	46bd      	mov	sp, r7
  80018e2:	bd80      	pop	{r7, pc}
  80018e4:	200001f8 	.word	0x200001f8
- 80018e8:	08012150 	.word	0x08012150
- 80018ec:	08012158 	.word	0x08012158
- 80018f0:	08012160 	.word	0x08012160
+ 80018e8:	0801214c 	.word	0x0801214c
+ 80018ec:	08012154 	.word	0x08012154
+ 80018f0:	0801215c 	.word	0x0801215c
 
 080018f4 <cmd_config_channels>:
  * different channel count -- a TABLE:STEP wire-format mismatch that
@@ -2679,7 +2679,7 @@ void cmd_config_channels(uart_instance_t *inst, char *args)
  800191a:	3728      	adds	r7, #40	@ 0x28
  800191c:	46bd      	mov	sp, r7
  800191e:	bd80      	pop	{r7, pc}
- 8001920:	080120d0 	.word	0x080120d0
+ 8001920:	080120cc 	.word	0x080120cc
 
 08001924 <cmd_fault_query>:
  * not two. FAULT:CLEAR clears both latches unconditionally (clearing
@@ -2712,8 +2712,8 @@ void cmd_fault_query(uart_instance_t *inst, char *args)
  800194a:	46bd      	mov	sp, r7
  800194c:	bd80      	pop	{r7, pc}
  800194e:	bf00      	nop
- 8001950:	08012164 	.word	0x08012164
- 8001954:	0801216c 	.word	0x0801216c
+ 8001950:	08012160 	.word	0x08012160
+ 8001954:	08012168 	.word	0x08012168
 
 08001958 <cmd_fault_clear>:
 
@@ -2742,7 +2742,7 @@ void cmd_fault_clear(uart_instance_t *inst, char *args)
  8001972:	46bd      	mov	sp, r7
  8001974:	bd80      	pop	{r7, pc}
  8001976:	bf00      	nop
- 8001978:	08011ff0 	.word	0x08011ff0
+ 8001978:	08011fec 	.word	0x08011fec
 
 0800197c <cmd_arm>:
 
@@ -2781,8 +2781,8 @@ void cmd_arm(uart_instance_t *inst, char *args)
  80019a6:	46bd      	mov	sp, r7
  80019a8:	bd80      	pop	{r7, pc}
  80019aa:	bf00      	nop
- 80019ac:	08012174 	.word	0x08012174
- 80019b0:	08011ff0 	.word	0x08011ff0
+ 80019ac:	08012170 	.word	0x08012170
+ 80019b0:	08011fec 	.word	0x08011fec
 
 080019b4 <cmd_disarm>:
 /* ARMED -> IDLE, without firing -- stand down. No-op (still replies
@@ -2810,7 +2810,7 @@ void cmd_disarm(uart_instance_t *inst, char *args)
  80019ce:	46bd      	mov	sp, r7
  80019d0:	bd80      	pop	{r7, pc}
  80019d2:	bf00      	nop
- 80019d4:	08011ff0 	.word	0x08011ff0
+ 80019d4:	08011fec 	.word	0x08011fec
 
 080019d8 <cmd_state_query>:
 
@@ -2909,15 +2909,15 @@ void cmd_state_query(uart_instance_t *inst, char *args)
  8001a6e:	3730      	adds	r7, #48	@ 0x30
  8001a70:	46bd      	mov	sp, r7
  8001a72:	bd80      	pop	{r7, pc}
- 8001a74:	080121b0 	.word	0x080121b0
- 8001a78:	080121b8 	.word	0x080121b8
- 8001a7c:	080121c0 	.word	0x080121c0
- 8001a80:	080121c8 	.word	0x080121c8
- 8001a84:	080121d0 	.word	0x080121d0
- 8001a88:	080121d8 	.word	0x080121d8
- 8001a8c:	080121e4 	.word	0x080121e4
- 8001a90:	080121ec 	.word	0x080121ec
- 8001a94:	080121f8 	.word	0x080121f8
+ 8001a74:	080121ac 	.word	0x080121ac
+ 8001a78:	080121b4 	.word	0x080121b4
+ 8001a7c:	080121bc 	.word	0x080121bc
+ 8001a80:	080121c4 	.word	0x080121c4
+ 8001a84:	080121cc 	.word	0x080121cc
+ 8001a88:	080121d4 	.word	0x080121d4
+ 8001a8c:	080121e0 	.word	0x080121e0
+ 8001a90:	080121e8 	.word	0x080121e8
+ 8001a94:	080121f4 	.word	0x080121f4
 
 08001a98 <cmd_gds_query>:
  * GateDriverStatus EXTI interrupt, gate_driver.h's
@@ -3022,11 +3022,11 @@ void cmd_gds_query(uart_instance_t *inst, char *args)
  8001b76:	46bd      	mov	sp, r7
  8001b78:	bd80      	pop	{r7, pc}
  8001b7a:	bf00      	nop
- 8001b7c:	08012200 	.word	0x08012200
- 8001b80:	08012204 	.word	0x08012204
- 8001b84:	0801220c 	.word	0x0801220c
- 8001b88:	08012210 	.word	0x08012210
- 8001b8c:	08012160 	.word	0x08012160
+ 8001b7c:	080121fc 	.word	0x080121fc
+ 8001b80:	08012200 	.word	0x08012200
+ 8001b84:	08012208 	.word	0x08012208
+ 8001b88:	0801220c 	.word	0x0801220c
+ 8001b8c:	0801215c 	.word	0x0801215c
 
 08001b90 <cmd_qspi_id>:
  * chip present, a wiring fault, or the bus wedged) -- see
@@ -3086,8 +3086,8 @@ void cmd_qspi_id(uart_instance_t *inst, char *args)
  8001be2:	3730      	adds	r7, #48	@ 0x30
  8001be4:	46bd      	mov	sp, r7
  8001be6:	bd80      	pop	{r7, pc}
- 8001be8:	0801221c 	.word	0x0801221c
- 8001bec:	08012240 	.word	0x08012240
+ 8001be8:	08012218 	.word	0x08012218
+ 8001bec:	0801223c 	.word	0x0801223c
 
 08001bf0 <cmd_pfmin_capture>:
  * declarations for the shot-synchronized design -- PFMIN:CAPTURE only
@@ -3165,10 +3165,10 @@ void cmd_pfmin_capture(uart_instance_t *inst, char *args)
  8001c56:	46bd      	mov	sp, r7
  8001c58:	bd80      	pop	{r7, pc}
  8001c5a:	bf00      	nop
- 8001c5c:	08012068 	.word	0x08012068
- 8001c60:	08012254 	.word	0x08012254
- 8001c64:	08012294 	.word	0x08012294
- 8001c68:	08011ff0 	.word	0x08011ff0
+ 8001c5c:	08012064 	.word	0x08012064
+ 8001c60:	08012250 	.word	0x08012250
+ 8001c64:	08012290 	.word	0x08012290
+ 8001c68:	08011fec 	.word	0x08011fec
 
 08001c6c <cmd_pfmin_status>:
 
@@ -3251,9 +3251,9 @@ void cmd_pfmin_status(uart_instance_t *inst, char *args)
  8001d02:	3750      	adds	r7, #80	@ 0x50
  8001d04:	46bd      	mov	sp, r7
  8001d06:	bdb0      	pop	{r4, r5, r7, pc}
- 8001d08:	08012200 	.word	0x08012200
- 8001d0c:	080122c0 	.word	0x080122c0
- 8001d10:	08012160 	.word	0x08012160
+ 8001d08:	080121fc 	.word	0x080121fc
+ 8001d0c:	080122bc 	.word	0x080122bc
+ 8001d10:	0801215c 	.word	0x0801215c
 
 08001d14 <cmd_pfmin_dmastat>:
 
@@ -3339,9 +3339,9 @@ void cmd_pfmin_dmastat(uart_instance_t *inst, char *args)
  8001daa:	3750      	adds	r7, #80	@ 0x50
  8001dac:	46bd      	mov	sp, r7
  8001dae:	bdb0      	pop	{r4, r5, r7, pc}
- 8001db0:	08012200 	.word	0x08012200
- 8001db4:	080122c0 	.word	0x080122c0
- 8001db8:	08012160 	.word	0x08012160
+ 8001db0:	080121fc 	.word	0x080121fc
+ 8001db4:	080122bc 	.word	0x080122bc
+ 8001db8:	0801215c 	.word	0x0801215c
 
 08001dbc <cmd_pfmin_data>:
    even though the actual runtime stack has far more room in practice
@@ -3511,13 +3511,13 @@ void cmd_pfmin_data(uart_instance_t *inst, char *args)
  8001eba:	46bd      	mov	sp, r7
  8001ebc:	bdf0      	pop	{r4, r5, r6, r7, pc}
  8001ebe:	bf00      	nop
- 8001ec0:	08012068 	.word	0x08012068
- 8001ec4:	080122c4 	.word	0x080122c4
- 8001ec8:	080122f4 	.word	0x080122f4
+ 8001ec0:	08012064 	.word	0x08012064
+ 8001ec4:	080122c0 	.word	0x080122c0
+ 8001ec8:	080122f0 	.word	0x080122f0
  8001ecc:	20000c20 	.word	0x20000c20
- 8001ed0:	08012314 	.word	0x08012314
- 8001ed4:	08012158 	.word	0x08012158
- 8001ed8:	08012160 	.word	0x08012160
+ 8001ed0:	08012310 	.word	0x08012310
+ 8001ed4:	08012154 	.word	0x08012154
+ 8001ed8:	0801215c 	.word	0x0801215c
 
 08001edc <cmd_pid_start>:
  * reports it). Error codes 11 (invalid channel) and 12 (invalid
@@ -3544,7 +3544,7 @@ void cmd_pid_start(uart_instance_t *inst, char *args)
  8001ef6:	46bd      	mov	sp, r7
  8001ef8:	bd80      	pop	{r7, pc}
  8001efa:	bf00      	nop
- 8001efc:	08011ff0 	.word	0x08011ff0
+ 8001efc:	08011fec 	.word	0x08011fec
 
 08001f00 <cmd_pid_stop>:
 
@@ -3574,7 +3574,7 @@ void cmd_pid_stop(uart_instance_t *inst, char *args)
  8001f1e:	46bd      	mov	sp, r7
  8001f20:	bd80      	pop	{r7, pc}
  8001f22:	bf00      	nop
- 8001f24:	08011ff0 	.word	0x08011ff0
+ 8001f24:	08011fec 	.word	0x08011fec
 
 08001f28 <cmd_pid_setpoint>:
 
@@ -3696,11 +3696,11 @@ void cmd_pid_setpoint(uart_instance_t *inst, char *args)
  8001fce:	46bd      	mov	sp, r7
  8001fd0:	bd80      	pop	{r7, pc}
  8001fd2:	bf00      	nop
- 8001fd4:	08012068 	.word	0x08012068
- 8001fd8:	08012328 	.word	0x08012328
- 8001fdc:	08012358 	.word	0x08012358
- 8001fe0:	0801236c 	.word	0x0801236c
- 8001fe4:	08011ff0 	.word	0x08011ff0
+ 8001fd4:	08012064 	.word	0x08012064
+ 8001fd8:	08012324 	.word	0x08012324
+ 8001fdc:	08012354 	.word	0x08012354
+ 8001fe0:	08012368 	.word	0x08012368
+ 8001fe4:	08011fec 	.word	0x08011fec
 
 08001fe8 <cmd_pid_gains>:
 
@@ -3860,10 +3860,10 @@ void cmd_pid_gains(uart_instance_t *inst, char *args)
  80020ee:	3730      	adds	r7, #48	@ 0x30
  80020f0:	46bd      	mov	sp, r7
  80020f2:	bdb0      	pop	{r4, r5, r7, pc}
- 80020f4:	08012068 	.word	0x08012068
- 80020f8:	0801237c 	.word	0x0801237c
- 80020fc:	08012358 	.word	0x08012358
- 8002100:	08011ff0 	.word	0x08011ff0
+ 80020f4:	08012064 	.word	0x08012064
+ 80020f8:	08012378 	.word	0x08012378
+ 80020fc:	08012354 	.word	0x08012354
+ 8002100:	08011fec 	.word	0x08011fec
 
 08002104 <cmd_pid_gains_query>:
 /* Added 2026-09-10, alongside python/wham_console.py -- PID:GAINS was
@@ -3973,10 +3973,10 @@ void cmd_pid_gains_query(uart_instance_t *inst, char *args)
  80021c0:	46bd      	mov	sp, r7
  80021c2:	e8bd 83b0 	ldmia.w	sp!, {r4, r5, r7, r8, r9, pc}
  80021c6:	bf00      	nop
- 80021c8:	08012068 	.word	0x08012068
- 80021cc:	080123b0 	.word	0x080123b0
- 80021d0:	08012358 	.word	0x08012358
- 80021d4:	080123d8 	.word	0x080123d8
+ 80021c8:	08012064 	.word	0x08012064
+ 80021cc:	080123ac 	.word	0x080123ac
+ 80021d0:	08012354 	.word	0x08012354
+ 80021d4:	080123d4 	.word	0x080123d4
 
 080021d8 <cmd_pid_status>:
 
@@ -4078,10 +4078,10 @@ void cmd_pid_status(uart_instance_t *inst, char *args)
  8002276:	3784      	adds	r7, #132	@ 0x84
  8002278:	46bd      	mov	sp, r7
  800227a:	bd90      	pop	{r4, r7, pc}
- 800227c:	08012068 	.word	0x08012068
- 8002280:	080123e8 	.word	0x080123e8
- 8002284:	08012358 	.word	0x08012358
- 8002288:	08012410 	.word	0x08012410
+ 800227c:	08012064 	.word	0x08012064
+ 8002280:	080123e4 	.word	0x080123e4
+ 8002284:	08012354 	.word	0x08012354
+ 8002288:	0801240c 	.word	0x0801240c
 
 0800228c <cmd_pid_log>:
    else in this project, leaving 0 a natural, otherwise-unused sentinel
@@ -4250,11 +4250,11 @@ void cmd_pid_log(uart_instance_t *inst, char *args)
  800237e:	46bd      	mov	sp, r7
  8002380:	bd80      	pop	{r7, pc}
  8002382:	bf00      	nop
- 8002384:	08012068 	.word	0x08012068
- 8002388:	08012424 	.word	0x08012424
- 800238c:	08012464 	.word	0x08012464
- 8002390:	0801248c 	.word	0x0801248c
- 8002394:	08011ff0 	.word	0x08011ff0
+ 8002384:	08012064 	.word	0x08012064
+ 8002388:	08012420 	.word	0x08012420
+ 800238c:	08012460 	.word	0x08012460
+ 8002390:	08012488 	.word	0x08012488
+ 8002394:	08011fec 	.word	0x08011fec
 
 08002398 <cmd_pid_logdata>:
    (ambiguous without a channel to pick). `PID:LOGDATA? <ch>` works in
@@ -4475,13 +4475,13 @@ void cmd_pid_logdata(uart_instance_t *inst, char *args)
  8002506:	46bd      	mov	sp, r7
  8002508:	bd90      	pop	{r4, r7, pc}
  800250a:	bf00      	nop
- 800250c:	08012068 	.word	0x08012068
- 8002510:	080124c4 	.word	0x080124c4
- 8002514:	08012358 	.word	0x08012358
- 8002518:	08012510 	.word	0x08012510
- 800251c:	0801254c 	.word	0x0801254c
- 8002520:	08012558 	.word	0x08012558
- 8002524:	08012160 	.word	0x08012160
+ 800250c:	08012064 	.word	0x08012064
+ 8002510:	080124c0 	.word	0x080124c0
+ 8002514:	08012354 	.word	0x08012354
+ 8002518:	0801250c 	.word	0x0801250c
+ 800251c:	08012548 	.word	0x08012548
+ 8002520:	08012554 	.word	0x08012554
+ 8002524:	0801215c 	.word	0x0801215c
 
 08002528 <cmd_pid_ramp>:
 
@@ -4655,11 +4655,11 @@ void cmd_pid_ramp(uart_instance_t *inst, char *args)
  8002622:	46bd      	mov	sp, r7
  8002624:	bd80      	pop	{r7, pc}
  8002626:	bf00      	nop
- 8002628:	08012068 	.word	0x08012068
- 800262c:	08012568 	.word	0x08012568
- 8002630:	08012358 	.word	0x08012358
- 8002634:	080125a8 	.word	0x080125a8
- 8002638:	08011ff0 	.word	0x08011ff0
+ 8002628:	08012064 	.word	0x08012064
+ 800262c:	08012564 	.word	0x08012564
+ 8002630:	08012354 	.word	0x08012354
+ 8002634:	080125a4 	.word	0x080125a4
+ 8002638:	08011fec 	.word	0x08011fec
 
 0800263c <cmd_pid_loopmode>:
  * Production shot profile + open/closed-loop mode -- added 2026-09-10.
@@ -4772,10 +4772,10 @@ void cmd_pid_loopmode(uart_instance_t *inst, char *args)
  80026da:	46bd      	mov	sp, r7
  80026dc:	bd80      	pop	{r7, pc}
  80026de:	bf00      	nop
- 80026e0:	08012068 	.word	0x08012068
- 80026e4:	080125d4 	.word	0x080125d4
- 80026e8:	08012358 	.word	0x08012358
- 80026ec:	08011ff0 	.word	0x08011ff0
+ 80026e0:	08012064 	.word	0x08012064
+ 80026e4:	080125d0 	.word	0x080125d0
+ 80026e8:	08012354 	.word	0x08012354
+ 80026ec:	08011fec 	.word	0x08011fec
 
 080026f0 <cmd_pid_loopmode_query>:
 
@@ -4863,10 +4863,10 @@ void cmd_pid_loopmode_query(uart_instance_t *inst, char *args)
  8002772:	46bd      	mov	sp, r7
  8002774:	bd80      	pop	{r7, pc}
  8002776:	bf00      	nop
- 8002778:	08012068 	.word	0x08012068
- 800277c:	08012604 	.word	0x08012604
- 8002780:	08012358 	.word	0x08012358
- 8002784:	080120d0 	.word	0x080120d0
+ 8002778:	08012064 	.word	0x08012064
+ 800277c:	08012600 	.word	0x08012600
+ 8002780:	08012354 	.word	0x08012354
+ 8002784:	080120cc 	.word	0x080120cc
 
 08002788 <cmd_pid_channel_enable>:
    own doc comment in pid.h for exactly what this does (a genuine "no
@@ -4979,10 +4979,10 @@ void cmd_pid_channel_enable(uart_instance_t *inst, char *args)
  8002826:	46bd      	mov	sp, r7
  8002828:	bd80      	pop	{r7, pc}
  800282a:	bf00      	nop
- 800282c:	08012068 	.word	0x08012068
- 8002830:	08012630 	.word	0x08012630
- 8002834:	08012358 	.word	0x08012358
- 8002838:	08011ff0 	.word	0x08011ff0
+ 800282c:	08012064 	.word	0x08012064
+ 8002830:	0801262c 	.word	0x0801262c
+ 8002834:	08012354 	.word	0x08012354
+ 8002838:	08011fec 	.word	0x08011fec
 
 0800283c <cmd_pid_channel_enable_query>:
 
@@ -5068,10 +5068,10 @@ void cmd_pid_channel_enable_query(uart_instance_t *inst, char *args)
  80028be:	46bd      	mov	sp, r7
  80028c0:	bd80      	pop	{r7, pc}
  80028c2:	bf00      	nop
- 80028c4:	08012068 	.word	0x08012068
- 80028c8:	08012664 	.word	0x08012664
- 80028cc:	08012358 	.word	0x08012358
- 80028d0:	080120d0 	.word	0x080120d0
+ 80028c4:	08012064 	.word	0x08012064
+ 80028c8:	08012660 	.word	0x08012660
+ 80028cc:	08012354 	.word	0x08012354
+ 80028d0:	080120cc 	.word	0x080120cc
 
 080028d4 <cmd_pid_profile_timing>:
 
@@ -5211,12 +5211,12 @@ void cmd_pid_profile_timing(uart_instance_t *inst, char *args)
  80029ca:	46bd      	mov	sp, r7
  80029cc:	bd90      	pop	{r4, r7, pc}
  80029ce:	bf00      	nop
- 80029d0:	08012068 	.word	0x08012068
- 80029d4:	08012694 	.word	0x08012694
- 80029d8:	080126d4 	.word	0x080126d4
+ 80029d0:	08012064 	.word	0x08012064
+ 80029d4:	08012690 	.word	0x08012690
+ 80029d8:	080126d0 	.word	0x080126d0
  80029dc:	408f4000 	.word	0x408f4000
- 80029e0:	080126f8 	.word	0x080126f8
- 80029e4:	08011ff0 	.word	0x08011ff0
+ 80029e0:	080126f4 	.word	0x080126f4
+ 80029e4:	08011fec 	.word	0x08011fec
 
 080029e8 <cmd_pid_profile_timing_query>:
    empty/zero OK reply) if timing was never successfully set -- a real,
@@ -5294,9 +5294,9 @@ void cmd_pid_profile_timing_query(uart_instance_t *inst, char *args)
  8002a66:	46bd      	mov	sp, r7
  8002a68:	bdb0      	pop	{r4, r5, r7, pc}
  8002a6a:	bf00      	nop
- 8002a6c:	0801271c 	.word	0x0801271c
+ 8002a6c:	08012718 	.word	0x08012718
  8002a70:	408f4000 	.word	0x408f4000
- 8002a74:	08012754 	.word	0x08012754
+ 8002a74:	08012750 	.word	0x08012750
 
 08002a78 <cmd_pid_profile_current>:
 
@@ -5424,11 +5424,11 @@ void cmd_pid_profile_current(uart_instance_t *inst, char *args)
  8002b3a:	46bd      	mov	sp, r7
  8002b3c:	bd80      	pop	{r7, pc}
  8002b3e:	bf00      	nop
- 8002b40:	08012068 	.word	0x08012068
- 8002b44:	08012760 	.word	0x08012760
- 8002b48:	08012358 	.word	0x08012358
- 8002b4c:	080127a0 	.word	0x080127a0
- 8002b50:	08011ff0 	.word	0x08011ff0
+ 8002b40:	08012064 	.word	0x08012064
+ 8002b44:	0801275c 	.word	0x0801275c
+ 8002b48:	08012354 	.word	0x08012354
+ 8002b4c:	0801279c 	.word	0x0801279c
+ 8002b50:	08011fec 	.word	0x08011fec
 
 08002b54 <cmd_pid_profile_current_query>:
    (PID:PROFILE:CURRENT was write-only until now). Always succeeds for
@@ -5526,10 +5526,10 @@ void cmd_pid_profile_current_query(uart_instance_t *inst, char *args)
  8002bea:	46bd      	mov	sp, r7
  8002bec:	bd80      	pop	{r7, pc}
  8002bee:	bf00      	nop
- 8002bf0:	08012068 	.word	0x08012068
- 8002bf4:	080127bc 	.word	0x080127bc
- 8002bf8:	08012358 	.word	0x08012358
- 8002bfc:	080127f0 	.word	0x080127f0
+ 8002bf0:	08012064 	.word	0x08012064
+ 8002bf4:	080127b8 	.word	0x080127b8
+ 8002bf8:	08012354 	.word	0x08012354
+ 8002bfc:	080127ec 	.word	0x080127ec
 
 08002c00 <cmd_pid_profile_start>:
    (ARM first, see cmd_arm()). SM_Fire() calls PID_ProfileStart()
@@ -5582,9 +5582,9 @@ void cmd_pid_profile_start(uart_instance_t *inst, char *args)
  8002c3e:	3708      	adds	r7, #8
  8002c40:	46bd      	mov	sp, r7
  8002c42:	bd80      	pop	{r7, pc}
- 8002c44:	080127f8 	.word	0x080127f8
- 8002c48:	08012820 	.word	0x08012820
- 8002c4c:	08011ff0 	.word	0x08011ff0
+ 8002c44:	080127f4 	.word	0x080127f4
+ 8002c48:	0801281c 	.word	0x0801281c
+ 8002c4c:	08011fec 	.word	0x08011fec
 
 08002c50 <GateDriver_Read>:
    FAULT:CLEAR). volatile: written from ISR, read from the main loop
@@ -6226,7 +6226,7 @@ void HRTIM1_FullInit(void)
  800307a:	bf00      	nop
  800307c:	2000164c 	.word	0x2000164c
  8003080:	40016800 	.word	0x40016800
- 8003084:	080129e8 	.word	0x080129e8
+ 8003084:	080129e4 	.word	0x080129e4
     {
         if (HAL_HRTIM_DeadTimeConfig(&hhrtim1, kTimerIndex[ch], &pDeadTimeCfg) != HAL_OK)
  8003088:	f897 3143 	ldrb.w	r3, [r7, #323]	@ 0x143
@@ -6363,10 +6363,10 @@ void HRTIM1_FullInit(void)
  8003182:	46bd      	mov	sp, r7
  8003184:	bd80      	pop	{r7, pc}
  8003186:	bf00      	nop
- 8003188:	080129e8 	.word	0x080129e8
+ 8003188:	080129e4 	.word	0x080129e4
  800318c:	2000164c 	.word	0x2000164c
- 8003190:	08012a00 	.word	0x08012a00
- 8003194:	08012a18 	.word	0x08012a18
+ 8003190:	080129fc 	.word	0x080129fc
+ 8003194:	08012a14 	.word	0x08012a14
 
 08003198 <HAL_HRTIM_MspInit>:
 
@@ -6692,11 +6692,11 @@ void HRTIM1_PWM_Start(const uint8_t *channelEnabled)
  8003392:	46bd      	mov	sp, r7
  8003394:	bd80      	pop	{r7, pc}
  8003396:	bf00      	nop
- 8003398:	080129e8 	.word	0x080129e8
- 800339c:	08012a00 	.word	0x08012a00
+ 8003398:	080129e4 	.word	0x080129e4
+ 800339c:	080129fc 	.word	0x080129fc
  80033a0:	2000164c 	.word	0x2000164c
- 80033a4:	08012a18 	.word	0x08012a18
- 80033a8:	08012a30 	.word	0x08012a30
+ 80033a4:	08012a14 	.word	0x08012a14
+ 80033a8:	08012a2c 	.word	0x08012a2c
 
 080033ac <HRTIM1_SetChannelOutputEnable>:
 
@@ -6774,9 +6774,9 @@ void HRTIM1_SetChannelOutputEnable(uint8_t channel, uint8_t enable)
  8003426:	3710      	adds	r7, #16
  8003428:	46bd      	mov	sp, r7
  800342a:	bd80      	pop	{r7, pc}
- 800342c:	08012a00 	.word	0x08012a00
- 8003430:	08012a18 	.word	0x08012a18
- 8003434:	080129e8 	.word	0x080129e8
+ 800342c:	080129fc 	.word	0x080129fc
+ 8003430:	08012a14 	.word	0x08012a14
+ 8003434:	080129e4 	.word	0x080129e4
  8003438:	2000164c 	.word	0x2000164c
 
 0800343c <HRTIM1_EnableMasterInterrupt>:
@@ -6876,9 +6876,9 @@ void HRTIM1_PWM_Stop(void)
  80034c2:	3710      	adds	r7, #16
  80034c4:	46bd      	mov	sp, r7
  80034c6:	bd80      	pop	{r7, pc}
- 80034c8:	08012a00 	.word	0x08012a00
- 80034cc:	08012a18 	.word	0x08012a18
- 80034d0:	08012a30 	.word	0x08012a30
+ 80034c8:	080129fc 	.word	0x080129fc
+ 80034cc:	08012a14 	.word	0x08012a14
+ 80034d0:	08012a2c 	.word	0x08012a2c
  80034d4:	2000164c 	.word	0x2000164c
 
 080034d8 <HRTIM1_FaultIsTripped>:
@@ -6960,7 +6960,7 @@ void HRTIM1_SoftwareUpdate(void)
  8003544:	f85d 7b04 	ldr.w	r7, [sp], #4
  8003548:	4770      	bx	lr
  800354a:	bf00      	nop
- 800354c:	08012a48 	.word	0x08012a48
+ 800354c:	08012a44 	.word	0x08012a44
  8003550:	2000164c 	.word	0x2000164c
 
 08003554 <HRTIM1_SetChannelPeriod>:
@@ -8320,7 +8320,7 @@ static uint8_t TimerHasActiveChannel(const TIM_TypeDef *instance)
  8003c8a:	3710      	adds	r7, #16
  8003c8c:	46bd      	mov	sp, r7
  8003c8e:	bd80      	pop	{r7, pc}
- 8003c90:	08012a60 	.word	0x08012a60
+ 8003c90:	08012a5c 	.word	0x08012a5c
 
 08003c94 <ActiveChannelToTimChannel>:
  * different numeric encodings on this HAL -- this converts the former
@@ -8404,7 +8404,7 @@ static int8_t FindChannelIndex(const TIM_TypeDef *instance, uint32_t timChannel)
  8003d08:	f85d 7b04 	ldr.w	r7, [sp], #4
  8003d0c:	4770      	bx	lr
  8003d0e:	bf00      	nop
- 8003d10:	08012a60 	.word	0x08012a60
+ 8003d10:	08012a5c 	.word	0x08012a5c
 
 08003d14 <HandleForTimer>:
    function's own body, further down) needs to call it for the
@@ -8592,7 +8592,7 @@ static void InitOneTimer(TIM_HandleTypeDef *htim, TIM_TypeDef *instance, uint32_
  8003e42:	3728      	adds	r7, #40	@ 0x28
  8003e44:	46bd      	mov	sp, r7
  8003e46:	bd80      	pop	{r7, pc}
- 8003e48:	08012a60 	.word	0x08012a60
+ 8003e48:	08012a5c 	.word	0x08012a5c
 
 08003e4c <PfmInput_Init>:
     IRQn_Type           irqn;
@@ -8706,7 +8706,7 @@ void PfmInput_Init(void)
  8003f0a:	46bd      	mov	sp, r7
  8003f0c:	bdb0      	pop	{r4, r5, r7, pc}
  8003f0e:	bf00      	nop
- 8003f10:	08012858 	.word	0x08012858
+ 8003f10:	08012854 	.word	0x08012854
 
 08003f14 <PfmInput_Arm>:
 
@@ -8923,7 +8923,7 @@ void PfmInput_OnShotStart(void)
  8004080:	46bd      	mov	sp, r7
  8004082:	bd90      	pop	{r4, r7, pc}
  8004084:	2000e1e4 	.word	0x2000e1e4
- 8004088:	08012a60 	.word	0x08012a60
+ 8004088:	08012a5c 	.word	0x08012a5c
  800408c:	2000f56c 	.word	0x2000f56c
  8004090:	2000f564 	.word	0x2000f564
 
@@ -9159,7 +9159,7 @@ void PfmInput_OnShotEnd(void)
  8004210:	2000e1e4 	.word	0x2000e1e4
  8004214:	2000dfa4 	.word	0x2000dfa4
  8004218:	2000f86c 	.word	0x2000f86c
- 800421c:	08012a60 	.word	0x08012a60
+ 800421c:	08012a5c 	.word	0x08012a5c
 
 08004220 <PfmInput_GetCount>:
 
@@ -9433,7 +9433,7 @@ uint8_t PfmInput_StartContinuous(uint8_t channel)
  80043f8:	46bd      	mov	sp, r7
  80043fa:	bd90      	pop	{r4, r7, pc}
  80043fc:	2000e1e4 	.word	0x2000e1e4
- 8004400:	08012a60 	.word	0x08012a60
+ 8004400:	08012a5c 	.word	0x08012a5c
  8004404:	2000f86c 	.word	0x2000f86c
  8004408:	2000f56c 	.word	0x2000f56c
  800440c:	2000f564 	.word	0x2000f564
@@ -9523,7 +9523,7 @@ void PfmInput_StopContinuous(uint8_t channel)
  800449c:	46bd      	mov	sp, r7
  800449e:	bd80      	pop	{r7, pc}
  80044a0:	2000e1e4 	.word	0x2000e1e4
- 80044a4:	08012a60 	.word	0x08012a60
+ 80044a4:	08012a5c 	.word	0x08012a5c
 
 080044a8 <PfmInput_ConsumeAveragePeriod>:
     }
@@ -9976,7 +9976,7 @@ static void ProcessDmaChunk(uint8_t idx, uint16_t startOffset, uint16_t count)
  8004750:	bd80      	pop	{r7, pc}
  8004752:	bf00      	nop
  8004754:	2000e1e4 	.word	0x2000e1e4
- 8004758:	08012a60 	.word	0x08012a60
+ 8004758:	08012a5c 	.word	0x08012a5c
  800475c:	2000f56c 	.word	0x2000f56c
  8004760:	2000f86c 	.word	0x2000f86c
 
@@ -10529,7 +10529,7 @@ void HAL_TIM_IC_MspInit(TIM_HandleTypeDef *htim)
  8004b5e:	46bd      	mov	sp, r7
  8004b60:	bd80      	pop	{r7, pc}
  8004b62:	bf00      	nop
- 8004b64:	08012a60 	.word	0x08012a60
+ 8004b64:	08012a5c 	.word	0x08012a5c
  8004b68:	2000dfa4 	.word	0x2000dfa4
 
 08004b6c <TrapezoidalCurrentA>:
@@ -10722,7 +10722,7 @@ static uint32_t AmpsToHz(uint8_t channel, float currentA)
  8004cdc:	46bd      	mov	sp, r7
  8004cde:	f85d 7b04 	ldr.w	r7, [sp], #4
  8004ce2:	4770      	bx	lr
- 8004ce4:	08012b20 	.word	0x08012b20
+ 8004ce4:	08012b1c 	.word	0x08012b1c
  8004ce8:	47b98c00 	.word	0x47b98c00
  8004cec:	459c4000 	.word	0x459c4000
  8004cf0:	453b8000 	.word	0x453b8000
@@ -13322,7 +13322,7 @@ uint8_t PID_SetProfileCurrent(uint8_t channel, float demandCurrentA)
  8005e38:	46bd      	mov	sp, r7
  8005e3a:	f85d 7b04 	ldr.w	r7, [sp], #4
  8005e3e:	4770      	bx	lr
- 8005e40:	08012b20 	.word	0x08012b20
+ 8005e40:	08012b1c 	.word	0x08012b1c
  8005e44:	2000f878 	.word	0x2000f878
 
 08005e48 <PID_GetProfileCurrent>:
@@ -15374,7 +15374,7 @@ void uart_init(uart_instance_t *inst, UART_HandleTypeDef *huart)
  800689e:	3720      	adds	r7, #32
  80068a0:	46bd      	mov	sp, r7
  80068a2:	bdb0      	pop	{r4, r5, r7, pc}
- 80068a4:	08012898 	.word	0x08012898
+ 80068a4:	08012894 	.word	0x08012894
 
 080068a8 <uart_send>:
 
@@ -15616,7 +15616,7 @@ LoopForever:
   ldr r1, =_edata
  80069dc:	200001d8 	.word	0x200001d8
   ldr r2, =_sidata
- 80069e0:	08013000 	.word	0x08013000
+ 80069e0:	08012ff8 	.word	0x08012ff8
   ldr r2, =_sbss
  80069e4:	200001d8 	.word	0x200001d8
   ldr r4, =_ebss
@@ -24607,7 +24607,7 @@ HAL_StatusTypeDef HAL_RCC_ClockConfig(const RCC_ClkInitTypeDef  *RCC_ClkInitStru
  8009ea4:	40022000 	.word	0x40022000
  8009ea8:	40021000 	.word	0x40021000
  8009eac:	04c4b400 	.word	0x04c4b400
- 8009eb0:	08012b30 	.word	0x08012b30
+ 8009eb0:	08012b2c 	.word	0x08012b2c
  8009eb4:	20000004 	.word	0x20000004
  8009eb8:	20000008 	.word	0x20000008
 
@@ -24788,7 +24788,7 @@ uint32_t HAL_RCC_GetPCLK1Freq(void)
  8009fb8:	4618      	mov	r0, r3
  8009fba:	bd80      	pop	{r7, pc}
  8009fbc:	40021000 	.word	0x40021000
- 8009fc0:	08012b40 	.word	0x08012b40
+ 8009fc0:	08012b3c 	.word	0x08012b3c
 
 08009fc4 <HAL_RCC_GetPCLK2Freq>:
   * @note   Each time PCLK2 changes, this function must be called to update the
@@ -24815,7 +24815,7 @@ uint32_t HAL_RCC_GetPCLK2Freq(void)
  8009fe4:	4618      	mov	r0, r3
  8009fe6:	bd80      	pop	{r7, pc}
  8009fe8:	40021000 	.word	0x40021000
- 8009fec:	08012b40 	.word	0x08012b40
+ 8009fec:	08012b3c 	.word	0x08012b3c
 
 08009ff0 <RCC_GetSysClockFreqFromPLLSource>:
 /**
@@ -31066,7 +31066,7 @@ HAL_StatusTypeDef UART_SetConfig(UART_HandleTypeDef *huart)
  800c552:	bf00      	nop
  800c554:	40008000 	.word	0x40008000
  800c558:	00f42400 	.word	0x00f42400
- 800c55c:	08012b48 	.word	0x08012b48
+ 800c55c:	08012b44 	.word	0x08012b44
       }
       else
       {
@@ -34293,8 +34293,8 @@ static void UARTEx_SetNbDataToProcess(UART_HandleTypeDef *huart)
  800d8fc:	f85d 7b04 	ldr.w	r7, [sp], #4
  800d900:	4770      	bx	lr
  800d902:	bf00      	nop
- 800d904:	08012b60 	.word	0x08012b60
- 800d908:	08012b68 	.word	0x08012b68
+ 800d904:	08012b5c 	.word	0x08012b5c
+ 800d908:	08012b64 	.word	0x08012b64
 
 0800d90c <atof>:
  800d90c:	2100      	movs	r1, #0
@@ -34725,11 +34725,11 @@ static void UARTEx_SetNbDataToProcess(UART_HandleTypeDef *huart)
  800dd1c:	e7ee      	b.n	800dcfc <_printf_float+0x2a4>
  800dd1e:	bf00      	nop
  800dd20:	7fefffff 	.word	0x7fefffff
- 800dd24:	08012b74 	.word	0x08012b74
- 800dd28:	08012b70 	.word	0x08012b70
- 800dd2c:	08012b7c 	.word	0x08012b7c
- 800dd30:	08012b78 	.word	0x08012b78
- 800dd34:	08012b80 	.word	0x08012b80
+ 800dd24:	08012b70 	.word	0x08012b70
+ 800dd28:	08012b6c 	.word	0x08012b6c
+ 800dd2c:	08012b78 	.word	0x08012b78
+ 800dd30:	08012b74 	.word	0x08012b74
+ 800dd34:	08012b7c 	.word	0x08012b7c
  800dd38:	6da3      	ldr	r3, [r4, #88]	@ 0x58
  800dd3a:	f8dd a028 	ldr.w	sl, [sp, #40]	@ 0x28
  800dd3e:	4553      	cmp	r3, sl
@@ -35207,8 +35207,8 @@ static void UARTEx_SetNbDataToProcess(UART_HandleTypeDef *huart)
  800e1b4:	2500      	movs	r5, #0
  800e1b6:	f104 0619 	add.w	r6, r4, #25
  800e1ba:	e7f5      	b.n	800e1a8 <_printf_i+0x220>
- 800e1bc:	08012b82 	.word	0x08012b82
- 800e1c0:	08012b93 	.word	0x08012b93
+ 800e1bc:	08012b7e 	.word	0x08012b7e
+ 800e1c0:	08012b8f 	.word	0x08012b8f
 
 0800e1c4 <sniprintf>:
  800e1c4:	b40c      	push	{r2, r3}
@@ -35694,8 +35694,8 @@ static void UARTEx_SetNbDataToProcess(UART_HandleTypeDef *huart)
  800e640:	e782      	b.n	800e548 <_strtod_l+0x190>
  800e642:	f04f 0c01 	mov.w	ip, #1
  800e646:	e7f8      	b.n	800e63a <_strtod_l+0x282>
- 800e648:	08012db0 	.word	0x08012db0
- 800e64c:	08012ba4 	.word	0x08012ba4
+ 800e648:	08012dac 	.word	0x08012dac
+ 800e64c:	08012ba0 	.word	0x08012ba0
  800e650:	7ff00000 	.word	0x7ff00000
  800e654:	9a19      	ldr	r2, [sp, #100]	@ 0x64
  800e656:	1c51      	adds	r1, r2, #1
@@ -35985,13 +35985,13 @@ static void UARTEx_SetNbDataToProcess(UART_HandleTypeDef *huart)
  800e92c:	f04f 0b00 	mov.w	fp, #0
  800e930:	6013      	str	r3, [r2, #0]
  800e932:	e76b      	b.n	800e80c <_strtod_l+0x454>
- 800e934:	08012b7d 	.word	0x08012b7d
- 800e938:	08012d9c 	.word	0x08012d9c
- 800e93c:	08012b75 	.word	0x08012b75
- 800e940:	08012c5e 	.word	0x08012c5e
- 800e944:	08012c5a 	.word	0x08012c5a
- 800e948:	08012f28 	.word	0x08012f28
- 800e94c:	08012f00 	.word	0x08012f00
+ 800e934:	08012b79 	.word	0x08012b79
+ 800e938:	08012d98 	.word	0x08012d98
+ 800e93c:	08012b71 	.word	0x08012b71
+ 800e940:	08012c5a 	.word	0x08012c5a
+ 800e944:	08012c56 	.word	0x08012c56
+ 800e948:	08012f20 	.word	0x08012f20
+ 800e94c:	08012ef8 	.word	0x08012ef8
  800e950:	7ff00000 	.word	0x7ff00000
  800e954:	7ca00000 	.word	0x7ca00000
  800e958:	7fefffff 	.word	0x7fefffff
@@ -36277,7 +36277,7 @@ static void UARTEx_SetNbDataToProcess(UART_HandleTypeDef *huart)
  800ec06:	2322      	movs	r3, #34	@ 0x22
  800ec08:	6013      	str	r3, [r2, #0]
  800ec0a:	e603      	b.n	800e814 <_strtod_l+0x45c>
- 800ec0c:	08012dc8 	.word	0x08012dc8
+ 800ec0c:	08012dc0 	.word	0x08012dc0
  800ec10:	fffffc02 	.word	0xfffffc02
  800ec14:	39500000 	.word	0x39500000
  800ec18:	7ff00000 	.word	0x7ff00000
@@ -36708,7 +36708,7 @@ static void UARTEx_SetNbDataToProcess(UART_HandleTypeDef *huart)
  800f080:	d1f6      	bne.n	800f070 <_strtol_l.isra.0+0xd8>
  800f082:	f8c8 1000 	str.w	r1, [r8]
  800f086:	e794      	b.n	800efb2 <_strtol_l.isra.0+0x1a>
- 800f088:	08012df1 	.word	0x08012df1
+ 800f088:	08012de9 	.word	0x08012de9
 
 0800f08c <strtol>:
  800f08c:	4613      	mov	r3, r2
@@ -36800,7 +36800,7 @@ static void UARTEx_SetNbDataToProcess(UART_HandleTypeDef *huart)
  800f142:	d1e7      	bne.n	800f114 <strncasecmp+0x8>
  800f144:	bd70      	pop	{r4, r5, r6, pc}
  800f146:	bf00      	nop
- 800f148:	08012df1 	.word	0x08012df1
+ 800f148:	08012de9 	.word	0x08012de9
 
 0800f14c <strncmp>:
  800f14c:	b510      	push	{r4, lr}
@@ -36855,8 +36855,8 @@ static void UARTEx_SetNbDataToProcess(UART_HandleTypeDef *huart)
  800f1c4:	e8bd 41f0 	ldmia.w	sp!, {r4, r5, r6, r7, r8, lr}
  800f1c8:	f000 b806 	b.w	800f1d8 <__strtok_r>
  800f1cc:	20000188 	.word	0x20000188
- 800f1d0:	08012ba6 	.word	0x08012ba6
- 800f1d4:	08012bbd 	.word	0x08012bbd
+ 800f1d0:	08012ba2 	.word	0x08012ba2
+ 800f1d4:	08012bb9 	.word	0x08012bb9
 
 0800f1d8 <__strtok_r>:
  800f1d8:	b5f0      	push	{r4, r5, r6, r7, lr}
@@ -36934,10 +36934,10 @@ static void UARTEx_SetNbDataToProcess(UART_HandleTypeDef *huart)
  800f26e:	4798      	blx	r3
  800f270:	3601      	adds	r6, #1
  800f272:	e7f2      	b.n	800f25a <__libc_init_array+0x1e>
- 800f274:	08012ff8 	.word	0x08012ff8
- 800f278:	08012ff8 	.word	0x08012ff8
- 800f27c:	08012ff8 	.word	0x08012ff8
- 800f280:	08012ffc 	.word	0x08012ffc
+ 800f274:	08012ff0 	.word	0x08012ff0
+ 800f278:	08012ff0 	.word	0x08012ff0
+ 800f27c:	08012ff0 	.word	0x08012ff0
+ 800f280:	08012ff4 	.word	0x08012ff4
 
 0800f284 <__retarget_lock_init_recursive>:
  800f284:	4770      	bx	lr
@@ -37003,9 +37003,9 @@ static void UARTEx_SetNbDataToProcess(UART_HandleTypeDef *huart)
  800f2f8:	e7f3      	b.n	800f2e2 <__assert_func+0x12>
  800f2fa:	bf00      	nop
  800f2fc:	20000188 	.word	0x20000188
- 800f300:	08012c1f 	.word	0x08012c1f
- 800f304:	08012c2c 	.word	0x08012c2c
- 800f308:	08012c5a 	.word	0x08012c5a
+ 800f300:	08012c1b 	.word	0x08012c1b
+ 800f304:	08012c28 	.word	0x08012c28
+ 800f308:	08012c56 	.word	0x08012c56
 
 0800f30c <quorem>:
  800f30c:	e92d 4ff7 	stmdb	sp!, {r0, r1, r2, r4, r5, r6, r7, r8, r9, sl, fp, lr}
@@ -37392,15 +37392,15 @@ static void UARTEx_SetNbDataToProcess(UART_HandleTypeDef *huart)
  800f6e4:	3fc68a28 	.word	0x3fc68a28
  800f6e8:	509f79fb 	.word	0x509f79fb
  800f6ec:	3fd34413 	.word	0x3fd34413
- 800f6f0:	08012ba6 	.word	0x08012ba6
- 800f6f4:	08012c68 	.word	0x08012c68
+ 800f6f0:	08012ba2 	.word	0x08012ba2
+ 800f6f4:	08012c64 	.word	0x08012c64
  800f6f8:	7ff00000 	.word	0x7ff00000
- 800f6fc:	08012b81 	.word	0x08012b81
+ 800f6fc:	08012b7d 	.word	0x08012b7d
  800f700:	3ff80000 	.word	0x3ff80000
- 800f704:	08012f28 	.word	0x08012f28
- 800f708:	08012cc0 	.word	0x08012cc0
- 800f70c:	08012c64 	.word	0x08012c64
- 800f710:	08012b80 	.word	0x08012b80
+ 800f704:	08012f20 	.word	0x08012f20
+ 800f708:	08012cbc 	.word	0x08012cbc
+ 800f70c:	08012c60 	.word	0x08012c60
+ 800f710:	08012b7c 	.word	0x08012b7c
  800f714:	f8d9 301c 	ldr.w	r3, [r9, #28]
  800f718:	6018      	str	r0, [r3, #0]
  800f71a:	9b03      	ldr	r3, [sp, #12]
@@ -37629,8 +37629,8 @@ static void UARTEx_SetNbDataToProcess(UART_HandleTypeDef *huart)
  800f998:	e9cd 0104 	strd	r0, r1, [sp, #16]
  800f99c:	e7c4      	b.n	800f928 <_dtoa_r+0x508>
  800f99e:	bf00      	nop
- 800f9a0:	08012f28 	.word	0x08012f28
- 800f9a4:	08012f00 	.word	0x08012f00
+ 800f9a0:	08012f20 	.word	0x08012f20
+ 800f9a4:	08012ef8 	.word	0x08012ef8
  800f9a8:	3ff00000 	.word	0x3ff00000
  800f9ac:	40240000 	.word	0x40240000
  800f9b0:	401c0000 	.word	0x401c0000
@@ -38259,8 +38259,8 @@ static void UARTEx_SetNbDataToProcess(UART_HandleTypeDef *huart)
  800ffb0:	f000 fe6c 	bl	8010c8c <__multadd>
  800ffb4:	9002      	str	r0, [sp, #8]
  800ffb6:	e7eb      	b.n	800ff90 <_dtoa_r+0xb70>
- 800ffb8:	08012cc0 	.word	0x08012cc0
- 800ffbc:	08012c5b 	.word	0x08012c5b
+ 800ffb8:	08012cbc 	.word	0x08012cbc
+ 800ffbc:	08012c57 	.word	0x08012c57
 
 0800ffc0 <rshift>:
  800ffc0:	6903      	ldr	r3, [r0, #16]
@@ -38629,9 +38629,9 @@ static void UARTEx_SetNbDataToProcess(UART_HandleTypeDef *huart)
  801033a:	2b00      	cmp	r3, #0
  801033c:	d1dd      	bne.n	80102fa <__gethex+0x26a>
  801033e:	e7ee      	b.n	801031e <__gethex+0x28e>
- 8010340:	08012ba4 	.word	0x08012ba4
- 8010344:	08012cc0 	.word	0x08012cc0
- 8010348:	08012cd1 	.word	0x08012cd1
+ 8010340:	08012ba0 	.word	0x08012ba0
+ 8010344:	08012cbc 	.word	0x08012cbc
+ 8010348:	08012ccd 	.word	0x08012ccd
  801034c:	1e6f      	subs	r7, r5, #1
  801034e:	f1b9 0f00 	cmp.w	r9, #0
  8010352:	d130      	bne.n	80103b6 <__gethex+0x326>
@@ -38766,7 +38766,7 @@ static void UARTEx_SetNbDataToProcess(UART_HandleTypeDef *huart)
  80104a6:	42b0      	cmp	r0, r6
  80104a8:	dbe7      	blt.n	801047a <__gethex+0x3ea>
  80104aa:	e7f0      	b.n	801048e <__gethex+0x3fe>
- 80104ac:	08012cc0 	.word	0x08012cc0
+ 80104ac:	08012cbc 	.word	0x08012cbc
 
 080104b0 <L_shift>:
  80104b0:	f1c2 0208 	rsb	r2, r2, #8
@@ -39208,11 +39208,11 @@ static void UARTEx_SetNbDataToProcess(UART_HandleTypeDef *huart)
  80108c4:	4638      	mov	r0, r7
  80108c6:	f7fd fb5f 	bl	800df88 <_printf_i>
  80108ca:	e7ed      	b.n	80108a8 <_svfiprintf_r+0x1c0>
- 80108cc:	08012d31 	.word	0x08012d31
- 80108d0:	08012d3b 	.word	0x08012d3b
+ 80108cc:	08012d2d 	.word	0x08012d2d
+ 80108d0:	08012d37 	.word	0x08012d37
  80108d4:	0800da59 	.word	0x0800da59
  80108d8:	08010633 	.word	0x08010633
- 80108dc:	08012d37 	.word	0x08012d37
+ 80108dc:	08012d33 	.word	0x08012d33
 
 080108e0 <malloc>:
  80108e0:	4b02      	ldr	r3, [pc, #8]	@ (80108ec <malloc+0xc>)
@@ -39601,8 +39601,8 @@ static void UARTEx_SetNbDataToProcess(UART_HandleTypeDef *huart)
  8010c38:	e9c0 3303 	strd	r3, r3, [r0, #12]
  8010c3c:	e7f7      	b.n	8010c2e <_Balloc+0x66>
  8010c3e:	bf00      	nop
- 8010c40:	08012ba6 	.word	0x08012ba6
- 8010c44:	08012d42 	.word	0x08012d42
+ 8010c40:	08012ba2 	.word	0x08012ba2
+ 8010c44:	08012d3e 	.word	0x08012d3e
 
 08010c48 <_Bfree>:
  8010c48:	b570      	push	{r4, r5, r6, lr}
@@ -39630,8 +39630,8 @@ static void UARTEx_SetNbDataToProcess(UART_HandleTypeDef *huart)
  8010c7c:	6021      	str	r1, [r4, #0]
  8010c7e:	f843 4022 	str.w	r4, [r3, r2, lsl #2]
  8010c82:	bd70      	pop	{r4, r5, r6, pc}
- 8010c84:	08012ba6 	.word	0x08012ba6
- 8010c88:	08012d42 	.word	0x08012d42
+ 8010c84:	08012ba2 	.word	0x08012ba2
+ 8010c88:	08012d3e 	.word	0x08012d3e
 
 08010c8c <__multadd>:
  8010c8c:	e92d 41f0 	stmdb	sp!, {r4, r5, r6, r7, r8, lr}
@@ -39685,8 +39685,8 @@ static void UARTEx_SetNbDataToProcess(UART_HandleTypeDef *huart)
  8010d08:	6125      	str	r5, [r4, #16]
  8010d0a:	4620      	mov	r0, r4
  8010d0c:	e8bd 81f0 	ldmia.w	sp!, {r4, r5, r6, r7, r8, pc}
- 8010d10:	08012cc0 	.word	0x08012cc0
- 8010d14:	08012d42 	.word	0x08012d42
+ 8010d10:	08012cbc 	.word	0x08012cbc
+ 8010d14:	08012d3e 	.word	0x08012d3e
 
 08010d18 <__s2b>:
  8010d18:	e92d 43f8 	stmdb	sp!, {r3, r4, r5, r6, r7, r8, r9, lr}
@@ -39747,8 +39747,8 @@ static void UARTEx_SetNbDataToProcess(UART_HandleTypeDef *huart)
  8010d9c:	f7ff ff76 	bl	8010c8c <__multadd>
  8010da0:	e7ee      	b.n	8010d80 <__s2b+0x68>
  8010da2:	bf00      	nop
- 8010da4:	08012cc0 	.word	0x08012cc0
- 8010da8:	08012d42 	.word	0x08012d42
+ 8010da4:	08012cbc 	.word	0x08012cbc
+ 8010da8:	08012d3e 	.word	0x08012d3e
 
 08010dac <__hi0bits>:
  8010dac:	f5b0 3f80 	cmp.w	r0, #65536	@ 0x10000
@@ -39838,8 +39838,8 @@ static void UARTEx_SetNbDataToProcess(UART_HandleTypeDef *huart)
  8010e62:	6103      	str	r3, [r0, #16]
  8010e64:	bd10      	pop	{r4, pc}
  8010e66:	bf00      	nop
- 8010e68:	08012cc0 	.word	0x08012cc0
- 8010e6c:	08012d42 	.word	0x08012d42
+ 8010e68:	08012cbc 	.word	0x08012cbc
+ 8010e6c:	08012d3e 	.word	0x08012d3e
 
 08010e70 <__multiply>:
  8010e70:	e92d 4ff0 	stmdb	sp!, {r4, r5, r6, r7, r8, r9, sl, fp, lr}
@@ -39958,8 +39958,8 @@ static void UARTEx_SetNbDataToProcess(UART_HandleTypeDef *huart)
  8010fa6:	e79f      	b.n	8010ee8 <__multiply+0x78>
  8010fa8:	3e01      	subs	r6, #1
  8010faa:	e7a1      	b.n	8010ef0 <__multiply+0x80>
- 8010fac:	08012cc0 	.word	0x08012cc0
- 8010fb0:	08012d42 	.word	0x08012d42
+ 8010fac:	08012cbc 	.word	0x08012cbc
+ 8010fb0:	08012d3e 	.word	0x08012d3e
 
 08010fb4 <__pow5mult>:
  8010fb4:	e92d 43f8 	stmdb	sp!, {r3, r4, r5, r6, r7, r8, r9, lr}
@@ -40027,9 +40027,9 @@ static void UARTEx_SetNbDataToProcess(UART_HandleTypeDef *huart)
  8011054:	4630      	mov	r0, r6
  8011056:	e8bd 83f8 	ldmia.w	sp!, {r3, r4, r5, r6, r7, r8, r9, pc}
  801105a:	bf00      	nop
- 801105c:	08012ef4 	.word	0x08012ef4
- 8011060:	08012ba6 	.word	0x08012ba6
- 8011064:	08012d42 	.word	0x08012d42
+ 801105c:	08012eec 	.word	0x08012eec
+ 8011060:	08012ba2 	.word	0x08012ba2
+ 8011064:	08012d3e 	.word	0x08012d3e
 
 08011068 <__lshift>:
  8011068:	e92d 47f0 	stmdb	sp!, {r4, r5, r6, r7, r8, r9, sl, lr}
@@ -40108,8 +40108,8 @@ static void UARTEx_SetNbDataToProcess(UART_HandleTypeDef *huart)
  8011132:	d8f9      	bhi.n	8011128 <__lshift+0xc0>
  8011134:	e7ea      	b.n	801110c <__lshift+0xa4>
  8011136:	bf00      	nop
- 8011138:	08012cc0 	.word	0x08012cc0
- 801113c:	08012d42 	.word	0x08012d42
+ 8011138:	08012cbc 	.word	0x08012cbc
+ 801113c:	08012d3e 	.word	0x08012d3e
 
 08011140 <__mcmp>:
  8011140:	690a      	ldr	r2, [r1, #16]
@@ -40245,8 +40245,8 @@ static void UARTEx_SetNbDataToProcess(UART_HandleTypeDef *huart)
  8011292:	3f01      	subs	r7, #1
  8011294:	e7e7      	b.n	8011266 <__mdiff+0xee>
  8011296:	bf00      	nop
- 8011298:	08012cc0 	.word	0x08012cc0
- 801129c:	08012d42 	.word	0x08012d42
+ 8011298:	08012cbc 	.word	0x08012cbc
+ 801129c:	08012d3e 	.word	0x08012d3e
 
 080112a0 <__ulp>:
  80112a0:	b082      	sub	sp, #8
@@ -40396,8 +40396,8 @@ static void UARTEx_SetNbDataToProcess(UART_HandleTypeDef *huart)
  801141e:	f7ff fcc5 	bl	8010dac <__hi0bits>
  8011422:	ebc0 1042 	rsb	r0, r0, r2, lsl #5
  8011426:	e7e5      	b.n	80113f4 <__d2b+0x74>
- 8011428:	08012cc0 	.word	0x08012cc0
- 801142c:	08012d42 	.word	0x08012d42
+ 8011428:	08012cbc 	.word	0x08012cbc
+ 801142c:	08012d3e 	.word	0x08012d3e
 
 08011430 <__ratio>:
  8011430:	e92d 4ff0 	stmdb	sp!, {r4, r5, r6, r7, r8, r9, sl, fp, lr}
@@ -41095,11 +41095,11 @@ static void UARTEx_SetNbDataToProcess(UART_HandleTypeDef *huart)
  8011a54:	4630      	mov	r0, r6
  8011a56:	f7fc fa97 	bl	800df88 <_printf_i>
  8011a5a:	e7e4      	b.n	8011a26 <_vfiprintf_r+0x1e6>
- 8011a5c:	08012d31 	.word	0x08012d31
- 8011a60:	08012d3b 	.word	0x08012d3b
+ 8011a5c:	08012d2d 	.word	0x08012d2d
+ 8011a60:	08012d37 	.word	0x08012d37
  8011a64:	0800da59 	.word	0x0800da59
  8011a68:	0801181b 	.word	0x0801181b
- 8011a6c:	08012d37 	.word	0x08012d37
+ 8011a6c:	08012d33 	.word	0x08012d33
 
 08011a70 <_malloc_usable_size_r>:
  8011a70:	f851 3c04 	ldr.w	r3, [r1, #-4]
