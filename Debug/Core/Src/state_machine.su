@@ -10,5 +10,5 @@
 ../Core/Src/state_machine.c:175:9:SM_Fire	8	static
 ../Core/Src/state_machine.c:191:6:SM_Stop	4	static
 ../Core/Src/state_machine.c:201:6:SM_NotifyShotComplete	4	static
-../Core/Src/state_machine.c:209:6:SM_PollFaults	8	static
-../Core/Src/state_machine.c:226:9:SM_ClearFault	8	static
+../Core/Src/state_machine.c:209:6:SM_PollFaults	8	static,ignoring_inline_asm
+../Core/Src/state_machine.c:264:9:SM_ClearFault	8	static

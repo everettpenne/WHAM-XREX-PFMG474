@@ -120,28 +120,32 @@ extern "C" {
  * 1.0s) is a first guess, not derived from any real Transrex/magnet
  * requirement -- see that macro's own comment.
  *
- * ALSO NOTE TO REVISIT -- a narrow, identified-not-fixed race: g_state
- * is a plain (non-volatile, unguarded) global read/written from BOTH
- * main.c's main loop AND PID_Update() (HRTIM1_Master_IRQn, priority 1
- * -- can preempt the main loop at any instruction). SM_PollFaults()'s
- * own "if already FAULT, return" check makes a genuine double-entry
- * INTO FAULT impossible, but a narrow window remains where the main
- * loop reads g_state (not yet FAULT), gets preempted by Master's own
- * regular 1kHz interrupt right there, that ISR's own SM_PollFaults()
- * call detects the same real fault and completes EnterFault() first
- * (possibly starting a General-Fault ramp-down), and THEN the main
- * loop resumes and -- since ITS OWN check already passed, before
- * preemption -- calls EnterFault() a second, redundant time, which
- * would see g_stateBeforeFault == SM_STATE_FAULT (not SM_STATE_FIRING)
- * and call PID_Stop() immediately, aborting a ramp-down that had just
- * legitimately started. SAFETY-NEUTRAL, not a hazard, if this ever
- * actually happens: the physical outcome is still "output off," just
- * via an immediate hard stop instead of the intended graceful ramp in
- * this one narrow, low-probability timing window -- not fixed this
- * round given that outcome, but a real gap worth closing properly
- * (e.g. a critical section around the read-check-transition in
- * SM_PollFaults()) if this state machine's timing guarantees ever need
- * to be more rigorous than "safe in the worst case."
+ * FIXED 2026-09-13 (same day, later still): g_state is read/written from
+ * BOTH main.c's main loop AND PID_Update() (HRTIM1_Master_IRQn, priority
+ * 1 -- can preempt the main loop at any instruction). This used to be a
+ * genuine race: the main loop could read g_state (not yet FAULT), get
+ * preempted by Master's own regular tick right there, that ISR's own
+ * SM_PollFaults() call would detect the same real fault and complete
+ * EnterFault() first (possibly starting a General-Fault ramp-down), and
+ * THEN the main loop would resume and -- since ITS OWN check already
+ * passed, before preemption -- call EnterFault() a second, redundant
+ * time, which would see g_stateBeforeFault == SM_STATE_FAULT (not
+ * SM_STATE_FIRING) and call PID_Stop() immediately, silently replacing
+ * a just-started graceful ramp-down with an abrupt cutoff. This was
+ * first (wrongly) judged "safety-neutral" here on the theory that the
+ * physical end state ("output off") was unchanged either way -- direct
+ * correction: the whole point of a linear ramp instead of an instant
+ * stop is to avoid inductive/mechanical stress, so silently substituting
+ * the abrupt path for the graceful one IS the hazard, not a neutral
+ * outcome. Fixed properly, not just documented: SM_PollFaults() (.c)
+ * now wraps its entire read-check-transition sequence -- including the
+ * EnterFault() call itself -- in __disable_irq()/__enable_irq() (this
+ * codebase's own established critical-section pattern, see boot_jump.c),
+ * so whichever context (main loop or ISR) gets there first now runs the
+ * whole check-and-transition to completion before the other context's
+ * own call can even read g_state. This makes the double-entry race
+ * structurally impossible, not merely unlikely -- see SM_PollFaults()'s
+ * own comment in state_machine.c for the full reasoning.
  * -------------------------------------------------------------------------- */
 
 typedef enum

@@ -11,4 +11,4 @@
 ../Core/Src/state_machine.c:191:6:SM_Stop	3
 ../Core/Src/state_machine.c:201:6:SM_NotifyShotComplete	2
 ../Core/Src/state_machine.c:209:6:SM_PollFaults	4
-../Core/Src/state_machine.c:226:9:SM_ClearFault	4
+../Core/Src/state_machine.c:264:9:SM_ClearFault	4

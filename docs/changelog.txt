@@ -1,6 +1,78 @@
 WHAM-XREX-PFMG474 Firmware Changelog
 =====================================
 
+2026-09-13  —  Fixed a real race condition in SM_PollFaults() that could
+               silently replace a General-Fault ramp-down with an abrupt
+               cutoff (build verified; real-hardware verification PENDING
+               -- board still disconnected)
+-----------------------------------------------------------------------
+  Change:  The previous entry (General Fault ramp-down, below) noted in
+        passing that g_state (state_machine.c) is read/written from BOTH
+        main.c's main loop and PID_Update() (HRTIM1_Master_IRQn, priority
+        1, which can preempt the main loop at any instruction), and that
+        a narrow window existed where the main loop could read g_state
+        (not yet FAULT), get preempted by the ISR's own SM_PollFaults()
+        call completing EnterFault() first (possibly starting a General-
+        Fault ramp-down), and then resume and -- since its own check had
+        already passed, before preemption -- call EnterFault() a second,
+        redundant time. That second call would see g_stateBeforeFault ==
+        SM_STATE_FAULT (not SM_STATE_FIRING, since the first legitimate
+        call had already transitioned it) and take HandleGeneralFault()'s
+        "else" branch, calling PID_Stop() immediately and silently
+        replacing the just-started graceful ramp-down with an instant
+        cutoff.
+
+        That entry characterized this as "SAFETY-NEUTRAL... not a
+        hazard," on the reasoning that the physical end state ("output
+        off") was the same either way. Directly corrected: "This worst
+        case is actually quite bad -- we need to guarantee smooth
+        behavior in this fault case." Right call -- the whole point of
+        specifying a linear ramp instead of an instant stop was to avoid
+        inductive/mechanical stress on the magnet and supply; a race that
+        silently substitutes the abrupt path for the graceful one IS the
+        hazard the ramp-down was built to prevent, not a neutral outcome.
+        Documenting a known safety-relevant race instead of fixing it was
+        the wrong call, and it's fixed properly now, not just described.
+
+  Fix:  SM_PollFaults() (state_machine.c) now wraps its entire read-
+        check-transition sequence -- the "already FAULT?" check, both
+        fault-source reads, and the EnterFault() call itself if triggered
+        -- in __disable_irq()/__enable_irq(), this codebase's own already-
+        established critical-section pattern (see boot_jump.c's VTOR/
+        bootloader-jump sequence, and main.c). Whichever context (main
+        loop or ISR) reaches SM_PollFaults() first now runs the entire
+        function to completion before the other context's own call can
+        even read g_state -- the double-entry race is now structurally
+        impossible, not merely low-probability. EnterFault()'s own work
+        (PFM_ForceStop(), the fault-type dispatch, PID_BeginFaultRamp-
+        Down()) is all fast, non-blocking register/flag writes with no
+        dependency on any interrupt firing to complete, so it's safe to
+        run with IRQs globally disabled. Calling this from inside an ISR
+        (the PID_Update() call site) is fine too -- __disable_irq() while
+        already inside an ISR is idempotent for the brief window this
+        takes, matching how boot_jump.c already calls it unconditionally
+        without special-casing ISR vs. main context.
+
+        state_machine.h's "NOTE TO REVISIT" comment on this race has been
+        rewritten to describe the fix rather than the (now stale, and
+        wrong) "safety-neutral, not fixed this round" characterization.
+
+  Verify:  Build-verified clean (zero warnings). Real-hardware
+        verification is still pending (board disconnected this session)
+        -- see pending-hardware-calibration project memory. When the
+        board is back: no new test procedure beyond the General Fault
+        ramp-down's own verification already documented (previous entry,
+        and docs/command_reference.md) -- this fix has no independent
+        behavior to test on its own; it just guarantees the ramp-down
+        path is the one that actually runs, every time, instead of
+        occasionally losing a race to an immediate stop. A dedicated
+        stress test (rapid-fire faults right at a Master tick boundary,
+        if that's practical to induce) would be the closest thing to a
+        direct check, but isn't required to consider this fixed -- the
+        fix makes the race structurally impossible by inspection, not
+        merely probabilistically rare.
+-----------------------------------------------------------------------
+
 2026-09-13  —  General Fault populated: open-loop linear ramp-down to
                0A on every actively-outputting channel, then disable
                (build verified; real-hardware verification PENDING --

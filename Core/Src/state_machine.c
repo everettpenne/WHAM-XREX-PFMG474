@@ -208,8 +208,44 @@ void SM_NotifyShotComplete(void)
 
 void SM_PollFaults(void)
 {
+    /* Critical section: this function runs from BOTH the main loop
+       (background context) and PID_Update() (HRTIM1_Master_IRQn, priority
+       1, which can preempt the main loop at any instruction). Without a
+       guard, the main loop could read g_state (not yet FAULT), get
+       preempted right there by the ISR's own call to this function
+       completing EnterFault() first (possibly starting a General-Fault
+       ramp-down), and then resume and -- since its OWN check already
+       passed, before preemption -- call EnterFault() a second, redundant
+       time. That second call would see g_stateBeforeFault == SM_STATE_FAULT
+       (not SM_STATE_FIRING, since the first legitimate call already
+       transitioned it) and take HandleGeneralFault()'s "else" branch,
+       calling PID_Stop() immediately and silently replacing the just-
+       started graceful ramp-down with an abrupt cutoff. That outcome was
+       initially (wrongly) judged "safety-neutral" here -- corrected
+       directly: the whole point of a linear ramp instead of an instant
+       stop is to avoid inductive/mechanical stress, so silently
+       substituting the abrupt path IS the hazard, not a neutral one.
+
+       __disable_irq()/__enable_irq() is this codebase's own established
+       critical-section pattern (see boot_jump.c, main.c). Wrapping the
+       entire read-check-transition sequence -- including EnterFault()
+       itself -- makes the double-entry race structurally impossible
+       rather than merely unlikely: whichever context (main loop or ISR)
+       gets here first now runs this whole function to completion before
+       the other context's own call can even read g_state. EnterFault()'s
+       own work (PFM_ForceStop(), the fault-type dispatch,
+       PID_BeginFaultRampDown()) is all fast, non-blocking register/flag
+       writes with no dependency on any interrupt firing to complete, so
+       it's safe to run with IRQs globally disabled. Calling this from
+       inside an ISR (the PID_Update() call site) is fine too --
+       __disable_irq() while already inside an ISR is idempotent for the
+       brief window this takes, same as boot_jump.c's own unconditional
+       use without special-casing ISR vs. main context. */
+    __disable_irq();
+
     if (g_state == SM_STATE_FAULT)
     {
+        __enable_irq();
         return;   /* already latched -- nothing new to do */
     }
 
@@ -221,6 +257,8 @@ void SM_PollFaults(void)
     {
         EnterFault(SM_FAULT_GENERAL);
     }
+
+    __enable_irq();
 }
 
 uint8_t SM_ClearFault(void)
