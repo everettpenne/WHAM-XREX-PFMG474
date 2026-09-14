@@ -178,6 +178,19 @@ decision (see `docs/command_reference.md`'s `FIRE` entry).
     a new console command" section before adding one (console
     meta-command names must never collide with a real SCPI mnemonic's
     leading token -- that section explains exactly why and how).
+  - `wham_llm_console.py` -- added 2026-09-14, SIDE PROJECT (lower
+    priority than the main firmware work, not yet exercised against
+    real hardware or a real LLM server -- see docs/changelog.txt's
+    2026-09-14 entry). An alternate front end to `wham_console.py`
+    where the operator talks in plain English to a small local LLM
+    (Ollama/LM Studio), which decides which `wham_console.py` command
+    lines to run; drives a real `WhamConsole` instance unmodified, so
+    it adds no new wire behavior of its own -- see its own header
+    comment for the full design (system prompt, JSON action contract,
+    safety gate). Its own safety gate and `wham_console.py`'s
+    `_is_dangerous()` share one source of truth as of the 2026-09-14
+    fix below -- keep it that way; don't reintroduce a separate,
+    driftable dangerous-command list in this file.
   - `scpi.py` -- a minimal interactive serial terminal (not written by
     an agent; predates this documentation pass, and predates
     `wham_console.py` above). Superseded by `wham_console.py` for

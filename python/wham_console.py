@@ -510,14 +510,35 @@ def generate_multi_channel_plot(channel_rows, metas, out_path):
 DANGEROUS_EXACT = {"FIRE", "BOOT"}
 
 
-def _is_dangerous(first_token):
+def _is_dangerous(command):
     """Best-effort heuristic, NOT a clone of cmd_parser.c's scpi_match()
-    -- see this function's own limitation note. Catches: FIRE, BOOT,
-    and PID:START/PID:PROFILE:START in any valid SCPI short/long form
-    (the mandatory short form for "STARt" is always "STAR", so
-    matching the final colon-segment's prefix covers every valid
-    on-wire spelling of that leaf regardless of how earlier segments
-    -- PID, PROFILE -- are themselves abbreviated).
+    -- see this function's own limitation note. Takes the FULL command
+    line (not just its first token) because one of its checks --
+    channel-enable, below -- needs to look at an argument, not just
+    the mnemonic. Catches:
+      - FIRE, BOOT (exact).
+      - PID:START / PID:PROFILE:START, in any valid SCPI short/long
+        form (the mandatory short form for "STARt" is always "STAR",
+        so matching the final colon-segment's prefix covers every
+        valid on-wire spelling of that leaf regardless of how earlier
+        segments -- PID, PROFILE -- are themselves abbreviated).
+      - PID:CHANnel:ENAble <ch> <1|nonzero> -- turning a channel's
+        output ON. This is real, immediate hardware effect if a loop
+        is already running (PID_SetChannelEnable() drives
+        HRTIM1_SetChannelOutputEnable() directly, unconditionally --
+        see pid.c), so it belongs in the same danger class as
+        FIRE/PID:START even though it doesn't itself start the state
+        machine. Turning a channel OFF is deliberately never gated
+        (always the safe direction, matching do_enable()'s own
+        docstring) -- a malformed/unparseable enable value is treated
+        as dangerous, not silently waved through.
+
+    THIS is the single source of truth for "dangerous" on the wire --
+    both this console's own raw passthrough/wrapper commands (via
+    _query_print(), below) AND wham_llm_console.py's LLM-proposed
+    actions consult it, specifically so an LLM front end can't bypass
+    a gate just by phrasing a command differently than a human would
+    (e.g. raw `PID:CHANnel:ENAble` instead of the `enable` wrapper).
 
     KNOWN LIMITATION: this is a small, explicit heuristic, not a full
     reimplementation of the firmware's own short/long-form matcher --
@@ -525,11 +546,25 @@ def _is_dangerous(first_token):
     automatically. If a new command is added that begins real output
     (matching FIRE/PID:START's danger level), add it here explicitly
     -- see "Adding a new console command" below."""
+    command = command.strip()
+    first_token = command.split(None, 1)[0] if command else ""
     t = first_token.upper().lstrip(":")
     if t in DANGEROUS_EXACT:
         return True
     segs = t.split(":")
-    return segs[0] == "PID" and len(segs) >= 2 and segs[-1].startswith("STAR")
+    if segs[0] != "PID" or len(segs) < 2:
+        return False
+    if segs[-1].startswith("STAR"):
+        return True
+    if len(segs) >= 3 and segs[1].startswith("CHAN") and segs[-1].startswith("ENA"):
+        args = command.split()[1:]
+        if len(args) < 2:
+            return True  # malformed -- fail closed, don't wave it through
+        try:
+            return int(args[1]) != 0
+        except ValueError:
+            return True  # unparseable value -- fail closed
+    return False
 
 
 class WhamConsole(cmd.Cmd):
@@ -688,8 +723,7 @@ class WhamConsole(cmd.Cmd):
         every wrapper command below -- one place that applies the
         danger-confirmation gate, prints the reply, and decorates an
         ERR reply with its known meaning."""
-        first_token = command.strip().split(None, 1)[0] if command.strip() else ""
-        if _is_dangerous(first_token):
+        if _is_dangerous(command):
             if not self._confirm(f"'{command.strip()}' will command real PWM output. Proceed?"):
                 print("Cancelled.")
                 return None
@@ -901,10 +935,13 @@ class WhamConsole(cmd.Cmd):
         waveform) or a 0A demand current (still drives a real PFM
         waveform, at the turn-on floor). Takes effect on the NEXT
         `start`/`shot` if the loop isn't running yet; takes effect
-        IMMEDIATELY, live, if it is -- turning a channel back on while
-        the loop is already running asks to confirm first (see
-        `confirm`), since that's a real, immediate new output; turning
-        one off never asks (always the safe direction)."""
+        IMMEDIATELY, live, if it is -- turning a channel back on asks
+        to confirm first (via _query_print()'s shared _is_dangerous()
+        gate, same as `start`/`FIRE` -- NOT a bespoke confirm here
+        anymore, so an operator or LLM front end can't get a different
+        answer by phrasing this as raw SCPI instead of this wrapper);
+        turning one off never asks (always the safe direction --
+        _is_dangerous() only matches the ON case)."""
         if not self._require_link():
             return
         parts = shlex.split(arg)
@@ -913,11 +950,6 @@ class WhamConsole(cmd.Cmd):
             return
         ch, state = parts
         turning_on = state.lower() == "on"
-        if turning_on and not self._confirm(
-                f"Enabling channel {ch}'s output -- if the loop is already running, "
-                f"this takes effect immediately. Proceed?"):
-            print("Cancelled.")
-            return
         reply = self._query_print(f"PID:CHANNEL:ENABLE {ch} {1 if turning_on else 0}")
         if reply and not is_err(reply):
             self.channel_config.setdefault(int(ch), {})["enabled"] = turning_on

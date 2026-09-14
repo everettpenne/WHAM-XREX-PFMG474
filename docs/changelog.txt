@@ -1,6 +1,84 @@
 WHAM-XREX-PFMG474 Firmware Changelog
 =====================================
 
+2026-09-14  —  New wham_llm_console.py (LLM-fronted operator console,
+               side project); closed a safety-gate bypass shared with
+               wham_console.py's own raw-SCPI passthrough
+-----------------------------------------------------------------------
+  Change:  First commit of python/wham_llm_console.py -- an alternate,
+        purely additive front end to wham_console.py where the operator
+        talks in plain English to a small local LLM (Ollama/LM Studio,
+        OpenAI-compatible /v1/chat/completions), which decides which
+        wham_console.py command lines to run and reports results back in
+        plain English. Drives a real WhamConsole instance UNMODIFIED --
+        every command, the `shot` wizard, auto-plotting, and session
+        logging behave exactly as in the human console; this file adds
+        no new wire behavior. See its own module docstring for the full
+        design (system prompt, JSON action contract, safety gate).
+
+        Asked to review this file before its first commit, found and
+        fixed one real gap in its own safety gate (the mechanism meant
+        to stop the LLM from starting real PWM output or reflashing
+        without an operator's y/N in the terminal first): the gate
+        special-cased the `enable <ch> on` CONSOLE WRAPPER but fell back,
+        for everything else including raw SCPI, to wham_console.py's own
+        _is_dangerous() -- which only ever caught FIRE/BOOT/PID:*:STARt.
+        Since the LLM's system prompt explicitly hands it raw
+        PID:CHANnel:ENAble as an available command, and small local
+        models are not consistent about which spelling they reach for,
+        the LLM could turn a channel's output ON with zero confirmation
+        just by phrasing it as raw SCPI instead of the `enable` wrapper
+        -- a real gap, not theoretical: PID_SetChannelEnable() (pid.c)
+        drives HRTIM1_SetChannelOutputEnable() directly and
+        unconditionally, so this takes immediate real effect if a loop
+        is already running.
+
+        Fixed at the root rather than patched in the LLM console alone:
+        wham_console.py's _is_dangerous() (the project's own established
+        "single source of truth for dangerous commands" convention -- see
+        its "Adding a new console command" note) now takes the FULL
+        command line, not just the first token, and also matches
+        PID:CHANnel:ENAble <ch> <nonzero> in any valid SCPI short/long
+        form (turning OFF is never gated -- always the safe direction).
+        This closes the gap for BOTH front ends at once, and for any
+        future per-channel hardware-effecting command added the same
+        way. do_enable()'s own bespoke _confirm() call is removed as
+        part of this -- it would now double-prompt against the shared
+        gate inside _query_print() -- so `enable <ch> on` in the human
+        console goes through the exact same single gate as `start`
+        already does, no behavior change for a human operator beyond
+        one prompt instead of two.
+
+        Also, while reviewing wham_llm_console.py specifically:
+        (1) command results returned to the LLM (not the operator's own
+        terminal, which always sees the full reply) are now capped at
+        MAX_RESULT_CHARS -- raw PID:LOGDATA? can return up to 1000
+        samples on one line, easily exhausting a small local model's
+        whole context window in a single command result; `plot`/`log`
+        print file paths, not data, and are unaffected.
+        (2) strip_think() now handles an UNCLOSED <think> block (a
+        reasoning model's reply cut off mid-thought by LLM_MAX_TOKENS)
+        by dropping everything from the still-open tag onward, instead
+        of leaving raw reasoning prose -- which may itself contain stray
+        braces -- for extract_json() to go hunting through for a bogus
+        match. LLM_MAX_TOKENS raised 1500 -> 3000 for the same reason
+        (qwen3, the documented default, spends an unpredictable chunk of
+        its budget on <think> before the actual JSON answer).
+
+  Verify: python3 -m py_compile on both files; wc._is_dangerous() checked
+        directly against FIRE/BOOT/PID:START/PID:PROFile:STARt (short and
+        long form) and PID:CHANnel:ENAble with 0/1/malformed/unparseable
+        args, all matching intent; Executor.is_dangerous() checked to
+        confirm raw `PID:CHANnel:ENAble 1 1` and the `enable 1 on`
+        wrapper now agree (both True), `... 1 0`/`enable 1 off` both
+        False; strip_think()/extract_json() checked against a simulated
+        truncated-<think> reply (yields no bogus match, not a crash);
+        truncate_for_llm() checked short-text-unchanged and
+        long-text-truncated-with-note. Not yet exercised against a real
+        LLM server or real hardware (side project, lower priority than
+        the main firmware work) -- do that before relying on it hands-off
+        (`--auto`).
+
 2026-09-13  —  New PID:CHANnel:NICKname command; DSLogic shot plot now
                8 panels (firmware + DSLogic side by side per channel)
                and shows nicknames
