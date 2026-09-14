@@ -1,6 +1,80 @@
 WHAM-XREX-PFMG474 Firmware Changelog
 =====================================
 
+2026-09-14  —  wham_llm_console.py: default model switched qwen3:4b ->
+               qwen3:1.7b (4-9x faster, real benchmark) -- with a
+               newly-found, not-fully-resolved reliability caveat
+-----------------------------------------------------------------------
+  Change:  Direct request: "can any optimizations be made to make the
+        llm respond even faster? Not sure if we could use a quantized
+        model or similar?"
+
+        On quantization specifically: both qwen3:4b and qwen3:1.7b are
+        ALREADY Q4_K_M (4-bit) -- `ollama pull` uses this by default,
+        not full precision. Tried pulling more aggressive tags
+        (qwen3:4b-q4_0, qwen3:4b-q3_K_M) directly from Ollama's library
+        -- neither exists; only one quant is published for this model.
+        Not pursued further (hand-importing a GGUF from elsewhere) --
+        diminishing returns expected against the much bigger lever
+        below.
+
+        Real head-to-head benchmark instead, same real system prompt
+        and real requests against real hardware: qwen3:1.7b (really a
+        2.0B-parameter checkpoint per `ollama show`) vs the previous
+        default qwen3:4b -- 9.6s vs 41.6s on a simple health check
+        (4.3x), 3.3GB vs 5.1GB memory footprint, and on the "generate a
+        report" recipe that qwen3:4b's own two real attempts (see this
+        file's earlier 2026-09-14 speedup entry) never once called the
+        `report` tool for, qwen3:1.7b called it correctly. Presented
+        this to the user with the tradeoff found on a THIRD test (a
+        complex multi-parameter shot setup): qwen3:1.7b's own reply
+        text said "I'll start output without your go-ahead" -- a
+        notably more cavalier tone than qwen3:4b's equivalent replies
+        ("Confirm to proceed?"). NOT an actual safety gap -- the real
+        gate (Executor.is_dangerous()) is enforced in code, independent
+        of what the model's own text claims, and it still asked for
+        real y/N confirmation before PID:PROFile:STARt regardless --
+        but a real behavioral difference worth knowing before
+        switching. User chose to switch the default anyway.
+
+        DEFAULT_MODEL -> qwen3:1.7b. Header docstring rewritten with
+        the full benchmark, the quantization finding, and the tone
+        caveat -- both models remain fully supported/documented
+        (`--model qwen3:4b` or live `/model qwen3:4b` to switch back),
+        this isn't "one replaced the other," it's a documented choice
+        with real numbers behind it either way.
+
+        A SECOND reliability finding surfaced during final verification
+        AFTER the switch was made, not before -- disclosed to the user
+        immediately rather than left undocumented: re-running the exact
+        same safe health-check prompt twice against the real console
+        (not a raw API probe) showed real run-to-run inconsistency.
+        Run 1: answered "healthy" with ZERO actions executed at all --
+        confirmed via the transcript, no `$ status`/`$ FAULT?` lines,
+        a pure assertion with no verification, directly against the
+        system prompt's own "NEVER invent command results... query it
+        first" instruction. Run 2: DID call status/FAULT?, but stated
+        its conclusion in the SAME round's "say" text before the
+        results came back, then repeated essentially the same
+        conclusion in a second round after seeing them -- better, but
+        still shows a tendency to assert first and verify second (or
+        not at all) rather than the other way around. Both runs
+        happened to land on the actually-correct answer (the board
+        genuinely was healthy) -- no harm done, but that's luck against
+        this model's real behavior, not evidence the behavior is fine.
+        Not reverted -- the user's choice stands -- but flagged clearly
+        rather than left for them to discover the hard way.
+
+  Verify: python3 -m py_compile. Ran the real console end-to-end
+        against real hardware with the new default three times (one
+        initial confirmation run, two reproducibility runs for the
+        verification-skipping finding) -- all read-only/safe requests
+        only, no dangerous actions queued or confirmed, per this same
+        file's prior 2026-09-14 rule (never pipe blind confirm answers
+        into a non-interactive test of this console).
+        Hardware confirmed clean (STATE? IDLE, FAULT? 0) before and
+        after every test in this entry.
+
 2026-09-14  —  wham_llm_console.py: full raw-LLM-call logging; new
                `timing`/`demand` wrappers (root-caused a real
                command-guessing failure); LLM_MAX_TOKENS 3000->6000

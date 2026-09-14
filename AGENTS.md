@@ -198,10 +198,11 @@ decision (see `docs/command_reference.md`'s `FIRE` entry).
   - `wham_llm_console.py` -- added 2026-09-14, SIDE PROJECT (lower
     priority than the main firmware work, not yet exercised against
     real hardware or a real LLM server as of its first commit --
-    SINCE tested end-to-end against both, repeatedly, same day: health
-    checks and `diag` work reliably and accurately; the safety gate
-    itself has held correctly every time it was actually tested
-    (confirmation asked before every dangerous action). A REAL
+    SINCE tested end-to-end against both, repeatedly, same day). The
+    safety gate itself has held correctly every time it was actually
+    tested (confirmation asked before every dangerous action, and that
+    confirmation is enforced in code -- Executor.is_dangerous() --
+    independent of anything the model's own reply text claims). A REAL
     unconfirmed shot DID fire during one verification pass anyway --
     not a gate bug, a testing-methodology mistake (piped blind "y"
     answers into a non-interactive test run, one of which landed on the
@@ -209,15 +210,27 @@ decision (see `docs/command_reference.md`'s `FIRE` entry).
     see docs/changelog.txt's matching entry for the full, transparent
     account and the resulting rule: interactive-only, single-stepped,
     real state checks between dangerous actions, for any future testing
-    of this file. `report`'s natural-language tool-selection has a
-    demonstrated, not-fully-fixed reliability gap (see docs/
-    changelog.txt's 2026-09-14 entries for the full record, including a
-    ~3x real-world speedup via Qwen3's "/no_think" convention + a
-    longer Ollama keep-alive -- both root-caused on real hardware, not
-    guessed -- and full raw-LLM-call logging, elapsed time/token usage/
-    reasoning text, added the same day specifically because the
-    existing summarized log couldn't show WHY a real session's turn
-    failed).
+    of this file. Default model switched qwen3:4b -> qwen3:1.7b, same
+    day, after a real 4-9x-faster benchmark -- but a LATER
+    reproducibility check with the new default found real run-to-run
+    inconsistency even on a simple health check: one run answered
+    "healthy" with ZERO verification commands executed at all (a pure,
+    lucky-to-be-correct assertion, against the system prompt's own
+    "never invent command results" instruction), another asserted its
+    conclusion before the verifying commands' results came back. Not
+    yet resolved -- both models remain supported (`/model qwen3:4b` to
+    switch back live) -- treat qwen3:1.7b's unconfirmed factual claims
+    (state/fault/measured-value questions especially) with more
+    skepticism than qwen3:4b's, pending further characterization.
+    `report`'s natural-language tool-selection ALSO has a demonstrated,
+    not-fully-fixed reliability gap, found separately with qwen3:4b
+    (see docs/changelog.txt's 2026-09-14 entries for the full record,
+    including a ~3x real-world speedup via Qwen3's "/no_think"
+    convention + a longer Ollama keep-alive -- both root-caused on real
+    hardware, not guessed -- and full raw-LLM-call logging, elapsed
+    time/token usage/reasoning text, added the same day specifically
+    because the existing summarized log couldn't show WHY a real
+    session's turn failed).
     An alternate front end to `wham_console.py` where the operator
     talks in plain English to a small local LLM (Ollama/LM Studio),
     which decides which `wham_console.py` command lines to run; drives

@@ -50,35 +50,74 @@ Any server that speaks POST /v1/chat/completions works. Easiest options on
 consumer hardware, both free and cross-platform (macOS and Windows):
 
   * Ollama (recommended default):  https://ollama.com
-        ollama pull qwen3:4b        # one-time model download (~2.5 GB)
+        ollama pull qwen3:1.7b      # one-time model download (~1.4 GB)
     Ollama serves http://localhost:11434/v1 automatically once installed
     and running. This script's defaults point straight at it.
     NOTE -- Ollama's default context window is only 4096 tokens, and this
     script's system prompt (project briefing + command catalog, including
-    the `diag`/`report` debugging tools) is ~3700 of that BY ITSELF, before
-    any conversation history or the model's own reply -- 4096 is too tight
-    for real use. Raise the window once when starting the server:
+    the `diag`/`report` debugging tools) is ~3700-4700 of that BY ITSELF
+    (grows with channel count and conversation), before any history or the
+    model's own reply -- 4096 is too tight for real use. Raise the window
+    once when starting the server:
         OLLAMA_CONTEXT_LENGTH=16384 ollama serve
-    (LM Studio equivalent: the per-model "Context Length" slider.)
+    (LM Studio equivalent: the per-model "Context Length" slider.) Also
+    raise the keep-alive so the model doesn't reload between uses:
+        OLLAMA_KEEP_ALIVE=30m ollama serve
+    (macOS running Ollama.app rather than the CLI: `launchctl setenv
+    OLLAMA_CONTEXT_LENGTH 16384` + `launchctl setenv OLLAMA_KEEP_ALIVE
+    30m`, then quit and relaunch the app -- session-scoped, redo after a
+    reboot. Neither takes effect if passed per-request through this
+    endpoint instead -- confirmed via `ollama ps` on 2026-09-14, both a
+    context-length "options" field and a "keep_alive" field are silently
+    ignored here; they have to be set server-side.)
   * LM Studio:  https://lmstudio.ai  -- download a model in the GUI, then
     "Developer" -> "Start Server" (default http://localhost:1234/v1) and
     pass --endpoint http://localhost:1234/v1 --model <loaded model id>.
 
-Default model: qwen3:4b (Apache-2.0, strong JSON adherence and instruction
-following at a size a consumer laptop runs comfortably). Other good small
-open-weight choices: llama3.2:3b, phi4-mini, qwen2.5:3b-instruct. Bigger is
-better for multi-step shot programming; anything under ~3B will likely
-struggle with the JSON output contract. Model replies have any
-<think>...</think> blocks stripped before parsing, so reasoning-style
-models (qwen3 et al.) work as-is.
+Default model: qwen3:1.7b (Apache-2.0; really a 2.0B-parameter checkpoint
+per `ollama show` -- Ollama's tag name undersells it slightly). Chosen
+over the earlier default qwen3:4b after a real head-to-head benchmark,
+2026-09-14, same real system prompt and real requests against real
+hardware: 4-9x faster (9.6s vs 41.6s on a simple health check; 4.8s vs
+never-finished on a "generate a report" request -- 1.7b actually called
+the `report` tool where 4b's own two real attempts never did), smaller
+memory footprint (3.3GB vs 5.1GB loaded). CAVEAT, not a speed tradeoff --
+a behavioral one: on a complex multi-parameter shot-setup request, 1.7b's
+own reply text said "I'll start output without your go-ahead," a
+noticeably more cavalier tone than 4b's equivalent replies (which said
+"Confirm to proceed?"). This is NOT an actual safety gap -- the real gate
+(Executor.is_dangerous()) is enforced in code, completely independent of
+what the model's own text claims, and it still asked for real y/N
+confirmation before PID:PROFile:STARt regardless -- but it means reading
+every confirm prompt on its own merits matters even more with this
+model, not less. Switch back with `--model qwen3:4b` (or `/model
+qwen3:4b` live) if that tradeoff doesn't sit right -- both are
+documented, tested choices, not "one replaced the other." Other good
+small open-weight choices: llama3.2:3b, phi4-mini, qwen2.5:3b-instruct.
+Bigger is better for multi-step shot programming; anything under ~1.5B
+will likely struggle with the JSON output contract. Model replies have
+any <think>...</think> blocks stripped before parsing, so reasoning-
+style models (qwen3 et al.) work as-is.
+
+QUANTIZATION: both qwen3:1.7b and qwen3:4b are ALREADY Q4_K_M (4-bit) --
+`ollama pull` uses this by default, not full precision, so "should we
+quantize" is already answered yes. Tried pulling more aggressive tags
+(qwen3:4b-q4_0, qwen3:4b-q3_K_M) directly from Ollama's library,
+2026-09-14 -- neither exists; Ollama only publishes this one quant for
+this model. A lower quant would need hand-importing a GGUF from Hugging
+Face, not attempted -- diminishing returns expected (dropping bit-depth
+on the SAME parameter count saves much less than dropping parameter
+count did, with more quality loss per bit at this point) against the
+much bigger, already-validated win of the smaller model above.
 
 SPEED -- qwen3 "thinks" before every reply, and it's expensive: measured
 on a real M2 Pro/16GB against real hardware, 2026-09-14, a trivial two-
-action health-check decision took 112s wall time, ALL of it generating
-~2800 tokens of chain-of-thought for a decision that needed none. This
-script appends Qwen3's own "/no_think" convention to every turn by
-default (LLMClient.suppress_thinking, NO_THINK_SUFFIX) -- the SAME
-request measured 30s with it on, same correct actions, ~3.7x faster.
+action health-check decision took 112s wall time on qwen3:4b, ALL of it
+generating ~2800 tokens of chain-of-thought for a decision that needed
+none. This script appends Qwen3's own "/no_think" convention to every
+turn by default (LLMClient.suppress_thinking, NO_THINK_SUFFIX) -- the
+SAME request measured 30s with it on (qwen3:4b) / 9.6s (qwen3:1.7b),
+same correct actions, reasoning REDUCED not eliminated either way.
 Toggle live with `/think on` if tool-selection seems to suffer without
 deep reasoning (not fully characterized either way). Ollama's own native
 "think": false parameter (the "proper" toggle) does NOT work on a
@@ -148,7 +187,7 @@ import wham_console as wc  # the maintained human console, reused unmodified
 # --------------------------------------------------------------------------
 
 DEFAULT_ENDPOINT = os.environ.get("WHAM_LLM_ENDPOINT", "http://localhost:11434/v1")
-DEFAULT_MODEL = os.environ.get("WHAM_LLM_MODEL", "qwen3:4b")
+DEFAULT_MODEL = os.environ.get("WHAM_LLM_MODEL", "qwen3:1.7b")
 
 LLM_TIMEOUT_S = 300.0   # small models on CPU can be slow to first token
 LLM_TEMPERATURE = 0.2   # low -- we want obedient JSON, not creativity
