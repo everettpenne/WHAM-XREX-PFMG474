@@ -54,10 +54,11 @@ consumer hardware, both free and cross-platform (macOS and Windows):
     Ollama serves http://localhost:11434/v1 automatically once installed
     and running. This script's defaults point straight at it.
     NOTE -- Ollama's default context window is only 4096 tokens, and this
-    script's system prompt (project briefing + command catalog) is ~2500 of
-    that. If the model starts forgetting instructions or its JSON contract
-    mid-conversation, raise the window once when starting the server:
-        OLLAMA_CONTEXT_LENGTH=8192 ollama serve
+    script's system prompt (project briefing + command catalog, including
+    the `diag`/`report` debugging tools) is ~3500 of that BY ITSELF, before
+    any conversation history or the model's own reply -- 4096 is too tight
+    for real use. Raise the window once when starting the server:
+        OLLAMA_CONTEXT_LENGTH=16384 ollama serve
     (LM Studio equivalent: the per-model "Context Length" slider.)
   * LM Studio:  https://lmstudio.ai  -- download a model in the GUI, then
     "Developer" -> "Start Server" (default http://localhost:1234/v1) and
@@ -564,12 +565,25 @@ CONSOLE COMMANDS (you drive the wham_console.py console; anything NOT in this
 list goes to the controller VERBATIM as raw SCPI):
   status [ch]         STATE? + per-channel running/setpoint/measured/output
   config              live readback: gains/loop-mode/enable/demand/timing, all ch
+  diag                ONE debugging snapshot: idn+state+fault+GDS(raw fault pins)+
+                      QSPI:ID?+PFMIN:STATus?, and every channel's config AND live
+                      status in one table -- prefer this over separate status/
+                      config/FAULT?/GDS? calls when actually DEBUGGING something,
+                      it's fewer round trips and won't miss a field
   idn | channels | ports       *IDN? | CONFig:CHANnels? | list serial ports
   gains <ch> <kp> <ki> <kd> | loopmode <ch> open|closed | enable <ch> on|off
   nickname <ch> [name] | setpoint <ch> <hz> | ramp <ch> <startHz> <endHz> <ms>
   start | stop        PID:START (DANGEROUS) | PID:STOP (always safe)
   log <ch|all> <maxSamples> <decim>    arm waveform logging (all = same ticks)
   plot [ch|all]       fetch PID:LOGDATA?, save CSV+JSON+PNG under shots/
+  report [ch|all]     like `plot` PLUS a written diagnostic summary (sample
+                      count, setpoint/measured/output ranges, tracking-error
+                      mean/RMS/max, glitch count, state/fault at report time)
+                      saved as shots/<ts>..._report.md -- the RIGHT action
+                      after a shot/test run when the operator wants a report,
+                      a writeup, or "how did that go?"; only a short one-line-
+                      per-channel summary comes back to you, the rest is in
+                      the saved file -- tell the operator its path
   shot                interactive shot wizard (DANGEROUS; the OPERATOR answers
                       its prompts -- offer it when they want guidance)
   monitor [interval_s] | reflash     streaming status | reflash firmware
@@ -620,12 +634,23 @@ KEY NUMBERS:
 
 RECIPES:
 - Health check: `status`, then FAULT? if anything looks odd.
+- Actually DEBUGGING something (unexpected reading, suspected fault, "why did
+  that happen") -- reach for `diag` FIRST, not a hand-built sequence of
+  status/config/FAULT?/GDS? calls: one action, one round trip, can't miss a
+  field. Read GDS?'s 12 raw pins yourself if `diag` shows a fault and the
+  operator wants to know which physical gate driver tripped.
+- After ANY shot/test run the operator wants summarized, reviewed, or asked
+  "how did that go?" about: `report` (or `report all` if it was a multi-
+  channel/`shot all` run). Tell the operator the .md path it prints and read
+  them the one-line-per-channel summary yourself -- don't re-derive the same
+  numbers by hand from `plot`/PID:LOGDATA?, `report` already computed them.
 - Shot WITHOUT the wizard (operator gave exact numbers): PID:STOP ;
   PID:CHANNEL:ENABLE <ch> <0|1> for EVERY channel (state the plan in "say"
   first) ; PID:LOOPMODE <ch> <0|1> ; PID:PROFILE:CURRENT <ch> <amps> ;
   PID:GAINS ... only if asked ; PID:LOG <ch|0> 1000 <decim=ceil(total_s)> ;
   PID:PROFILE:TIMING <rampS> <flatS> ; ARM ; PID:PROFILE:START ;
-  wait <2*ramp+flat+1> ; `plot all` (or `plot <ch>`).
+  wait <2*ramp+flat+1> ; `report all` (or `report <ch>`) -- prefer `report`
+  over bare `plot` here unless the operator only wants the picture.
 - Shot WITH guidance: action ["shot"], tell the operator to answer the wizard.
 - Gain tuning (much of the operator's work): show CURRENT gains first
   (`config`), change only what was asked, confirm, offer log+shot to compare
@@ -709,12 +734,13 @@ def main():
 
     client = LLMClient(args.endpoint, args.model, timeout=args.timeout)
     if "11434" in args.endpoint:
-        # Ollama's default context window (4096) barely fits this script's
-        # system prompt + a real conversation -- say so once, up front,
-        # rather than debugging "the model forgot its JSON contract" later.
+        # Ollama's default context window (4096) does NOT fit this script's
+        # system prompt (~3500 tokens by itself) plus any real conversation
+        # -- say so once, up front, rather than debugging "the model forgot
+        # its JSON contract" later.
         print("[tip] Ollama's default context is 4096 tokens; this console's system")
-        print("      prompt is ~2500. If the model degrades mid-session, restart the")
-        print("      server with a bigger window:  OLLAMA_CONTEXT_LENGTH=8192 ollama serve")
+        print("      prompt alone is ~3500 -- start the server with a bigger window:")
+        print("      OLLAMA_CONTEXT_LENGTH=16384 ollama serve")
     try:
         models = client.list_models()
         if any(args.model == m or args.model in m for m in models):

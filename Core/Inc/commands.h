@@ -46,6 +46,10 @@ extern "C" {
  *       CONFig:CHANnels?, pid.h)
  *   12  Invalid PID:* command arguments (wrong count, or a
  *       non-numeric/out-of-range value)
+ *   13  Invalid state-machine transition for the current state (ARM/
+ *       DISARM/PID:PROFile:STARt) -- see state_machine.h
+ *   14  Invalid PID:CHANnel:NICKname -- 1-PID_CHANNEL_NICKNAME_MAX_LEN
+ *       chars, no whitespace, and not the reserved value "-" (pid.h)
  *
  * Mnemonics are SCPI-style hierarchical patterns matched by
  * cmd_parser.c's scpi_match() -- see that file's header for the

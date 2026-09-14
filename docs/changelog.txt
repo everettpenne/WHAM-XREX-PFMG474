@@ -1,6 +1,89 @@
 WHAM-XREX-PFMG474 Firmware Changelog
 =====================================
 
+2026-09-14  —  New `diag`/`report` console commands (debugging +
+               shot-report tools for wham_console.py and the LLM
+               console); ERROR_CODES table staleness fixed (13/14
+               were missing)
+-----------------------------------------------------------------------
+  Change:  Direct request: give the LLM console (see the entry right
+        below this one) tools "in particular for debugging", and
+        specifically "a tool which generates run reports or shot
+        reports". Added to wham_console.py -- the shared, maintained
+        console both front ends drive -- rather than only the LLM
+        console, so a human operator gets the same tools:
+
+        `diag` -- one consolidated, read-only debugging snapshot:
+        *IDN?, STATE?, FAULT?, GDS? (raw 12 gate-driver pins),
+        QSPI:ID?, PFMIN:STATus? (PFM_Input capture counts), profile
+        timing, and a table of every channel's config (enable/
+        nickname/loop-mode/gains/demand) AND live PID:STATus? together.
+        One action instead of stitching together a dozen queries by
+        hand -- exactly the kind of thing worth having as a single
+        tool for an LLM operating this console, but useful for a human
+        operator too.
+
+        `report [channel|all]` -- does everything `plot` already did
+        (fetch PID:LOGDATA?, save CSV + metadata JSON + PNG under
+        shots/) PLUS a written markdown diagnostic summary saved as
+        shots/<ts>_ch<N>_report.md (or <ts>_allch_report.md): sample
+        count/rate, setpoint/measured/output ranges in both Hz and
+        nominal Amps, tracking-error mean/RMS/max|abs| (measured -
+        setpoint), and any detected feedback glitches (reuses the
+        existing _find_glitches() the plot itself already flags), plus
+        STATE?/FAULT? queried fresh at report time so the report shows
+        whether the run ended cleanly or in a fault. Deliberately does
+        NOT invent a pass/fail verdict or a tracking-error threshold --
+        this project has no established spec for either yet (same
+        "nominal, not tuned values" caveat as everywhere else in this
+        console) -- it reports the numbers and leaves judgment to the
+        operator or the LLM. Only a short one-line-per-channel summary
+        is printed to the terminal; the full detail lives only in the
+        saved file, so an LLM front end's context isn't spent on it.
+        New module-level compute_log_stats()/format_channel_report_md()
+        plus a proper hz_delta_to_amps() (a signed, non-clamped
+        Hz-per-Amp slope for a DIFFERENCE like tracking error --
+        distinct from the existing hz_to_amps(), which clamps at the
+        turn-on floor and would misleadingly show ~0.00A for nearly
+        every real tracking-error value if reused here as-is).
+        _fetch_save_plot_all() now returns its fetched data (channel_
+        rows/metas/rate_hz/count) instead of nothing, so `report all`
+        reuses the SAME PID:LOGDATA? fetch `plot all` already made
+        rather than hitting the wire twice.
+
+        wham_llm_console.py's system prompt updated to teach the LLM
+        both new commands (CONSOLE COMMANDS catalog + two new RECIPES
+        entries: reach for `diag` when actually debugging rather than
+        hand-composing status/config/FAULT?/GDS?, and `report` after
+        any run the operator wants summarized rather than re-deriving
+        the same numbers from `plot`/PID:LOGDATA? by hand). Its own
+        system prompt is now ~3500 tokens (was ~2500) -- the file's
+        Ollama context-window tip bumped from OLLAMA_CONTEXT_LENGTH=8192
+        to 16384 accordingly, since 8192 was already tight before this
+        addition.
+
+        Also fixed while in here: wham_console.py's own ERROR_CODES
+        table (backing explain_err()'s ERR-reply decoration) was
+        missing codes 13 ("bad state transition", added with the state
+        machine) and 14 ("bad nickname", added with PID:CHANnel:
+        NICKname) -- present in docs/command_reference.md and already
+        referenced by wham_llm_console.py's system prompt, but never
+        added to this table. commands.h's own doc-comment error-code
+        list (separate from docs/command_reference.md, the wire
+        protocol's actual canonical reference) had the same gap, fixed
+        too.
+
+  Verify: python3 -m py_compile on both files. do_diag()/do_report()
+        exercised against a mock serial link (no real hardware needed
+        for this pass) covering: single-channel and all-channel report
+        generation, a synthetic injected glitch (confirmed detected at
+        the right sample index), nickname display, and correct CSV/
+        JSON/PNG/report.md file output. hz_delta_to_amps() checked
+        against hz_to_amps() to confirm the clamp-to-zero problem is
+        actually avoided for small deltas. Not yet run against real
+        hardware or a real LLM server -- see the entry below for this
+        file's overall verification status (side project).
+
 2026-09-14  —  New wham_llm_console.py (LLM-fronted operator console,
                side project); closed a safety-gate bypass shared with
                wham_console.py's own raw-SCPI passthrough

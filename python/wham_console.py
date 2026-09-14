@@ -8,7 +8,11 @@ prompts (no need to remember PID:PROFILE:* argument order), send any
 raw SCPI command directly, watch live status, and automatically
 generate and save the same diagnostic plots used throughout this
 project's own bench sessions (docs/changelog.txt's 2026-09-10 entries)
--- without hand-writing a one-off script each time.
+-- without hand-writing a one-off script each time. `diag` gives a
+one-shot debugging snapshot (state/fault/gate-driver pins/config/live
+status, all channels, one action); `report [ch|all]` does everything
+`plot` does plus a written diagnostic summary (tracking-error stats,
+glitch detection, state/fault at report time) saved under shots/.
 
 THIS IS A MAINTAINED FRONT END, not a one-off script -- as new PID:*/
 other commands are added to the firmware (commands.c/commands.h/
@@ -133,6 +137,8 @@ ERROR_CODES = {
     10: "TABLE:STEP per value implies a carrier frequency above the allowed max",
     11: "Invalid PID channel",
     12: "Invalid PID:* argument count/value -- see the command's own usage",
+    13: "Invalid state-machine transition for the current state (ARM/DISARM/PID:PROFile:STARt)",
+    14: "Invalid PID:CHANnel:NICKname -- 1-PID_CHANNEL_NICKNAME_MAX_LEN chars, no spaces, not the reserved value '-'",
 }
 
 # Console meta-commands are deliberately named to NEVER collide (even
@@ -296,6 +302,18 @@ def hz_to_amps(hz):
     return max(0.0, a)
 
 
+def hz_delta_to_amps(delta_hz):
+    """Like hz_to_amps() but for a DIFFERENCE in Hz (e.g. tracking
+    error), not an absolute setpoint/measured/output value -- no
+    PFM_TURNON_FREQ_HZ offset subtraction and no clamp-to-zero.
+    hz_to_amps() itself would misleadingly report ~0.00A for any delta
+    smaller than the turn-on threshold, which is true of nearly every
+    real tracking-error value -- this is the correct linear slope
+    (PFM_MAX_CURRENT_A over the Hz span above turn-on) applied to a
+    signed delta instead. Same 'nominal' calibration caveat."""
+    return delta_hz / (PFM_MAX_FREQ_HZ - PFM_TURNON_FREQ_HZ) * PFM_MAX_CURRENT_A
+
+
 def channel_label(channel, nickname=None):
     """'Ch3' or 'Ch3 (TINKYWINKY)' -- per direct instruction, the bare
     Ch<N> label is ALWAYS kept even when a nickname is set (it's the
@@ -320,6 +338,99 @@ def _find_glitches(measured, threshold=15000):
         if abs(measured[i] - measured[i - 1]) > threshold and abs(measured[i] - measured[i + 1]) > threshold:
             idx.append(i)
     return idx
+
+
+def compute_log_stats(rows, rate_hz):
+    """Summary statistics for one channel's fetched waveform log (rows:
+    see WhamLink._fetch_log()/generate_plot()'s own doc for the exact
+    shape) -- backs `report`/`diag`. Tracking error is measured-setpoint
+    at every sample (over the WHOLE log, ramp segments included -- no
+    attempt to isolate a "steady-state" window, since this project has
+    no established rise-time/overshoot spec to judge against yet; report
+    the numbers, don't invent a pass/fail verdict). Glitch detection
+    reuses _find_glitches() (the same DSLogic-confirmed single-tick
+    feedback anomaly _save_and_plot()'s own plot already flags).
+    Returns None for an empty log (nothing to summarize)."""
+    n = len(rows)
+    if n == 0:
+        return None
+    sp = [r["setpoint_hz"] for r in rows]
+    ms = [r["measured_hz"] for r in rows]
+    op = [r["output_hz"] for r in rows]
+    err = [ms[i] - sp[i] for i in range(n)]
+    glitches = _find_glitches(ms)
+    return dict(
+        count=n, rate_hz=rate_hz, duration_s=(n / rate_hz) if rate_hz else 0.0,
+        setpoint_min=min(sp), setpoint_max=max(sp), setpoint_final=sp[-1],
+        measured_min=min(ms), measured_max=max(ms), measured_final=ms[-1],
+        output_min=min(op), output_max=max(op), output_final=op[-1],
+        error_mean=sum(err) / n,
+        error_max_abs=max(abs(e) for e in err),
+        error_rms=math.sqrt(sum(e * e for e in err) / n),
+        glitch_count=len(glitches),
+        glitch_sample_indices=glitches[:20],  # capped -- a full list belongs
+                                               # in the saved CSV, not this
+                                               # summary
+    )
+
+
+def format_channel_report_md(meta, stats):
+    """One channel's section of a `report`/`diag`-generated markdown
+    file. meta: see _shot_meta(). stats: see compute_log_stats(), or
+    None (channel had no log data -- reported as such, not skipped, so
+    a report never silently omits a channel the operator asked about).
+    Amps figures use the same linear placeholder as generate_plot()
+    (hz_to_amps()) -- labeled 'nominal' throughout, per this project's
+    standing calibration caveat (see AGENTS.md)."""
+    label = channel_label(meta["channel"], meta.get("nickname"))
+    lines = [f"## {label}", ""]
+    lines.append(f"- Loop mode: {meta.get('loop_mode') or 'unknown'}")
+    if meta.get("kp") is not None:
+        lines.append(f"- Gains: Kp={meta['kp']:g} Ki={meta['ki']:g} Kd={meta['kd']:g}")
+    else:
+        lines.append("- Gains: unavailable (PID:GAINS? failed or never read)")
+    if meta.get("demand_current_a") is not None:
+        lines.append(f"- Demand current: {meta['demand_current_a']:g} A (nominal)")
+    if meta.get("ramp_time_s") is not None:
+        lines.append(f"- Profile timing: ramp={meta['ramp_time_s']:g}s "
+                      f"flat-top={meta['flat_top_time_s']:g}s")
+    lines.append("")
+
+    if stats is None:
+        lines.append("**No log data** -- PID:LOGDATA? returned 0 samples for this "
+                      "channel (logging was never armed before the run, or the "
+                      "channel never ran).")
+        lines.append("")
+        return "\n".join(lines)
+
+    lines.append(f"- Samples: {stats['count']} @ {stats['rate_hz']} Hz "
+                  f"({stats['duration_s']:.3f} s)")
+    lines.append("")
+    lines.append("| | Hz | nominal A |")
+    lines.append("|---|---|---|")
+    for label_, key in (("Setpoint (min/max/final)", "setpoint"),
+                         ("Measured (min/max/final)", "measured"),
+                         ("Output (min/max/final)", "output")):
+        lo, hi, fin = stats[f"{key}_min"], stats[f"{key}_max"], stats[f"{key}_final"]
+        lines.append(f"| {label_} | {lo}/{hi}/{fin} | "
+                      f"{hz_to_amps(lo):.2f}/{hz_to_amps(hi):.2f}/{hz_to_amps(fin):.2f} |")
+    lines.append(f"| Tracking error, mean/RMS/max abs (measured - setpoint) "
+                 f"| {stats['error_mean']:.1f}/{stats['error_rms']:.1f}/{stats['error_max_abs']:.1f} "
+                 f"| {hz_delta_to_amps(stats['error_mean']):.2f}/"
+                 f"{hz_delta_to_amps(stats['error_rms']):.2f}/"
+                 f"{hz_delta_to_amps(stats['error_max_abs']):.2f} |")
+    lines.append("")
+    if stats["glitch_count"]:
+        lines.append(f"- **{stats['glitch_count']} isolated single-tick glitch(es)** in "
+                      f"Measured at sample index(es) {stats['glitch_sample_indices']}"
+                      f"{' (first 20)' if stats['glitch_count'] > 20 else ''} -- see "
+                      f"_find_glitches()'s own doc comment (wham_console.py) for what these "
+                      f"are; HRTIM output itself is slew-clamped against them, this is a raw "
+                      f"feedback-measurement artifact, not necessarily a real output anomaly.")
+    else:
+        lines.append("- No glitches detected (_find_glitches()).")
+    lines.append("")
+    return "\n".join(lines)
 
 
 def generate_plot(rows, meta, out_path):
@@ -895,6 +1006,59 @@ class WhamConsole(cmd.Cmd):
             print(f"  ch{ch}: {enabled_str}  loop_mode={c.get('loop_mode', 'unavailable')}  "
                   f"demand={c.get('demand_a', 'unavailable')}A  {gains}")
 
+    def do_diag(self, arg):
+        """diag  -- one consolidated debug snapshot: *IDN?, STATE?,
+        FAULT?, GDS? (raw 12 gate-driver pins), QSPI:ID?, PFMIN:STATus?
+        (PFM_Input capture counts, if a capture was ever armed), and
+        every channel's config (enable/nickname/loop-mode/gains/demand)
+        PLUS live PID:STATus? in one table -- everything needed to
+        characterize "what's going on right now" in ONE action instead
+        of stitching together a dozen queries by hand. Entirely
+        read-only -- never asks to confirm anything, safe to run at any
+        time including mid-fault or mid-shot."""
+        if not self._require_link():
+            return
+        n = self.num_channels or 4
+        print(f"idn:    {self.link.query('*IDN?', timeout=1.0)}")
+        state_reply = self.link.query("STATE?")
+        print(f"state:  {state_reply[3:] if state_reply.startswith('OK ') else state_reply}")
+        print(f"fault:  {self.link.query('FAULT?')}")
+        for label, cmd in (("gds", "GDS?"), ("qspi", "QSPI:ID?"), ("pfmin", "PFMIN:STATus?")):
+            try:
+                print(f"{label}:  {self.link.query(cmd)}")
+            except WhamError as exc:
+                print(f"{label}:  [error] {exc}")
+
+        self._refresh_config()
+        if self.profile_timing:
+            print(f"profile timing: ramp={self.profile_timing['ramp_s']:g}s "
+                  f"flat-top={self.profile_timing['flat_s']:g}s")
+        else:
+            print("profile timing: not set (PID:PROFILE:TIMING never sent)")
+
+        print(f"{'Ch':>3} {'Enabled':>7} {'Loop':>6} {'Demand(A)':>9} "
+              f"{'Kp':>6} {'Ki':>6} {'Kd':>6} {'Running':>7} {'Setpt':>7} "
+              f"{'Meas':>7} {'Out':>7}  Nickname")
+        for ch in range(1, n + 1):
+            c = self.channel_config.get(ch, {})
+            nickname = self._get_nickname(ch) or ""
+            try:
+                row = self._status_row(ch)
+            except WhamError:
+                row = None
+            enabled = c.get("enabled")
+            enabled_str = "no" if enabled is False else ("yes" if enabled else "?")
+            demand = f"{c['demand_a']:g}" if c.get("demand_a") is not None else "?"
+            kp = f"{c['kp']:g}" if c.get("kp") is not None else "?"
+            ki = f"{c['ki']:g}" if c.get("ki") is not None else "?"
+            kd = f"{c['kd']:g}" if c.get("kd") is not None else "?"
+            if row:
+                running, sp, ms, op = ("yes" if row["running"] else "no"), row["setpoint"], row["measured"], row["output"]
+            else:
+                running = sp = ms = op = "?"
+            print(f"{ch:>3} {enabled_str:>7} {c.get('loop_mode', '?'):>6} {demand:>9} "
+                  f"{kp:>6} {ki:>6} {kd:>6} {running:>7} {sp!s:>7} {ms!s:>7} {op!s:>7}  {nickname}")
+
     # -- direct wrappers (safe: no first-token collision, see module header) --
 
     def do_gains(self, arg):
@@ -1108,8 +1272,16 @@ class WhamConsole(cmd.Cmd):
         must be currently/previously armed -- PID_ArmLogAll()), saves
         one combined wide-format CSV + one metadata JSON + ONE PNG
         (generate_multi_channel_plot()) showing every channel on a
-        shared time axis. Used by both `shot` (right after a shot with
-        `all` logging) and `plot all`."""
+        shared time axis. Used by `shot` (right after a shot with `all`
+        logging), `plot all`, and `report all` (which reuses the SAME
+        fetch this makes -- see its own return value below -- rather
+        than hitting PID:LOGDATA? a second time over the wire).
+
+        Returns (channel_rows, metas, rate_hz, count), or None if there
+        was nothing to report (empty log / never armed) -- callers that
+        only want the CSV/JSON/PNG side effect (do_plot, do_shot) can
+        ignore the return value entirely, as they did before this
+        returned anything."""
         n = self.num_channels or 4
         channel_rows = {}
         rate_hz = 0
@@ -1125,7 +1297,7 @@ class WhamConsole(cmd.Cmd):
         if not channel_rows or count == 0:
             print("No data (log empty, or all-channels logging was never armed -- "
                   "`log all <maxSamples> <decim>` first).")
-            return
+            return None
 
         metas = {ch: self._shot_meta(ch) for ch in channel_rows}
         for ch, meta in metas.items():
@@ -1159,12 +1331,13 @@ class WhamConsole(cmd.Cmd):
         if not HAVE_MPL:
             print("matplotlib not installed -- skipping plot (data still saved above). "
                   "Run: pip install matplotlib")
-            return
-        try:
-            png = generate_multi_channel_plot(channel_rows, metas, base + ".png")
-            print(f"Saved {png}")
-        except WhamError as exc:
-            print(f"[error] plotting: {exc}")
+        else:
+            try:
+                png = generate_multi_channel_plot(channel_rows, metas, base + ".png")
+                print(f"Saved {png}")
+            except WhamError as exc:
+                print(f"[error] plotting: {exc}")
+        return channel_rows, metas, rate_hz, count
 
     def do_plot(self, arg):
         """plot [channel|all]  -- fetches whatever waveform log is
@@ -1191,6 +1364,90 @@ class WhamConsole(cmd.Cmd):
             print(f"[error] {exc}")
             return
         self._save_and_plot(channel, rows, rate_hz, count)
+
+    def _print_report_summary_line(self, meta, stats):
+        """One compact line per channel -- what `report` prints to the
+        terminal (and what an LLM front end actually sees back, given
+        wham_llm_console.py's MAX_RESULT_CHARS cap); the full detail is
+        only in the saved .md file, not repeated here."""
+        label = channel_label(meta["channel"], meta.get("nickname"))
+        if stats is None:
+            print(f"  {label}: no log data (logging not armed before this run, "
+                  f"or the channel never ran)")
+            return
+        print(f"  {label}: {stats['count']} samples/{stats['duration_s']:.2f}s, "
+              f"measured {stats['measured_min']}-{stats['measured_max']}Hz, "
+              f"tracking error RMS {stats['error_rms']:.0f}Hz "
+              f"({hz_delta_to_amps(stats['error_rms']):.2f}A nominal), "
+              f"{stats['glitch_count']} glitch(es)")
+
+    def do_report(self, arg):
+        """report [channel|all]  -- like `plot` (fetches PID:LOGDATA?,
+        saves CSV + metadata JSON + PNG under shots/), PLUS a written
+        diagnostic summary saved as shots/<ts>_ch<N>_report.md (or
+        <ts>_allch_report.md): sample count/rate, setpoint/measured/
+        output ranges (Hz and nominal A), tracking-error mean/RMS/max,
+        and any detected feedback glitches -- see compute_log_stats()/
+        format_channel_report_md() for exactly what's computed and
+        why (in particular: no invented pass/fail verdict -- this
+        project has no established tracking-error spec yet, so the
+        report states the numbers and lets the operator/LLM judge
+        them). Also queries STATE?/FAULT? at report time, so the report
+        itself shows whether the run ended cleanly or in a fault. Only
+        a short summary goes to the terminal -- the full detail is in
+        the saved file. Same channel-selection rule as `plot` (arg,
+        else whatever `log`/`shot` last armed)."""
+        if not self._require_link():
+            return
+        want_all = arg.strip().lower() == "all" or (not arg.strip() and self.last_log_all)
+        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+
+        state_reply = self.link.query("STATE?")
+        fault_reply = self.link.query("FAULT?")
+        header = (f"# WHAM-XREX-PFMG474 run report\n\n"
+                  f"- Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
+                  f"- State at report time: "
+                  f"{state_reply[3:] if state_reply.startswith('OK ') else state_reply}\n"
+                  f"- Fault at report time: {fault_reply}\n\n")
+
+        if want_all:
+            result = self._fetch_save_plot_all(ts=ts)
+            if result is None:
+                return
+            channel_rows, metas, rate_hz, count = result
+            stats_by_ch = {ch: compute_log_stats(channel_rows[ch], rate_hz) for ch in channel_rows}
+            md = header + "\n".join(format_channel_report_md(metas[ch], stats_by_ch[ch])
+                                     for ch in sorted(channel_rows))
+            base = os.path.join(SHOTS_DIR, f"{ts}_allch")
+            summary_metas = metas
+        else:
+            channel = int(arg.strip()) if arg.strip() else self.last_log_channel
+            if channel is None:
+                print("No channel known -- pass one: report <channel>  (or `report all`, "
+                      "or arm logging first with `log <ch|all> ...`)")
+                return
+            try:
+                rows, rate_hz, count = self._fetch_log(channel)
+            except WhamError as exc:
+                print(f"[error] {exc}")
+                return
+            self._save_and_plot(channel, rows, rate_hz, count, ts=ts)
+            meta = self._shot_meta(channel)
+            meta["rate_hz"] = rate_hz
+            meta["log_count"] = count
+            stats_by_ch = {channel: compute_log_stats(rows, rate_hz)}
+            md = header + format_channel_report_md(meta, stats_by_ch[channel])
+            base = os.path.join(SHOTS_DIR, f"{ts}_ch{channel}")
+            summary_metas = {channel: meta}
+
+        report_path = base + "_report.md"
+        with open(report_path, "w") as f:
+            f.write(md)
+        print(f"Saved {report_path}")
+
+        print("--- summary ---")
+        for ch in sorted(stats_by_ch):
+            self._print_report_summary_line(summary_metas[ch], stats_by_ch[ch])
 
     # -- the shot-profile wizard -------------------------------------------
 

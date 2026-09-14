@@ -178,6 +178,12 @@ decision (see `docs/command_reference.md`'s `FIRE` entry).
     a new console command" section before adding one (console
     meta-command names must never collide with a real SCPI mnemonic's
     leading token -- that section explains exactly why and how).
+    `diag` (added 2026-09-14) is a one-action debugging snapshot
+    (state/fault/GDS/QSPI/PFMIN + every channel's config and live
+    status); `report [ch|all]` (same date) does everything `plot` does
+    plus a written .md diagnostic summary under `shots/` (tracking-
+    error stats, glitch detection, state/fault at report time) -- see
+    `compute_log_stats()`/`format_channel_report_md()`.
   - `wham_llm_console.py` -- added 2026-09-14, SIDE PROJECT (lower
     priority than the main firmware work, not yet exercised against
     real hardware or a real LLM server -- see docs/changelog.txt's
