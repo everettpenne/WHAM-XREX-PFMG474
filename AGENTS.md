@@ -189,18 +189,35 @@ decision (see `docs/command_reference.md`'s `FIRE` entry).
     self-check only -- feedback is currently looped back from this
     controller's own output, not an independent Transrex supply) -- see
     `compute_log_stats()`'s own doc comment for the full reasoning and
-    `format_channel_report_md()` for what's written.
+    `format_channel_report_md()` for what's written. `timing
+    [<rampS> <flatS>]` and `demand <ch> [<amps>]` (added 2026-09-14)
+    wrap PID:PROFile:TIMing/CURRent -- the only two PID:* settings that
+    had no wrapper before this, which a real LLM-console session
+    exploited by guessing wrong syntax twice in a row (see
+    docs/changelog.txt's matching entry).
   - `wham_llm_console.py` -- added 2026-09-14, SIDE PROJECT (lower
     priority than the main firmware work, not yet exercised against
     real hardware or a real LLM server as of its first commit --
-    SINCE tested end-to-end against both, same day: health checks and
-    `diag` work reliably and accurately; the safety gate held under a
-    real "do it immediately" prompt (no PWM output reached the wire);
-    `report`'s natural-language tool-selection has a demonstrated,
-    not-fully-fixed reliability gap (see docs/changelog.txt's
-    2026-09-14 entries for the full record, including a ~3x real-world
-    speedup via Qwen3's "/no_think" convention + a longer Ollama
-    keep-alive -- both root-caused on real hardware, not guessed).
+    SINCE tested end-to-end against both, repeatedly, same day: health
+    checks and `diag` work reliably and accurately; the safety gate
+    itself has held correctly every time it was actually tested
+    (confirmation asked before every dangerous action). A REAL
+    unconfirmed shot DID fire during one verification pass anyway --
+    not a gate bug, a testing-methodology mistake (piped blind "y"
+    answers into a non-interactive test run, one of which landed on the
+    real PID:PROFile:STARt confirm instead of a human reading it) --
+    see docs/changelog.txt's matching entry for the full, transparent
+    account and the resulting rule: interactive-only, single-stepped,
+    real state checks between dangerous actions, for any future testing
+    of this file. `report`'s natural-language tool-selection has a
+    demonstrated, not-fully-fixed reliability gap (see docs/
+    changelog.txt's 2026-09-14 entries for the full record, including a
+    ~3x real-world speedup via Qwen3's "/no_think" convention + a
+    longer Ollama keep-alive -- both root-caused on real hardware, not
+    guessed -- and full raw-LLM-call logging, elapsed time/token usage/
+    reasoning text, added the same day specifically because the
+    existing summarized log couldn't show WHY a real session's turn
+    failed).
     An alternate front end to `wham_console.py` where the operator
     talks in plain English to a small local LLM (Ollama/LM Studio),
     which decides which `wham_console.py` command lines to run; drives

@@ -132,6 +132,7 @@ import sys
 import time
 import urllib.error
 import urllib.request
+from collections import namedtuple
 from datetime import datetime
 
 # This script lives in python/ alongside wham_console.py; make that import
@@ -151,13 +152,29 @@ DEFAULT_MODEL = os.environ.get("WHAM_LLM_MODEL", "qwen3:4b")
 
 LLM_TIMEOUT_S = 300.0   # small models on CPU can be slow to first token
 LLM_TEMPERATURE = 0.2   # low -- we want obedient JSON, not creativity
-LLM_MAX_TOKENS = 3000   # reasoning models (qwen3 et al., the recommended default)
+LLM_MAX_TOKENS = 6000   # reasoning models (qwen3 et al., the recommended default)
                         # spend an unpredictable chunk of this on their own
-                        # <think> block before the actual JSON answer -- too
-                        # tight a cap here risks the reply getting cut off
-                        # mid-thought (strip_think() handles that defensively,
-                        # see its docstring, but a bigger budget means it
-                        # happens less often in the first place)
+                        # reasoning before the actual JSON answer -- too tight
+                        # a cap here risks the reply getting cut off mid-
+                        # thought (strip_think() handles an INLINE unclosed
+                        # <think> defensively, see its docstring, but a
+                        # bigger budget means it happens less often in the
+                        # first place). Raised 3000->6000, 2026-09-14, with
+                        # real evidence, not a guess: a real multi-parameter
+                        # request's session log (log_llm_reply(), see
+                        # docs/changelog.txt) showed 3 of its first 6 rounds
+                        # hit EXACTLY 3000 completion tokens and produced NO
+                        # valid JSON at all -- the model was still reasoning
+                        # when the cap cut it off, wasting the entire round
+                        # (60-82s each) on a forced retry. Every round that
+                        # DID succeed used well under 3000 (1146-2416) --
+                        # consistent with "about to finish, cut off early,"
+                        # not "rambling forever" -- so a higher ceiling should
+                        # let more rounds finish on the first try instead of
+                        # needing a wasted retry, not just let it ramble
+                        # longer. Not fully re-characterized across many
+                        # requests -- if a session log shows repeated exactly-
+                        # 6000-token rounds, this may need raising further.
 
 NO_THINK_SUFFIX = " /no_think"
 # Qwen3's own documented soft-switch convention (append to the latest turn
@@ -228,6 +245,16 @@ class LLMError(Exception):
     the console session itself keeps running."""
 
 
+LLMReply = namedtuple("LLMReply", ["text", "reasoning", "elapsed_s", "usage"])
+# text: the JSON-contract answer (already <think>-stripped). reasoning:
+# separate chain-of-thought text if the backend/model returned one (Ollama-
+# specific "reasoning" field -- see LLMClient.chat()'s own comment; empty
+# string if none). elapsed_s: wall time for this ONE HTTP call, for the
+# session log (see log_llm_reply()) -- not the whole turn, which may be
+# several rounds. usage: the raw "usage" dict from the API reply (prompt/
+# completion token counts), or {} if the backend didn't send one.
+
+
 class LLMClient:
     def __init__(self, endpoint, model, timeout=LLM_TIMEOUT_S, suppress_thinking=True):
         self.base = endpoint.rstrip("/")
@@ -287,6 +314,7 @@ class LLMClient:
         if self.suppress_thinking and messages and messages[-1].get("role") == "user":
             messages = messages[:-1] + [{**messages[-1],
                                           "content": messages[-1]["content"] + NO_THINK_SUFFIX}]
+        t0 = time.time()
         data = self._post("/chat/completions", {
             "model": self.model,
             "messages": messages,
@@ -294,11 +322,20 @@ class LLMClient:
             "max_tokens": LLM_MAX_TOKENS,
             "stream": False,
         })
+        elapsed_s = time.time() - t0
         try:
-            content = data["choices"][0]["message"]["content"]
+            msg = data["choices"][0]["message"]
+            content = msg["content"]
         except (KeyError, IndexError, TypeError) as exc:
             raise LLMError(f"unexpected LLM response shape: {str(data)[:300]}") from exc
-        return strip_think(content or "")
+        # "reasoning" is an Ollama-specific extension of the OpenAI schema
+        # (separate <think> content, not inline in "content" on this setup
+        # -- see NO_THINK_SUFFIX's docstring); absent/empty on other
+        # backends or a non-reasoning model, which is fine, .get() handles it.
+        return LLMReply(text=strip_think(content or ""),
+                         reasoning=msg.get("reasoning") or "",
+                         elapsed_s=elapsed_s,
+                         usage=data.get("usage") or {})
 
     def list_models(self):
         """GET /v1/models -> list of id strings. Raises LLMError if the
@@ -627,6 +664,14 @@ list goes to the controller VERBATIM as raw SCPI):
   idn | channels | ports       *IDN? | CONFig:CHANnels? | list serial ports
   gains <ch> <kp> <ki> <kd> | loopmode <ch> open|closed | enable <ch> on|off
   nickname <ch> [name] | setpoint <ch> <hz> | ramp <ch> <startHz> <endHz> <ms>
+  timing [<rampS> <flatS>] | demand <ch> [<amps>]   USE THESE, not raw SCPI,
+                      for profile timing/demand current -- wrappers for
+                      PID:PROFile:TIMing / PID:PROFile:CURRent; no args =
+                      query. A real session got this exact pair wrong
+                      twice in a row by inventing plausible-but-nonexistent
+                      syntax ("profile timing 1 1 2") instead of falling
+                      back to the raw SCPI form -- these wrappers exist
+                      SPECIFICALLY so a natural word-based guess works.
   start | stop        PID:START (DANGEROUS) | PID:STOP (always safe)
   log <ch|all> <maxSamples> <decim>    arm waveform logging (all = same ticks)
   plot [ch|all]       fetch PID:LOGDATA?, save CSV+JSON+PNG under shots/
@@ -714,13 +759,18 @@ RECIPES:
   channel/`shot all` run). Tell the operator the .md path it prints and read
   them the one-line-per-channel summary yourself -- don't re-derive the same
   numbers by hand from `plot`/PID:LOGDATA?, `report` already computed them.
-- Shot WITHOUT the wizard (operator gave exact numbers): PID:STOP ;
-  PID:CHANNEL:ENABLE <ch> <0|1> for EVERY channel (state the plan in "say"
-  first) ; PID:LOOPMODE <ch> <0|1> ; PID:PROFILE:CURRENT <ch> <amps> ;
-  PID:GAINS ... only if asked ; PID:LOG <ch|0> 1000 <decim=ceil(total_s)> ;
-  PID:PROFILE:TIMING <rampS> <flatS> ; ARM ; PID:PROFILE:START ;
-  wait <2*ramp+flat+1> ; `report all` (or `report <ch>`) -- prefer `report`
-  over bare `plot` here unless the operator only wants the picture.
+- Shot WITHOUT the wizard (operator gave exact numbers): stop ; enable <ch>
+  on|off for EVERY channel (state the plan in "say" first) ; loopmode <ch>
+  open|closed ; demand <ch> <amps> ; gains ... only if asked ; log <ch|all>
+  1000 <decim=ceil(total_s)> ; timing <rampS> <flatS> ; ARM ;
+  PID:PROFile:STARt (NOT the `start` wrapper -- that's PID:START, which
+  bypasses the state machine; ARM + PID:PROFile:STARt is the correct pair,
+  see the RAW SCPI section below) ; wait <2*ramp+flat+1> ; `report all`
+  (or `report <ch>`) -- prefer `report` over bare `plot` here unless the
+  operator only wants the picture. USE THE WRAPPERS (stop/enable/loopmode/
+  demand/timing/log/report), not their raw SCPI equivalents, for
+  everything else in this sequence -- see `timing`'s own catalog entry
+  above for why.
 - Shot WITH guidance: action ["shot"], tell the operator to answer the wizard.
 - Gain tuning (much of the operator's work): show CURRENT gains first
   (`config`), change only what was asked, confirm, offer log+shot to compare
@@ -772,6 +822,35 @@ def log_note(console, text):
         fh.flush()
     except Exception:
         pass  # logging must never take down the console
+
+
+def log_llm_reply(console, round_num, reply):
+    """The FULL record of one raw LLM call -- elapsed time, token usage,
+    the model's own reasoning text (if the backend returned one
+    separately, see LLMClient.chat()), and the exact JSON-contract text
+    that came back. Direct request, 2026-09-14: "write text file records
+    of...everything the llm calls in the background" for after-the-fact
+    debugging -- log_note()'s existing OPERATOR/LLM/ACTION/RESULT lines
+    already covered the SUMMARIZED turn (say text, actions run, their
+    results), but not the raw call itself, so a case like a real session
+    the same day (the model inventing plausible-but-wrong command syntax
+    twice, `profile timing 1 1 2` then `pid profile timing 1 2`) left no
+    record of WHY -- what it was actually "thinking," if anything, is
+    exactly what a raw-only log couldn't show. This is that record,
+    written unconditionally for every round regardless of what the reply
+    parses to -- see main()'s call sites for where JSON-parse-failure and
+    round-limit events get their OWN log_note() call alongside this."""
+    lines = [f"LLM round {round_num} ({reply.elapsed_s:.1f}s"]
+    if reply.usage:
+        lines[0] += (f", {reply.usage.get('prompt_tokens', '?')} prompt/"
+                      f"{reply.usage.get('completion_tokens', '?')} completion tokens")
+    lines[0] += "):"
+    if reply.reasoning:
+        lines.append("  reasoning:")
+        lines.extend(f"    {ln}" for ln in reply.reasoning.splitlines())
+    lines.append("  reply text:")
+    lines.extend(f"    {ln}" for ln in (reply.text.splitlines() or [""]))
+    log_note(console, "\n".join(lines))
 
 
 def main():
@@ -962,16 +1041,21 @@ def main():
                 # hardware (measured 2026-09-14) -- print SOMETHING before
                 # blocking so this doesn't read as a hang.
                 print("  (thinking...)" if not client.suppress_thinking else "  (working...)")
+                round_num = _round + 1
                 try:
-                    raw = client.chat(messages)
+                    reply = client.chat(messages)
                 except LLMError as exc:
                     print(f"[llm error] {exc}")
+                    log_note(console, f"LLM ERROR round {round_num}: {exc}")
                     turn_done = True
                     break
                 except KeyboardInterrupt:
                     print("^C -- turn aborted (the device is untouched by this)")
+                    log_note(console, f"LLM turn aborted (Ctrl-C) round {round_num}")
                     turn_done = True
                     break
+                raw = reply.text
+                log_llm_reply(console, round_num, reply)
                 history.append({"role": "assistant", "content": raw})
 
                 parsed = extract_json(raw)
@@ -979,11 +1063,15 @@ def main():
                     # One explicit correction attempt -- small models
                     # occasionally ramble despite the contract.
                     if not history or "valid JSON" not in history[-1].get("content", ""):
+                        log_note(console, f"LLM round {round_num}: not valid JSON -- "
+                                          f"sending one correction attempt")
                         history.append({"role": "user", "content":
                             "Your last reply was not valid JSON. Reply with EXACTLY one "
                             'JSON object: {"say": "...", "actions": [...]} and nothing else.'})
                         continue
                     print(f"llm (unstructured)> {raw}")
+                    log_note(console, f"LLM round {round_num}: still not valid JSON after "
+                                      f"one correction attempt -- turn ends unstructured")
                     turn_done = True
                     break
 
@@ -1007,9 +1095,10 @@ def main():
             if not turn_done:
                 # The model kept proposing actions until the round cap --
                 # say so, since its last "say" may read like a final answer.
-                print(f"[note] turn stopped at the {MAX_ROUNDS_PER_TURN}-round "
-                      f"multi-step limit -- re-ask or narrow the request if it "
-                      f"wasn't finished.")
+                note = (f"turn stopped at the {MAX_ROUNDS_PER_TURN}-round multi-step "
+                        f"limit -- re-ask or narrow the request if it wasn't finished.")
+                print(f"[note] {note}")
+                log_note(console, f"NOTE: {note}")
     finally:
         console.link.close()
         if not console._log_fh.closed:

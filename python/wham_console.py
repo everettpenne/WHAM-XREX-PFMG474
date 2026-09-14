@@ -1220,6 +1220,64 @@ class WhamConsole(cmd.Cmd):
             return
         self._query_print("PID:RAMP " + " ".join(parts))
 
+    def do_timing(self, arg):
+        """timing [<rampS> <flatS>]  -- wrapper for PID:PROFile:TIMing, the
+        shared shot clock every enabled channel's profile uses (see `shot`/
+        PID:PROFile:STARt). No effect on any channel's setpoint by itself
+        -- just how long the up-ramp/flat-top/down-ramp phases last once a
+        profile actually starts. With no arguments, queries the current
+        setting (PID:PROFile:TIMing?) instead of setting one -- a profile
+        can't start at all until this has been set at least once this
+        session (ERR 12), so this is worth being able to check as easily
+        as set. Added 2026-09-14 -- PID:PROFile:TIMing/CURRent had no
+        wrapper before this, unlike every other PID:* setting; a real LLM-
+        console session invented plausible but wrong syntax for it twice
+        in a row (`profile timing 1 1 2`, `pid profile timing 1 2`) rather
+        than falling back to the exact raw-SCPI form its own system prompt
+        had -- see docs/changelog.txt's matching entry. This wrapper
+        exists so a natural word-based guess actually works instead of
+        requiring exact colon-separated SCPI recall, same reasoning as
+        every other wrapper in this file."""
+        if not self._require_link():
+            return
+        parts = shlex.split(arg)
+        if not parts:
+            self._query_print("PID:PROFILE:TIMING?")
+            return
+        if len(parts) != 2:
+            print("usage: timing <rampSeconds> <flatTopSeconds>  (no args = query)")
+            return
+        reply = self._query_print("PID:PROFILE:TIMING " + " ".join(parts))
+        if reply and not is_err(reply):
+            try:
+                self.profile_timing = dict(ramp_s=float(parts[0]), flat_s=float(parts[1]))
+            except ValueError:
+                pass
+
+    def do_demand(self, arg):
+        """demand <ch> [<amps>]  -- wrapper for PID:PROFile:CURRent: this
+        channel's target current for the NEXT profiled shot (PID:PROFile:
+        STARt) -- distinct from `setpoint`, which is an immediate raw Hz
+        value with no profile/ramp involved. With no `amps`, queries the
+        current value (PID:PROFile:CURRent?) instead of setting one. Added
+        2026-09-14 alongside `timing` -- see that command's own doc
+        comment for why (PID:PROFile:CURRent had the same no-wrapper gap)."""
+        if not self._require_link():
+            return
+        parts = shlex.split(arg)
+        if len(parts) == 1:
+            self._query_print(f"PID:PROFILE:CURRENT? {parts[0]}")
+            return
+        if len(parts) != 2:
+            print("usage: demand <ch> [<amps>]  (no amps = query the current value)")
+            return
+        reply = self._query_print(f"PID:PROFILE:CURRENT {parts[0]} {parts[1]}")
+        if reply and not is_err(reply):
+            try:
+                self.channel_config.setdefault(int(parts[0]), {})["demand_a"] = float(parts[1])
+            except ValueError:
+                pass
+
     def do_start(self, arg):
         """start  -- wrapper for PID:START (asks to confirm first)."""
         if self._require_link():

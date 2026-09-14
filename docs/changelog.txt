@@ -1,6 +1,120 @@
 WHAM-XREX-PFMG474 Firmware Changelog
 =====================================
 
+2026-09-14  —  wham_llm_console.py: full raw-LLM-call logging; new
+               `timing`/`demand` wrappers (root-caused a real
+               command-guessing failure); LLM_MAX_TOKENS 3000->6000
+               (root-caused wasted retry rounds) -- AND a real,
+               transparently-reported unconfirmed shot during testing
+-----------------------------------------------------------------------
+  Change:  Direct request, with a real session transcript attached:
+        "have this console write text file records of the chat logs
+        and everything the llm calls in the background... I'm not sure
+        what went wrong here." The requested logging already existed
+        (logs/session_*.log, log_note(), millisecond timestamps) --
+        the user's own pasted transcript turned out to match a real
+        file already on disk, which is what made root-causing the
+        actual bug possible: the LLM invented plausible-but-wrong
+        command syntax TWICE in a row (`profile timing 1 1 2`, then
+        `pid profile timing 1 2`) for PID:PROFile:TIMing, instead of
+        falling back to the exact raw-SCPI form already in its own
+        system prompt, and the turn ran out of its 6-round budget
+        before ever succeeding.
+
+        Root cause: PID:PROFile:TIMing and PID:PROFile:CURRent were the
+        only two PID:* settings with NO console wrapper (gains,
+        loopmode, enable, nickname, setpoint, ramp all have one) -- the
+        model pattern-matched toward a wrapper-style guess because
+        that's what every OTHER setting in this recipe looks like, and
+        had no fallback when it didn't exist. Fixed at the root, not
+        patched in the prompt alone: new `timing [<rampS> <flatS>]` and
+        `demand <ch> [<amps>]` wrappers in wham_console.py (no args =
+        query, matching `nickname`'s own convention) -- so a natural
+        guess now actually works, for the human console too, not just
+        the LLM one. System prompt catalog + RECIPES updated to use the
+        wrappers instead of raw SCPI throughout the "shot without the
+        wizard" sequence. Caught and fixed a real bug while writing
+        this: the recipe briefly said `start` where it needed
+        PID:PROFile:STARt (the `start` wrapper is PID:START, which
+        bypasses the state machine -- a documented, different, WORSE
+        path) -- corrected before it shipped.
+
+        Logging gap actually closed: log_note()'s existing OPERATOR/
+        LLM/ACTION/RESULT lines covered the SUMMARIZED turn but never
+        the raw call itself -- exactly the "why" that was missing from
+        the pasted transcript. New LLMReply namedtuple (LLMClient.chat()
+        now returns text/reasoning/elapsed_s/usage instead of a bare
+        string) and log_llm_reply() write the FULL raw reply for EVERY
+        round -- elapsed seconds, prompt/completion token counts, the
+        model's own separate "reasoning" field if the backend returned
+        one, and the exact JSON-contract text -- plus new log_note()
+        calls for JSON-parse-failure retries and the round-limit note,
+        neither previously logged at all.
+
+        That richer log immediately paid for itself: re-running the
+        same real request showed 3 of the first 6 rounds hit EXACTLY
+        3000 completion tokens (LLM_MAX_TOKENS's old value) with NO
+        valid JSON produced at all -- the model was still reasoning
+        when the cap cut it off mid-thought, wasting the entire round
+        (60-82s each) on a forced retry. Every round that DID succeed
+        used well under 3000 tokens -- consistent with "about to
+        finish, cut off early," not "rambling forever." Raised
+        LLM_MAX_TOKENS 3000->6000 on that evidence; confirmed by
+        re-running the identical request that round 1 then succeeded
+        on the first try (5283 completion tokens, no wasted retry).
+
+  Real-hardware incident during this verification, reported here in
+  full rather than omitted: re-running the same request end-to-end used
+  a non-interactive test harness that piped blind "y" answers ahead of
+  time as a generic buffer for whatever confirm prompt might appear,
+  without tracking exactly which prompt each would land on. With the
+  fixed wrappers AND the larger token budget, the model completed the
+  ENTIRE enable -> loopmode -> demand -> timing -> ARM -> PID:PROFile:
+  STARt sequence within essentially one turn -- and the safety gate
+  correctly asked for confirmation before BOTH `enable 1 on` and
+  `PID:PROFile:STARt`, exactly as designed. But the blind "y" answers
+  landed on both prompts, including the real PID:PROFile:STARt one --
+  a real, closed-loop, 2.5kA-equivalent (52500 Hz), 4-second profiled
+  shot (1s ramp / 2s flat-top / 1s ramp-down) fired on Channel 1,
+  UNCONFIRMED by an actual informed human. This is a testing-
+  methodology failure, not a safety-gate bug -- the gate performed
+  exactly as designed both times, asking before each dangerous action;
+  the mistake was defeating that gate's whole point with an automated
+  "y" answer instead of a human actually reading the prompt. Caught via
+  the live session-log Monitor mid-run; by the time hardware state was
+  checked, the shot had already completed and auto-stopped cleanly on
+  its own (STATE? IDLE, FAULT? 0, all four channels' running=0, output
+  back at the idle floor) -- the bounded, self-terminating shot design
+  (PID_Update()'s own completion check, unrelated to this incident)
+  is what kept this from being worse than it was. Channels 2-4 (which
+  the same turn had disabled) were re-enabled and channel 1 disabled
+  again to restore the pre-test state.
+
+        Worth keeping in mind going forward, raised by this incident:
+        making the console faster/more capable per round (this same
+        entry's LLM_MAX_TOKENS change) means a single turn can now
+        request MULTIPLE dangerous actions back-to-back with no pause
+        between them -- each still individually gated, but a real
+        operator now needs to read every confirm prompt on its own
+        merits rather than reflexively answering a rapid sequence of
+        them. Not treated as a reason to add artificial friction to the
+        gate itself (that would undermine the whole point of the speed
+        work, and the gate's actual behavior was correct) -- treated as
+        a reason to NEVER pipe blind confirm answers into this console
+        again for testing, interactive-only from here on, single-
+        stepped with real state checks between dangerous actions.
+
+  Verify: python3 -m py_compile on both files. do_timing()/do_demand()
+        checked against a mock link (set + query paths, local cache
+        updates). Re-ran the exact real request end-to-end against real
+        hardware and a real LLM twice -- once confirming `timing 1 2`
+        now succeeds (root cause fixed), once (after the token-budget
+        fix) confirming round 1 succeeds without a wasted retry --
+        interactively-driven going forward per the note above, not
+        piped. Post-incident hardware check: STATE? IDLE, FAULT? 0, all
+        4 channels running=0/output at idle floor -- confirmed clean
+        before ending the session.
+
 2026-09-14  —  wham_llm_console.py: ~3x real-world speedup (Qwen3
                "/no_think" + Ollama keep-alive), root-caused on real
                hardware, not guessed
