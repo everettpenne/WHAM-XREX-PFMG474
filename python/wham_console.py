@@ -11,8 +11,14 @@ project's own bench sessions (docs/changelog.txt's 2026-09-10 entries)
 -- without hand-writing a one-off script each time. `diag` gives a
 one-shot debugging snapshot (state/fault/gate-driver pins/config/live
 status, all channels, one action); `report [ch|all]` does everything
-`plot` does plus a written diagnostic summary (tracking-error stats,
-glitch detection, state/fault at report time) saved under shots/.
+`plot` does plus a written shot-performance summary saved under
+shots/, headlined by output-vs-commanded error (does the frequency the
+controller actually DROVE match what the shot profile commands? --
+computed independently of any feedback measurement) alongside
+feedback-vs-commanded and a feedback-vs-output bench-wiring check --
+see compute_log_stats()'s own doc comment for why those are kept
+separate (this bench's feedback is currently a loopback of the output,
+not an independent supply).
 
 THIS IS A MAINTAINED FRONT END, not a one-off script -- as new PID:*/
 other commands are added to the firmware (commands.c/commands.h/
@@ -340,14 +346,54 @@ def _find_glitches(measured, threshold=15000):
     return idx
 
 
+def _error_stats(a, b):
+    """mean/RMS/max|abs| of (a[i]-b[i]) across two equal-length sequences
+    -- the one signed-error computation every comparison below reuses."""
+    n = len(a)
+    err = [a[i] - b[i] for i in range(n)]
+    return dict(mean=sum(err) / n,
+                max_abs=max(abs(e) for e in err),
+                rms=math.sqrt(sum(e * e for e in err) / n))
+
+
 def compute_log_stats(rows, rate_hz):
     """Summary statistics for one channel's fetched waveform log (rows:
     see WhamLink._fetch_log()/generate_plot()'s own doc for the exact
-    shape) -- backs `report`/`diag`. Tracking error is measured-setpoint
-    at every sample (over the WHOLE log, ramp segments included -- no
+    shape) -- backs `report`/`diag`. Computes THREE separate, distinctly-
+    named comparisons rather than one generic "tracking error" -- direct
+    request, and an important distinction on this hardware:
+
+      - output_error (output - setpoint): does the frequency the
+        controller actually DROVE match what the shot profile COMMANDS?
+        setpoint_hz is computed by TrapezoidalCurrentA()/AmpsToHz()
+        (pid.c) purely from ramp/flat-top/demand-current -- it never
+        depends on any feedback measurement, so this is a clean, always-
+        meaningful check of the controller's own output stage (PID math
+        + the hard slew clamp), valid in BOTH open- and closed-loop mode.
+        THIS is "does the output match what it should" -- the headline
+        number, see _print_report_summary_line().
+      - feedback_error (measured - setpoint): does the FEEDBACK signal
+        reach the target? In closed loop this is what the PID is
+        actually trying to drive to zero via measured feedback, so it
+        also reflects loop convergence/tuning, not just the output
+        stage alone.
+      - feedback_vs_output_error (measured - output): a bench-wiring
+        self-consistency check. *** IMPORTANT CAVEAT, direct instruction
+        to keep in mind: on THIS bench, TODAY, the feedback measurement
+        is physically wired as a loopback of the controller's own output
+        -- not an independent Transrex supply's real response. A small
+        feedback_vs_output_error today mostly just confirms the loopback
+        wiring/timer-capture path itself, NOT real hardware tracking; a
+        LARGE one would still be a real finding (wiring/measurement
+        fault) worth flagging even so. Once a real Transrex feeds this
+        channel's feedback pin, feedback_error becomes the meaningful
+        closed-loop-performance number and this row starts reflecting
+        real external supply dynamics instead of a wiring self-check. ***
+
+    All three computed over the WHOLE log, ramp segments included -- no
     attempt to isolate a "steady-state" window, since this project has
     no established rise-time/overshoot spec to judge against yet; report
-    the numbers, don't invent a pass/fail verdict). Glitch detection
+    the numbers, don't invent a pass/fail verdict. Glitch detection
     reuses _find_glitches() (the same DSLogic-confirmed single-tick
     feedback anomaly _save_and_plot()'s own plot already flags).
     Returns None for an empty log (nothing to summarize)."""
@@ -357,16 +403,15 @@ def compute_log_stats(rows, rate_hz):
     sp = [r["setpoint_hz"] for r in rows]
     ms = [r["measured_hz"] for r in rows]
     op = [r["output_hz"] for r in rows]
-    err = [ms[i] - sp[i] for i in range(n)]
     glitches = _find_glitches(ms)
     return dict(
         count=n, rate_hz=rate_hz, duration_s=(n / rate_hz) if rate_hz else 0.0,
         setpoint_min=min(sp), setpoint_max=max(sp), setpoint_final=sp[-1],
         measured_min=min(ms), measured_max=max(ms), measured_final=ms[-1],
         output_min=min(op), output_max=max(op), output_final=op[-1],
-        error_mean=sum(err) / n,
-        error_max_abs=max(abs(e) for e in err),
-        error_rms=math.sqrt(sum(e * e for e in err) / n),
+        output_error=_error_stats(op, sp),
+        feedback_error=_error_stats(ms, sp),
+        feedback_vs_output_error=_error_stats(ms, op),
         glitch_count=len(glitches),
         glitch_sample_indices=glitches[:20],  # capped -- a full list belongs
                                                # in the saved CSV, not this
@@ -408,17 +453,35 @@ def format_channel_report_md(meta, stats):
     lines.append("")
     lines.append("| | Hz | nominal A |")
     lines.append("|---|---|---|")
-    for label_, key in (("Setpoint (min/max/final)", "setpoint"),
-                         ("Measured (min/max/final)", "measured"),
-                         ("Output (min/max/final)", "output")):
+    for label_, key in (("Setpoint/commanded (min/max/final)", "setpoint"),
+                         ("Measured/feedback (min/max/final)", "measured"),
+                         ("Output/driven (min/max/final)", "output")):
         lo, hi, fin = stats[f"{key}_min"], stats[f"{key}_max"], stats[f"{key}_final"]
         lines.append(f"| {label_} | {lo}/{hi}/{fin} | "
                       f"{hz_to_amps(lo):.2f}/{hz_to_amps(hi):.2f}/{hz_to_amps(fin):.2f} |")
-    lines.append(f"| Tracking error, mean/RMS/max abs (measured - setpoint) "
-                 f"| {stats['error_mean']:.1f}/{stats['error_rms']:.1f}/{stats['error_max_abs']:.1f} "
-                 f"| {hz_delta_to_amps(stats['error_mean']):.2f}/"
-                 f"{hz_delta_to_amps(stats['error_rms']):.2f}/"
-                 f"{hz_delta_to_amps(stats['error_max_abs']):.2f} |")
+
+    def _err_row(label_, e):
+        return (f"| {label_} | {e['mean']:.1f}/{e['rms']:.1f}/{e['max_abs']:.1f} "
+                f"| {hz_delta_to_amps(e['mean']):.2f}/{hz_delta_to_amps(e['rms']):.2f}/"
+                f"{hz_delta_to_amps(e['max_abs']):.2f} |")
+
+    lines.append(_err_row("**Output vs commanded**, mean/RMS/max abs (output - setpoint) "
+                           "-- did the controller drive what the shot profile commands?",
+                           stats["output_error"]))
+    lines.append(_err_row("Feedback vs commanded, mean/RMS/max abs (measured - setpoint) "
+                           "-- did the feedback signal reach target? (loop convergence)",
+                           stats["feedback_error"]))
+    lines.append(_err_row("Feedback vs output, mean/RMS/max abs (measured - output) -- "
+                           "bench wiring self-check, see caveat below",
+                           stats["feedback_vs_output_error"]))
+    lines.append("")
+    lines.append("*Feedback is currently wired as a loopback of this controller's own "
+                  "output, not an independent Transrex supply -- \"Feedback vs commanded\" "
+                  "above mostly validates loop math/convergence against that loopback "
+                  "today, not real external hardware tracking, and \"Feedback vs output\" "
+                  "is a wiring/measurement self-check rather than a performance number. "
+                  "**\"Output vs commanded\" is the one that answers whether the output "
+                  "frequency matches what it should, independent of the feedback path.**")
     lines.append("")
     if stats["glitch_count"]:
         lines.append(f"- **{stats['glitch_count']} isolated single-tick glitch(es)** in "
@@ -1369,34 +1432,45 @@ class WhamConsole(cmd.Cmd):
         """One compact line per channel -- what `report` prints to the
         terminal (and what an LLM front end actually sees back, given
         wham_llm_console.py's MAX_RESULT_CHARS cap); the full detail is
-        only in the saved .md file, not repeated here."""
+        only in the saved .md file, not repeated here. Leads with
+        output-vs-commanded (see compute_log_stats()'s own doc comment
+        for why that, not measured-vs-commanded, is "does the output
+        match what it should")."""
         label = channel_label(meta["channel"], meta.get("nickname"))
         if stats is None:
             print(f"  {label}: no log data (logging not armed before this run, "
                   f"or the channel never ran)")
             return
-        print(f"  {label}: {stats['count']} samples/{stats['duration_s']:.2f}s, "
-              f"measured {stats['measured_min']}-{stats['measured_max']}Hz, "
-              f"tracking error RMS {stats['error_rms']:.0f}Hz "
-              f"({hz_delta_to_amps(stats['error_rms']):.2f}A nominal), "
-              f"{stats['glitch_count']} glitch(es)")
+        oe, fe = stats["output_error"], stats["feedback_error"]
+        print(f"  {label}: {stats['count']} samples/{stats['duration_s']:.2f}s -- "
+              f"output vs commanded RMS {oe['rms']:.0f}Hz ({hz_delta_to_amps(oe['rms']):.2f}A), "
+              f"feedback vs commanded RMS {fe['rms']:.0f}Hz ({hz_delta_to_amps(fe['rms']):.2f}A, "
+              f"today = loopback), {stats['glitch_count']} glitch(es)")
 
     def do_report(self, arg):
-        """report [channel|all]  -- like `plot` (fetches PID:LOGDATA?,
-        saves CSV + metadata JSON + PNG under shots/), PLUS a written
-        diagnostic summary saved as shots/<ts>_ch<N>_report.md (or
-        <ts>_allch_report.md): sample count/rate, setpoint/measured/
-        output ranges (Hz and nominal A), tracking-error mean/RMS/max,
-        and any detected feedback glitches -- see compute_log_stats()/
-        format_channel_report_md() for exactly what's computed and
-        why (in particular: no invented pass/fail verdict -- this
-        project has no established tracking-error spec yet, so the
-        report states the numbers and lets the operator/LLM judge
-        them). Also queries STATE?/FAULT? at report time, so the report
-        itself shows whether the run ended cleanly or in a fault. Only
-        a short summary goes to the terminal -- the full detail is in
-        the saved file. Same channel-selection rule as `plot` (arg,
-        else whatever `log`/`shot` last armed)."""
+        """report [channel|all]  -- shot PERFORMANCE analysis: does the
+        frequency the controller actually output match what the shot
+        profile commanded? Like `plot` (fetches PID:LOGDATA?, saves CSV
+        + metadata JSON + PNG under shots/), PLUS a written summary
+        saved as shots/<ts>_ch<N>_report.md (or <ts>_allch_report.md)
+        with THREE separate error comparisons -- output-vs-commanded
+        (the headline "did it output what it should" number, valid
+        regardless of loop mode since the commanded setpoint never
+        depends on feedback), feedback-vs-commanded (closed-loop
+        convergence), and feedback-vs-output (today, a bench-wiring
+        self-check -- feedback is currently looped back from this
+        controller's own output, NOT an independent Transrex supply, so
+        don't read that row as real hardware performance). See
+        compute_log_stats()'s own doc comment for the full reasoning,
+        and format_channel_report_md() for exactly what's written. No
+        invented pass/fail verdict -- this project has no established
+        tracking-error spec yet, so the report states the numbers and
+        lets the operator/LLM judge them. Also queries STATE?/FAULT? at
+        report time, so the report itself shows whether the run ended
+        cleanly or in a fault. Only a short summary goes to the
+        terminal -- the full detail is in the saved file. Same
+        channel-selection rule as `plot` (arg, else whatever `log`/
+        `shot` last armed)."""
         if not self._require_link():
             return
         want_all = arg.strip().lower() == "all" or (not arg.strip() and self.last_log_all)

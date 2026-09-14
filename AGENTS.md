@@ -180,10 +180,16 @@ decision (see `docs/command_reference.md`'s `FIRE` entry).
     leading token -- that section explains exactly why and how).
     `diag` (added 2026-09-14) is a one-action debugging snapshot
     (state/fault/GDS/QSPI/PFMIN + every channel's config and live
-    status); `report [ch|all]` (same date) does everything `plot` does
-    plus a written .md diagnostic summary under `shots/` (tracking-
-    error stats, glitch detection, state/fault at report time) -- see
-    `compute_log_stats()`/`format_channel_report_md()`.
+    status); `report [ch|all]` (same date, extended 2026-09-14) is the
+    shot-PERFORMANCE tool -- does everything `plot` does plus a written
+    .md summary under `shots/` with THREE separate error comparisons:
+    output-vs-commanded (did the controller drive what the profile
+    said, independent of any feedback), feedback-vs-commanded (closed-
+    loop convergence), and feedback-vs-output (today, a bench-wiring
+    self-check only -- feedback is currently looped back from this
+    controller's own output, not an independent Transrex supply) -- see
+    `compute_log_stats()`'s own doc comment for the full reasoning and
+    `format_channel_report_md()` for what's written.
   - `wham_llm_console.py` -- added 2026-09-14, SIDE PROJECT (lower
     priority than the main firmware work, not yet exercised against
     real hardware or a real LLM server -- see docs/changelog.txt's

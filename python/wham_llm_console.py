@@ -55,7 +55,7 @@ consumer hardware, both free and cross-platform (macOS and Windows):
     and running. This script's defaults point straight at it.
     NOTE -- Ollama's default context window is only 4096 tokens, and this
     script's system prompt (project briefing + command catalog, including
-    the `diag`/`report` debugging tools) is ~3500 of that BY ITSELF, before
+    the `diag`/`report` debugging tools) is ~3700 of that BY ITSELF, before
     any conversation history or the model's own reply -- 4096 is too tight
     for real use. Raise the window once when starting the server:
         OLLAMA_CONTEXT_LENGTH=16384 ollama serve
@@ -576,12 +576,28 @@ list goes to the controller VERBATIM as raw SCPI):
   start | stop        PID:START (DANGEROUS) | PID:STOP (always safe)
   log <ch|all> <maxSamples> <decim>    arm waveform logging (all = same ticks)
   plot [ch|all]       fetch PID:LOGDATA?, save CSV+JSON+PNG under shots/
-  report [ch|all]     like `plot` PLUS a written diagnostic summary (sample
-                      count, setpoint/measured/output ranges, tracking-error
-                      mean/RMS/max, glitch count, state/fault at report time)
-                      saved as shots/<ts>..._report.md -- the RIGHT action
-                      after a shot/test run when the operator wants a report,
-                      a writeup, or "how did that go?"; only a short one-line-
+  report [ch|all]     SHOT PERFORMANCE analysis -- like `plot` (CSV+JSON+PNG)
+                      PLUS a written summary (shots/<ts>..._report.md) with
+                      THREE separate numbers: (1) output-vs-commanded (output
+                      - setpoint) -- did the controller actually DRIVE what
+                      the shot profile commanded? This is the one that
+                      answers "did the frequency output match what it
+                      should", valid regardless of loop mode, since the
+                      commanded setpoint never depends on any feedback
+                      measurement; (2) feedback-vs-commanded (measured -
+                      setpoint) -- closed-loop convergence; (3) feedback-vs-
+                      output (measured - output) -- a BENCH WIRING self-check
+                      only. *** Feedback is currently wired as a loopback of
+                      this controller's OWN output, not an independent
+                      Transrex supply -- (2) and (3) mostly validate that
+                      loopback today, not real external hardware tracking.
+                      Lead with (1) when asked whether the output matches
+                      what it should; mention (2)/(3) as secondary and name
+                      the loopback caveat if the operator might read them as
+                      real supply performance. *** The RIGHT action after a
+                      shot/test run when the operator wants a report, a
+                      writeup, "how did that go", or specifically whether the
+                      output matched what it should; only a short one-line-
                       per-channel summary comes back to you, the rest is in
                       the saved file -- tell the operator its path
   shot                interactive shot wizard (DANGEROUS; the OPERATOR answers
@@ -735,11 +751,11 @@ def main():
     client = LLMClient(args.endpoint, args.model, timeout=args.timeout)
     if "11434" in args.endpoint:
         # Ollama's default context window (4096) does NOT fit this script's
-        # system prompt (~3500 tokens by itself) plus any real conversation
+        # system prompt (~3700 tokens by itself) plus any real conversation
         # -- say so once, up front, rather than debugging "the model forgot
         # its JSON contract" later.
         print("[tip] Ollama's default context is 4096 tokens; this console's system")
-        print("      prompt alone is ~3500 -- start the server with a bigger window:")
+        print("      prompt alone is ~3700 -- start the server with a bigger window:")
         print("      OLLAMA_CONTEXT_LENGTH=16384 ollama serve")
     try:
         models = client.list_models()

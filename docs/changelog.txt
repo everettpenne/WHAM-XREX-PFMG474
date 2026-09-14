@@ -1,6 +1,87 @@
 WHAM-XREX-PFMG474 Firmware Changelog
 =====================================
 
+2026-09-14  —  `report` now does THREE-way shot performance analysis
+               (output-vs-commanded, not just measured-vs-setpoint) --
+               separates "did the output match what it should" from
+               today's feedback-loopback wiring
+-----------------------------------------------------------------------
+  Change:  Direct request, and an important correction to the `report`
+        tool added earlier today: "analyze the performance of the shot
+        insofar as whether or not the frequency output matches what it
+        should... the on-board controller measurement is a feedback
+        measurement, not necessarily the output of the controller
+        (although right now the feedback measurement is routed to the
+        output of the controller)."
+
+        Traced pid.c's own profile math (TrapezoidalCurrentA()/
+        AmpsToHz(), PID_Update()) to confirm: PID:LOGDATA?'s
+        setpoint_hz is computed FRESH every tick straight from ramp/
+        flat-top/demand-current -- it never depends on any feedback
+        measurement at all. That makes it the right ground truth for
+        "what the output SHOULD be," independent of loop mode -- and it
+        means comparing OUTPUT to it (not MEASURED to it) is what
+        actually answers "did the controller drive what it should,"
+        since output_hz is the literal value written to HRTIM
+        (ClampOutputSlew(setpointHz, ...) in open loop; the PID's own
+        computed correction in closed loop) while measured_hz is
+        whatever the feedback-capture path reports -- today, on this
+        bench, a loopback of the controller's OWN output, not an
+        independent Transrex supply's real response. The earlier
+        `report`'s single "tracking error" was measured-vs-setpoint,
+        which -- exactly per the request's own caution -- risks reading
+        as real hardware performance when today it mostly just
+        validates the bench loopback wiring.
+
+        compute_log_stats() now computes three separately-named, always-
+        computed comparisons instead of one: output_error (output -
+        setpoint, the headline "does the output match what it should"
+        number), feedback_error (measured - setpoint, closed-loop
+        convergence), and feedback_vs_output_error (measured - output,
+        a bench-wiring self-check). format_channel_report_md()'s table
+        gains a row for each, plus an explicit caveat paragraph
+        explaining which number means what on THIS bench today.
+        _print_report_summary_line() (the terminal/LLM-facing summary)
+        now leads with output-vs-commanded RMS instead of the old
+        single tracking-error number. New _error_stats(a, b) helper
+        (mean/RMS/max|abs| of a-b) shared by all three so the
+        computation itself only exists once.
+
+        wham_llm_console.py's system prompt `report` catalog entry and
+        module docstring rewritten to teach the LLM the same
+        distinction explicitly -- lead with output-vs-commanded when
+        asked whether output matches expected, name the loopback
+        caveat before treating feedback-vs-* as real supply
+        performance. Prompt grew to ~3700 tokens (was ~3500).
+
+        Deliberately did NOT add a from-scratch independent
+        reconstruction of the trapezoid profile in Python (i.e.
+        re-deriving expected_hz(t) from ramp/flat/demand-current
+        outside of trusting setpoint_hz) -- that would duplicate
+        pid.c's own math in a second place this project has repeatedly
+        flagged as a real drift risk elsewhere (every "MUST MATCH
+        ctrlr_config.h" comment already in this file), without adding
+        genuine independence (it's still just Python arithmetic mirror-
+        ing firmware arithmetic). For output verification genuinely
+        independent of firmware self-report, this project already has
+        `~/dslogic-tool` (see python/dslogic_shot_capture.py) -- an
+        external logic analyzer on the real output pin. `report`'s
+        output-vs-commanded number is the right, well-scoped answer for
+        day-to-day shot debugging; DSLogic is the escalation path when
+        a genuinely independent check matters.
+
+  Verify: python3 -m py_compile on both files. Re-ran the existing mock-
+        serial-link test (no hardware needed) to confirm no regression
+        in the single- and all-channel report paths, plus a NEW mock
+        scenario with output deliberately lagging setpoint by a
+        simulated 2-tick slew (output_error correctly nonzero/~280Hz
+        RMS during the ramp) and small feedback noise layered on top of
+        output (feedback_vs_output_error correctly small/~19Hz RMS,
+        isolated from the larger output_error) -- confirms the three
+        numbers actually disentangle as intended rather than collapsing
+        into one indistinguishable "tracking error." Not yet run
+        against real hardware.
+
 2026-09-14  —  New `diag`/`report` console commands (debugging +
                shot-report tools for wham_console.py and the LLM
                console); ERROR_CODES table staleness fixed (13/14
