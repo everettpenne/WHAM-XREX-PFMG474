@@ -1,6 +1,87 @@
 WHAM-XREX-PFMG474 Firmware Changelog
 =====================================
 
+2026-09-14  —  wham_llm_console.py: ~3x real-world speedup (Qwen3
+               "/no_think" + Ollama keep-alive), root-caused on real
+               hardware, not guessed
+-----------------------------------------------------------------------
+  Change:  Direct request ("our current llm setup is taking too long to
+        respond -- what can we do to make it faster?"). Measured the
+        actual bottleneck on real hardware (M2 Pro/16GB) rather than
+        guessing: the exact health-check prompt from this file's
+        2026-09-14 hardware-test entry took 112.3s wall time for ONE
+        round trip -- and `usage` in the raw API response showed why:
+        2815 of 2815 completion tokens were spent, almost all of it
+        (11372 chars) in qwen3's own <think> reasoning, to decide on a
+        trivial two-action health check. Prompt processing itself was
+        fast (4018/4037 prompt tokens were cache hits) -- the system
+        prompt's size was NOT the bottleneck here; the model's own
+        "thinking" habit was.
+
+        Tried Ollama's OWN native fix first -- /api/chat's "think":
+        false parameter, the documented, "proper" way to disable
+        Qwen3's reasoning. It did NOT work on this setup: this Ollama
+        build serves qwen3 with --chat-template chatml --no-jinja (a
+        generic template, not qwen3's own jinja template that "think"
+        actually hooks into), so reasoning showed up INLINE in
+        "content" regardless of the flag, which would have broken the
+        JSON action contract. Fell back to Qwen3's own plain-text
+        convention instead -- appending "/no_think" to the latest
+        turn -- which doesn't depend on that template plumbing and
+        measurably worked: the SAME prompt, same correct two actions,
+        30.3s (~3.7x faster), reasoning chars 11372 -> 4698 (reduced,
+        not eliminated -- this setup can't fully suppress it, only
+        substantially shorten it).
+
+        wham_llm_console.py: new LLMClient.suppress_thinking (default
+        ON) + NO_THINK_SUFFIX constant; chat() appends it to a COPY of
+        the outgoing messages' last turn, never mutating/persisting it
+        into the stored conversation history (so the operator never
+        sees literal "/no_think" in their own message log). New
+        `/think [on|off]` local command (mirrors `/auto`'s pattern) to
+        toggle it live -- default ON since speed was the direct
+        request, but this is a real, not-fully-characterized
+        reliability tradeoff (less reasoning could mean worse tool-
+        selection on harder recipes -- see this file's own prior
+        2026-09-14 entry on `report`'s tool-selection gap, itself
+        found with full thinking enabled) -- flagged in both the
+        module docstring and /help text, not silently traded away.
+        Also added a "(working...)" progress print before every
+        blocking LLM call -- even at 3.7x faster, a 10-30s silent wait
+        reads as a hang otherwise.
+
+        Second, independent factor found and fixed: Ollama's default
+        keep-alive unloads an idle model from GPU memory after ~5
+        minutes, so stepping away and coming back pays a full ~5GB
+        model reload on top of normal per-turn latency. Tried passing
+        "keep_alive" in the request body first (same "maybe it just
+        works" hope as the context-length options field earlier this
+        day) -- confirmed via `ollama ps`'s UNTIL column that it does
+        NOT take effect through the OpenAI-compatible endpoint either,
+        same class of limitation as that earlier finding. Fixed the
+        same way as the context-length fix: `launchctl setenv
+        OLLAMA_KEEP_ALIVE 30m`, killed and relaunched Ollama (same
+        session-scoped caveat as OLLAMA_CONTEXT_LENGTH -- doesn't
+        survive a logout/reboot). Confirmed via `ollama ps`: UNTIL
+        jumped from ~5 minutes to ~29 minutes after one request.
+
+        End-to-end result, same real health-check prompt, real
+        hardware, both fixes combined: 97.8s -> 31.5s total wall time
+        for the whole two-LLM-call turn (connect + model check
+        included) -- roughly 3x faster in realistic use, not just the
+        isolated 3.7x per-call number.
+
+  Verify: python3 -m py_compile. Confirmed via `ollama ps` that both
+        server-level fixes actually took effect (CONTEXT and UNTIL
+        columns). Re-ran the exact health-check prompt end-to-end
+        against real hardware with the finished code (not a curl
+        probe) to get the final 31.5s number. Did NOT re-verify
+        `report`'s tool-selection reliability (the gap found in this
+        file's earlier 2026-09-14 entry) under /no_think -- flagged as
+        an open question in the code/docs rather than silently assumed
+        fine, since less reasoning is the more likely direction for
+        that gap to worsen, not improve.
+
 2026-09-14  —  `report` now does THREE-way shot performance analysis
                (output-vs-commanded, not just measured-vs-setpoint) --
                separates "did the output match what it should" from

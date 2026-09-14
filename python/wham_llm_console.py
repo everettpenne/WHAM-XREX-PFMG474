@@ -72,6 +72,20 @@ struggle with the JSON output contract. Model replies have any
 <think>...</think> blocks stripped before parsing, so reasoning-style
 models (qwen3 et al.) work as-is.
 
+SPEED -- qwen3 "thinks" before every reply, and it's expensive: measured
+on a real M2 Pro/16GB against real hardware, 2026-09-14, a trivial two-
+action health-check decision took 112s wall time, ALL of it generating
+~2800 tokens of chain-of-thought for a decision that needed none. This
+script appends Qwen3's own "/no_think" convention to every turn by
+default (LLMClient.suppress_thinking, NO_THINK_SUFFIX) -- the SAME
+request measured 30s with it on, same correct actions, ~3.7x faster.
+Toggle live with `/think on` if tool-selection seems to suffer without
+deep reasoning (not fully characterized either way). Ollama's own native
+"think": false parameter (the "proper" toggle) does NOT work on a
+default Ollama+qwen3 setup that serves with a generic chat template
+(confirmed on this exact setup) -- the plain-text convention is the
+actual fix, not a fallback.
+
 Prerequisites:
   pip install pyserial          (required -- same as wham_console.py)
   pip install matplotlib        (optional -- only for `plot`/`shot` plots)
@@ -95,6 +109,8 @@ Once running:
   /raw <line>   run one wham_console command line directly, bypassing the LLM
                 (same confirm gate; e.g. `/raw *IDN?`, `/raw status`)
   /auto [on|off]    toggle the dangerous-command confirm gate (default off)
+  /think [on|off]   toggle Qwen3's "/no_think" speed trick (default ON --
+                     ~3.7x faster measured on real hardware, see NO_THINK_SUFFIX)
   /model [name]     show or switch the current endpoint/model; /models lists server models
   /clear            forget the conversation so far (device state is unaffected)
   /help             show the local command list again
@@ -142,6 +158,21 @@ LLM_MAX_TOKENS = 3000   # reasoning models (qwen3 et al., the recommended defaul
                         # mid-thought (strip_think() handles that defensively,
                         # see its docstring, but a bigger budget means it
                         # happens less often in the first place)
+
+NO_THINK_SUFFIX = " /no_think"
+# Qwen3's own documented soft-switch convention (append to the latest turn
+# to request a non-reasoning reply) -- NOT a formal API parameter, just text
+# the model was trained to respect. Tested against Ollama's *native*
+# /api/chat "think": false parameter first (the "proper" toggle) -- it did
+# NOT work on this setup: this Ollama build serves qwen3 with
+# --chat-template chatml --no-jinja (a generic template, not qwen3's own
+# jinja template that "think" actually hooks into), so reasoning showed up
+# INLINE in "content" regardless of the "think" flag, breaking the JSON
+# contract. The plain-text /no_think suffix works BECAUSE it doesn't depend
+# on that template plumbing -- confirmed via a real measured 112s->30s
+# round trip on this exact box. Only meaningful for Qwen3 models; harmless
+# (just unused trailing text) if pointed at a model that doesn't recognize
+# it, so no model-name gating -- see LLMClient.chat().
 
 MAX_ROUNDS_PER_TURN = 6   # LLM acts -> sees results -> acts again, capped
 MAX_ACTIONS_PER_ROUND = 12
@@ -198,10 +229,20 @@ class LLMError(Exception):
 
 
 class LLMClient:
-    def __init__(self, endpoint, model, timeout=LLM_TIMEOUT_S):
+    def __init__(self, endpoint, model, timeout=LLM_TIMEOUT_S, suppress_thinking=True):
         self.base = endpoint.rstrip("/")
         self.model = model
         self.timeout = timeout
+        # See NO_THINK_SUFFIX's own comment -- measured on real hardware,
+        # 2026-09-14: qwen3:4b spent 2815 of 2815 completion tokens (112s
+        # wall time) THINKING about a trivial two-action health-check
+        # decision. Appending "/no_think" cut that to 30s (~3.7x) with the
+        # same correct actions. Default ON since speed was the direct
+        # request that led to this; toggle live with /think on|off if
+        # tool-selection reliability seems to suffer without deep
+        # reasoning (not fully characterized either way -- see
+        # docs/changelog.txt's 2026-09-14 entry for what WAS tested).
+        self.suppress_thinking = suppress_thinking
 
     def _post(self, path, payload):
         req = urllib.request.Request(
@@ -232,7 +273,20 @@ class LLMClient:
     def chat(self, messages):
         """One non-streaming chat completion. Returns the assistant message's
         content string with any <think>...</think> blocks stripped (qwen3 et
-        al. -- the JSON contract applies to what remains)."""
+        al. -- the JSON contract applies to what remains).
+
+        When self.suppress_thinking, appends NO_THINK_SUFFIX to a COPY of
+        the last message before sending -- never mutates the caller's own
+        `messages`/history, so /no_think never ends up literally stored or
+        replayed back to the model as if the operator typed it. Applied to
+        whichever message is actually last (the operator's own turn on
+        round 1 of a multi-round turn, or a synthesized "Command results:"
+        message on a later round) -- Qwen3's own convention is "the latest
+        turn," not specifically a human-authored one, so this is applied
+        the same way on every round for consistent latency."""
+        if self.suppress_thinking and messages and messages[-1].get("role") == "user":
+            messages = messages[:-1] + [{**messages[-1],
+                                          "content": messages[-1]["content"] + NO_THINK_SUFFIX}]
         data = self._post("/chat/completions", {
             "model": self.model,
             "messages": messages,
@@ -695,6 +749,10 @@ local commands (everything ELSE you type goes to the LLM):
   /raw <line>    run one wham_console command line directly (bypasses the LLM;
                  same confirm gate) -- e.g. /raw *IDN?   /raw status
   /auto [on|off] toggle the dangerous-command confirm gate (default off)
+  /think [on|off] toggle Qwen3's "/no_think" speed trick (default ON --
+                 ~3.7x faster on real hardware, measured 2026-09-14; turn
+                 off if tool-selection seems to suffer without deep
+                 reasoning -- not fully characterized either way)
   /model [name]  show the current LLM endpoint/model; with a name, switch
                  models for this session (clears the conversation)
   /models        list the models the server reports
@@ -860,6 +918,11 @@ def main():
                     if v in ("on", "off"):
                         executor.auto = (v == "on")
                     print(f"auto (confirm-gate bypass): {'ON -- LLM acts without asking' if executor.auto else 'off'}")
+                elif cmd_name == "/think":
+                    v = rest.strip().lower()
+                    if v in ("on", "off"):
+                        client.suppress_thinking = (v == "off")  # /think on -> DON'T suppress
+                    print(f"thinking: {'off (fast, /no_think appended -- default)' if client.suppress_thinking else 'ON (slower, full reasoning)'}")
                 elif cmd_name == "/model":
                     if rest.strip():
                         client.model = rest.strip()
@@ -895,6 +958,10 @@ def main():
             for _round in range(MAX_ROUNDS_PER_TURN):
                 messages = ([{"role": "system", "content": system_prompt}]
                             + history[-HISTORY_KEEP:])
+                # Even with /no_think, a round can take 10-30s on real
+                # hardware (measured 2026-09-14) -- print SOMETHING before
+                # blocking so this doesn't read as a hang.
+                print("  (thinking...)" if not client.suppress_thinking else "  (working...)")
                 try:
                     raw = client.chat(messages)
                 except LLMError as exc:

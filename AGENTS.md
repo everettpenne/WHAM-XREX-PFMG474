@@ -192,17 +192,31 @@ decision (see `docs/command_reference.md`'s `FIRE` entry).
     `format_channel_report_md()` for what's written.
   - `wham_llm_console.py` -- added 2026-09-14, SIDE PROJECT (lower
     priority than the main firmware work, not yet exercised against
-    real hardware or a real LLM server -- see docs/changelog.txt's
-    2026-09-14 entry). An alternate front end to `wham_console.py`
-    where the operator talks in plain English to a small local LLM
-    (Ollama/LM Studio), which decides which `wham_console.py` command
-    lines to run; drives a real `WhamConsole` instance unmodified, so
-    it adds no new wire behavior of its own -- see its own header
-    comment for the full design (system prompt, JSON action contract,
-    safety gate). Its own safety gate and `wham_console.py`'s
-    `_is_dangerous()` share one source of truth as of the 2026-09-14
-    fix below -- keep it that way; don't reintroduce a separate,
-    driftable dangerous-command list in this file.
+    real hardware or a real LLM server as of its first commit --
+    SINCE tested end-to-end against both, same day: health checks and
+    `diag` work reliably and accurately; the safety gate held under a
+    real "do it immediately" prompt (no PWM output reached the wire);
+    `report`'s natural-language tool-selection has a demonstrated,
+    not-fully-fixed reliability gap (see docs/changelog.txt's
+    2026-09-14 entries for the full record, including a ~3x real-world
+    speedup via Qwen3's "/no_think" convention + a longer Ollama
+    keep-alive -- both root-caused on real hardware, not guessed).
+    An alternate front end to `wham_console.py` where the operator
+    talks in plain English to a small local LLM (Ollama/LM Studio),
+    which decides which `wham_console.py` command lines to run; drives
+    a real `WhamConsole` instance unmodified, so it adds no new wire
+    behavior of its own -- see its own header comment for the full
+    design (system prompt, JSON action contract, safety gate, speed).
+    Its own safety gate and `wham_console.py`'s `_is_dangerous()` share
+    one source of truth as of the 2026-09-14 fix below -- keep it that
+    way; don't reintroduce a separate, driftable dangerous-command list
+    in this file. Ollama's own default config (4096 context, ~5min
+    keep-alive) is too tight for this script -- see its header comment
+    for the actual working fix (launchctl setenv, both a context-length
+    AND a keep-alive parameter silently do NOT take effect when passed
+    per-request through Ollama's OpenAI-compatible endpoint, confirmed
+    on this exact setup -- don't assume a per-request override works
+    without checking `ollama ps` before trusting it).
   - `scpi.py` -- a minimal interactive serial terminal (not written by
     an agent; predates this documentation pass, and predates
     `wham_console.py` above). Superseded by `wham_console.py` for
