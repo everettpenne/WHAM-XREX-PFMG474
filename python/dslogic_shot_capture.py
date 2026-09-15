@@ -37,17 +37,34 @@ below. The bare Ch<N> label is never dropped even when a nickname is
 set; the nickname is purely an extra, human-friendly label alongside
 it, matching wham_console.py's own channel_label() convention.
 
-WIRING ASSUMPTION (fixed, per the user's own direct hardware setup,
-corrected 2026-09-13 -- see that day's dslogic-tool memory note for the
-earlier Ch2/Ch3 mixup this superseded):
-    WHAM channel 1 (Phase U) <-> DSLogic Ch0
-    WHAM channel 2 (Phase V) <-> DSLogic Ch1
-    WHAM channel 3 (Phase W) <-> DSLogic Ch2
-    WHAM channel 4 (Phase X) <-> DSLogic Ch3
-All four WHAM channels have DSLogic wiring -- the "no DSLogic wiring on
-this channel" panel note only fires for a channel number outside this
-map (e.g. if HRTIM_NUM_CHANNELS is ever raised past 4). See
-WHAM_TO_DSLOGIC_CHANNEL below if the physical wiring ever changes again.
+WIRING ASSUMPTION (CORRECTED 2026-09-15 -- see that day's dslogic-tool
+memory note for the full story, including why this superseded not just
+one but TWO earlier wrong assumptions across two separate sessions):
+    WHAM channel 1 (Phase U)  <-> DSLogic Ch0  (Ch1 = Phase UN, the
+    WHAM channel 2 (Phase V)  <-> DSLogic Ch2   complementary/inverted
+    WHAM channel 3 (Phase W)  <-> DSLogic Ch4   output of the SAME HRTIM
+    WHAM channel 4 (Phase X)  <-> DSLogic Ch6   channel -- not captured
+                                                 here, carries identical
+                                                 frequency information)
+Each WHAM/HRTIM channel drives a COMPLEMENTARY PAIR of physical outputs
+(HRTIM1_SetChannelOutputEnable()'s own doc comment: "output-1-ACTIVE/
+output-2-INACTIVE"), wired out to TWO adjacent DSLogic channels each
+(U/UN, V/VN, W/WN, X/XN) -- 8 DSLogic channels total for this board's 4
+WHAM channels, not a 1:1 mapping. This module only ever captures the
+non-inverted ("positive") phase of each pair -- confirmed on real
+hardware, 2026-09-15, that the inverted phase carries the exact same
+frequency information (same edge count/timing to within ~1 sample),
+so capturing both would be redundant, not additional verification.
+Direct real-hardware consequence of NOT knowing this earlier: a
+2026-09-13/09-14 investigation that looked exactly like "WHAM Ch2/Ch3
+are physically swapped on the bench" (see the memory note) was very
+likely this SAME complementary-pair confusion misread as a swap, not a
+real wiring defect -- confirmed on 2026-09-15 once the ACTUAL 8-channel
+mapping was known: with it, every one of 3 simultaneously-active WHAM
+channels (three genuinely different commanded frequencies) decoded
+correctly and unambiguously on the first try, no swap-like symptom
+anywhere. See WHAM_TO_DSLOGIC_CHANNEL below if the physical wiring
+ever changes again.
 """
 
 import os
@@ -58,7 +75,7 @@ import time
 
 DSLOGIC_TOOL_DIR = os.path.expanduser("~/dslogic-tool")
 
-WHAM_TO_DSLOGIC_CHANNEL = {1: 0, 2: 1, 3: 2, 4: 3}
+WHAM_TO_DSLOGIC_CHANNEL = {1: 0, 2: 2, 3: 4, 4: 6}
 
 DEFAULT_SAMPLERATE_HZ = 2_000_000
 DSLOGIC_ATOMIC_SIZE = 8  # bytes of one channel's own data per rotation --

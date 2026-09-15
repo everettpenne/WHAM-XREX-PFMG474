@@ -1,6 +1,97 @@
 WHAM-XREX-PFMG474 Firmware Changelog
 =====================================
 
+2026-09-15  —  OCP fault fix independently confirmed on real hardware
+               via DSLogic; dslogic_shot_capture.py's WHAM<->DSLogic
+               channel mapping corrected -- it was wrong all session
+               (and very likely explains the earlier "Ch2/Ch3 wiring
+               swap" finding too)
+-----------------------------------------------------------------------
+  Change:  Direct request: a real 3-second shot (channels 1/2/3, open
+        loop, 600A/1000A/1400A) with the operator manually arming
+        DSLogic and a mock OCP fault (`OCP:TEST:FAULT 2`) triggered
+        mid-flat-top, specifically to close the "not yet scope/DSLogic-
+        confirmed" gap this project's own memory had flagged against
+        the frozen-ramp bugfix from this same day's earlier entry.
+
+        Decoded the resulting multi-block .dsl capture (75 blocks/
+        channel, 1.25B samples/channel, 250MHz/8ch -- too large to
+        unpack fully into memory at once; dsl_viewer.py's own
+        `DslCapture` explicitly rejects multi-block files for exactly
+        this reason) with a purpose-built streaming decoder: one block
+        (2MiB) at a time, unpack -> find edges via a vectorized diff ->
+        discard, keeping only edge timestamps -- peak memory bounded to
+        one block regardless of total capture length, plus a fast-path
+        that skips fully-constant blocks without unpacking at all.
+
+        First pass (channels 0-3 only, using the WHAM_TO_DSLOGIC_CHANNEL
+        mapping this file has used all session, {1:0, 2:1, 3:2, 4:3})
+        produced a confusing result: channels 0/1 showed IDENTICAL
+        frequency trajectories, channels 2/3 ALSO showed identical
+        trajectories (both pairs matching down to sub-1% precision),
+        and channel 3's own real commanded frequency (31600 Hz) never
+        appeared on ANY of the 4 probed channels at all. Reported this
+        honestly as an apparent bench wiring/probe issue rather than
+        assuming the fix was still broken (the fix's own signature --
+        smooth continuous ramp-down vs. instant clean silence -- was
+        still clearly, unambiguously present in the data either way).
+
+        THE ACTUAL EXPLANATION, confirmed by the user immediately after:
+        this board's real DSLogic wiring is 8 channels for 4 WHAM
+        channels, not 4-for-4 -- Ch0/Ch1 = Phase U/UN, Ch2/Ch3 = Phase
+        V/VN, Ch4/Ch5 = Phase W/WN, Ch6/Ch7 = Phase X/XN, i.e. each
+        WHAM/HRTIM channel's COMPLEMENTARY output pair (HRTIM1_Set-
+        ChannelOutputEnable()'s own "output-1-ACTIVE/output-2-INACTIVE"
+        design) is wired out to two ADJACENT DSLogic channels, each
+        carrying the same frequency. The "duplication" was never a
+        wiring defect -- it was the correct, expected behavior of a
+        complementary pair, decoded through a wrong assumed mapping.
+        Re-decoded channels 4-7 with the corrected understanding: Phase
+        W (channel 4/5, WHAM channel 3) shows the exact same clean
+        ramp-up -> flat -> smooth-ramp-down-to-floor shape as channel 1,
+        ending at the same time; Phase X (channel 6/7, WHAM channel 4,
+        never enabled this shot) shows ZERO edges across the entire
+        5-second capture. Every one of the 3 simultaneously-active WHAM
+        channels, all three genuinely different commanded frequencies,
+        now decodes correctly and unambiguously -- see the plots sent
+        to the user this session for the full, clean picture.
+
+        This strongly implicates the earlier, separately-documented
+        "Ch2/Ch3 DSLogic wiring swap, confirmed 4 times" finding
+        (2026-09-13/09-14, dslogic-tool project memory) as the SAME
+        complementary-pair confusion, misread as a physical swap, not a
+        real bench defect -- that investigation only ever ran 2-channel
+        tests (one pair active, one pair disabled), which can't
+        distinguish "swapped" from "duplicated-via-wrong-mapping" the
+        way today's 3-distinct-frequency test could. Not provably the
+        same root cause without re-running that exact test with the
+        corrected mapping, but treated as the working hypothesis going
+        forward rather than a still-open physical-wiring todo.
+
+        Fixed `python/dslogic_shot_capture.py`'s WHAM_TO_DSLOGIC_CHANNEL
+        -- {1:0, 2:1, 3:2, 4:3} -> {1:0, 2:2, 3:4, 4:6} -- and its
+        module docstring's wiring description. This is the mapping the
+        LIVE per-shot DSLogic cross-check (wired into `shot`,
+        wham_console.py) has been using ALL SESSION -- every previous
+        DSLogic-cross-check plot this session used the wrong channels
+        for WHAM channels 2/3/4 (channel 1/Phase U was accidentally
+        correct, since Ch0 was never part of any pair confusion).
+        Confirmed the underlying capture library (`~/dslogic-tool`'s
+        `set_enabled_channels()`) has no contiguous-channel assumption,
+        so pointing it at {0,2,4,6} instead of {0,1,2,3} needed no other
+        changes. Deliberately still captures only the non-inverted
+        phase of each pair (U/V/W/X, not UN/VN/WN/XN) -- confirmed
+        today they carry identical frequency information, so capturing
+        both would be redundant, not additional verification.
+
+  Verify: python3 -m py_compile. Not yet re-run through a live `shot`
+        with the corrected mapping this session (today's verification
+        used a standalone script + a manually-armed DSLogic capture,
+        not the wham_console.py `shot` command's own automatic
+        cross-check plot) -- the next real `shot` with DSLogic connected
+        will be the first real exercise of the corrected mapping through
+        that actual code path.
+
 2026-09-15  —  OCP (per-channel overcurrent) fault populated: isolate +
                derate + ramp; found and fixed TWO real, pre-existing
                fault-handling bugs while verifying it on real hardware
