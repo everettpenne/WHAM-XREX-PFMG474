@@ -6466,52 +6466,53 @@ LOAD /Applications/STM32CubeIDE.app/Contents/Eclipse/plugins/com.st.stm32cube.id
                 0x08012930                        . = ALIGN (0x4)
  *(.rodata)
  .rodata        0x08012930      0x2a8 ./Core/Src/cmd_parser.o
- .rodata        0x08012bd8      0xaf4 ./Core/Src/commands.o
- .rodata        0x080136cc       0x40 ./Core/Src/pfm_input.o
- .rodata        0x0801370c        0x5 ./Core/Src/pid.o
- *fill*         0x08013711        0x3 
- .rodata        0x08013714       0x15 ./Core/Src/uart.o
+ .rodata        0x08012bd8      0xaf0 ./Core/Src/commands.o
+ .rodata        0x080136c8       0x40 ./Core/Src/pfm_input.o
+ .rodata        0x08013708        0x5 ./Core/Src/pid.o
+ *fill*         0x0801370d        0x3 
+ .rodata        0x08013710       0x15 ./Core/Src/uart.o
  *(.rodata*)
- *fill*         0x08013729        0x3 
+ *fill*         0x08013725        0x3 
  .rodata.command_table
-                0x0801372c      0x168 ./Core/Src/cmd_parser.o
+                0x08013728      0x168 ./Core/Src/cmd_parser.o
  .rodata.kTimerIndex
-                0x08013894       0x18 ./Core/Src/hrtim.o
+                0x08013890       0x18 ./Core/Src/hrtim.o
  .rodata.kOutput1
-                0x080138ac       0x18 ./Core/Src/hrtim.o
+                0x080138a8       0x18 ./Core/Src/hrtim.o
  .rodata.kOutput2
-                0x080138c4       0x18 ./Core/Src/hrtim.o
+                0x080138c0       0x18 ./Core/Src/hrtim.o
  .rodata.kTimerId
-                0x080138dc       0x18 ./Core/Src/hrtim.o
+                0x080138d8       0x18 ./Core/Src/hrtim.o
  .rodata.kTimerUpdate
-                0x080138f4       0x18 ./Core/Src/hrtim.o
- .rodata.kDesc  0x0801390c       0xc0 ./Core/Src/pfm_input.o
+                0x080138f0       0x18 ./Core/Src/hrtim.o
+ .rodata.kDesc  0x08013908       0xc0 ./Core/Src/pfm_input.o
  .rodata.g_pfmMaxCurrentA
-                0x080139cc       0x10 ./Core/Src/pid.o
+                0x080139c8       0x10 ./Core/Src/pid.o
  .rodata.AHBPrescTable
-                0x080139dc       0x10 ./Core/Src/system_stm32g4xx.o
-                0x080139dc                AHBPrescTable
+                0x080139d8       0x10 ./Core/Src/system_stm32g4xx.o
+                0x080139d8                AHBPrescTable
  .rodata.APBPrescTable
-                0x080139ec        0x8 ./Core/Src/system_stm32g4xx.o
-                0x080139ec                APBPrescTable
+                0x080139e8        0x8 ./Core/Src/system_stm32g4xx.o
+                0x080139e8                APBPrescTable
  .rodata.UARTPrescTable
-                0x080139f4       0x18 ./Drivers/STM32G4xx_HAL_Driver/Src/stm32g4xx_hal_uart.o
-                0x080139f4                UARTPrescTable
+                0x080139f0       0x18 ./Drivers/STM32G4xx_HAL_Driver/Src/stm32g4xx_hal_uart.o
+                0x080139f0                UARTPrescTable
  .rodata.numerator.1
-                0x08013a0c        0x8 ./Drivers/STM32G4xx_HAL_Driver/Src/stm32g4xx_hal_uart_ex.o
+                0x08013a08        0x8 ./Drivers/STM32G4xx_HAL_Driver/Src/stm32g4xx_hal_uart_ex.o
  .rodata.denominator.0
-                0x08013a14        0x8 ./Drivers/STM32G4xx_HAL_Driver/Src/stm32g4xx_hal_uart_ex.o
+                0x08013a10        0x8 ./Drivers/STM32G4xx_HAL_Driver/Src/stm32g4xx_hal_uart_ex.o
  .rodata._printf_float.str1.1
-                0x08013a1c      0x22b /Applications/STM32CubeIDE.app/Contents/Eclipse/plugins/com.st.stm32cube.ide.mcu.externaltools.gnu-tools-for-stm32.13.3.rel1.macos64_1.0.0.202411102158/tools/bin/../lib/gcc/arm-none-eabi/13.3.1/../../../../arm-none-eabi/lib/thumb/v7e-m+fp/hard/libc_nano.a(libc_a-nano-vfprintf_float.o)
+                0x08013a18      0x22b /Applications/STM32CubeIDE.app/Contents/Eclipse/plugins/com.st.stm32cube.ide.mcu.externaltools.gnu-tools-for-stm32.13.3.rel1.macos64_1.0.0.202411102158/tools/bin/../lib/gcc/arm-none-eabi/13.3.1/../../../../arm-none-eabi/lib/thumb/v7e-m+fp/hard/libc_nano.a(libc_a-nano-vfprintf_float.o)
                                  0x12 (size before relaxing)
  .rodata._printf_i.str1.1
-                0x08013c47       0x22 /Applications/STM32CubeIDE.app/Contents/Eclipse/plugins/com.st.stm32cube.ide.mcu.externaltools.gnu-tools-for-stm32.13.3.rel1.macos64_1.0.0.202411102158/tools/bin/../lib/gcc/arm-none-eabi/13.3.1/../../../../arm-none-eabi/lib/thumb/v7e-m+fp/hard/libc_nano.a(libc_a-nano-vfprintf_i.o)
+                0x08013c43       0x22 /Applications/STM32CubeIDE.app/Contents/Eclipse/plugins/com.st.stm32cube.ide.mcu.externaltools.gnu-tools-for-stm32.13.3.rel1.macos64_1.0.0.202411102158/tools/bin/../lib/gcc/arm-none-eabi/13.3.1/../../../../arm-none-eabi/lib/thumb/v7e-m+fp/hard/libc_nano.a(libc_a-nano-vfprintf_i.o)
  .rodata._strtod_l.str1.1
-                0x08013c47        0xf /Applications/STM32CubeIDE.app/Contents/Eclipse/plugins/com.st.stm32cube.ide.mcu.externaltools.gnu-tools-for-stm32.13.3.rel1.macos64_1.0.0.202411102158/tools/bin/../lib/gcc/arm-none-eabi/13.3.1/../../../../arm-none-eabi/lib/thumb/v7e-m+fp/hard/libc_nano.a(libc_a-strtod.o)
- *fill*         0x08013c47        0x1 
+                0x08013c43        0xf /Applications/STM32CubeIDE.app/Contents/Eclipse/plugins/com.st.stm32cube.ide.mcu.externaltools.gnu-tools-for-stm32.13.3.rel1.macos64_1.0.0.202411102158/tools/bin/../lib/gcc/arm-none-eabi/13.3.1/../../../../arm-none-eabi/lib/thumb/v7e-m+fp/hard/libc_nano.a(libc_a-strtod.o)
+ *fill*         0x08013c43        0x1 
  .rodata.fpinan.0
-                0x08013c48       0x14 /Applications/STM32CubeIDE.app/Contents/Eclipse/plugins/com.st.stm32cube.ide.mcu.externaltools.gnu-tools-for-stm32.13.3.rel1.macos64_1.0.0.202411102158/tools/bin/../lib/gcc/arm-none-eabi/13.3.1/../../../../arm-none-eabi/lib/thumb/v7e-m+fp/hard/libc_nano.a(libc_a-strtod.o)
- .rodata.fpi.1  0x08013c5c       0x14 /Applications/STM32CubeIDE.app/Contents/Eclipse/plugins/com.st.stm32cube.ide.mcu.externaltools.gnu-tools-for-stm32.13.3.rel1.macos64_1.0.0.202411102158/tools/bin/../lib/gcc/arm-none-eabi/13.3.1/../../../../arm-none-eabi/lib/thumb/v7e-m+fp/hard/libc_nano.a(libc_a-strtod.o)
+                0x08013c44       0x14 /Applications/STM32CubeIDE.app/Contents/Eclipse/plugins/com.st.stm32cube.ide.mcu.externaltools.gnu-tools-for-stm32.13.3.rel1.macos64_1.0.0.202411102158/tools/bin/../lib/gcc/arm-none-eabi/13.3.1/../../../../arm-none-eabi/lib/thumb/v7e-m+fp/hard/libc_nano.a(libc_a-strtod.o)
+ .rodata.fpi.1  0x08013c58       0x14 /Applications/STM32CubeIDE.app/Contents/Eclipse/plugins/com.st.stm32cube.ide.mcu.externaltools.gnu-tools-for-stm32.13.3.rel1.macos64_1.0.0.202411102158/tools/bin/../lib/gcc/arm-none-eabi/13.3.1/../../../../arm-none-eabi/lib/thumb/v7e-m+fp/hard/libc_nano.a(libc_a-strtod.o)
+ *fill*         0x08013c6c        0x4 
  .rodata.tinytens
                 0x08013c70       0x28 /Applications/STM32CubeIDE.app/Contents/Eclipse/plugins/com.st.stm32cube.ide.mcu.externaltools.gnu-tools-for-stm32.13.3.rel1.macos64_1.0.0.202411102158/tools/bin/../lib/gcc/arm-none-eabi/13.3.1/../../../../arm-none-eabi/lib/thumb/v7e-m+fp/hard/libc_nano.a(libc_a-strtod.o)
  .rodata.strtok.str1.1
