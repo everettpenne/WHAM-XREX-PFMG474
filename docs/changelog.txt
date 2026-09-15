@@ -79,6 +79,88 @@ WHAM-XREX-PFMG474 Firmware Changelog
         scale real edges, would be the way to see it directly if ever
         wanted; not done this round (not yet asked for).
 
+2026-09-15  —  OCP slew-clamp-bypass fix independently confirmed on real
+               hardware via a fresh DSLogic capture -- derate step lands
+               within ~0.2ms of the literal (100*1/N)% target, not the
+               old clamp-limited value
+-----------------------------------------------------------------------
+  Change:  Direct follow-up request ("let's run a fresh dslogic
+        capture") to independently verify the slew-clamp-bypass fix
+        from this same day's immediately preceding entry, the same way
+        the original OCP feature itself was verified -- real DSLogic
+        data, not just firmware self-report.
+
+        Real methodology issue found and fixed FIRST, worth recording:
+        the first attempt (operator manually armed DSLogic, "fire when
+        ready") used a test script that polled PID:STATus? on all three
+        channels via slow serial round-trips BEFORE triggering the
+        fault -- each round-trip took far longer in real wall-clock
+        time than intended (serial read-timeout mechanics, not a
+        firmware issue), so real elapsed time between PID:PROFILE:START
+        and the eventual OCP:TEST:FAULT command drifted well past what
+        the script's own sleep() calls suggested. A quick diagnostic
+        confirmed the shot had very likely already auto-completed
+        (STATE? back to IDLE) before the fault command was even sent --
+        meaning that capture would have shown a normal completed shot
+        followed by an isolated fault-disable event, not the intended
+        fault-during-FIRING derate+ramp behavior. Caught before wasting
+        the user's time decoding it: fixed the test methodology (single
+        wall-clock-timed sleep, no status polling before the fault
+        command, confirmed via a dry run that STATE? still read FIRING
+        immediately before the fault) and asked the operator to re-arm
+        DSLogic for a clean re-fire, rather than assuming the first
+        capture was good.
+
+        Second attempt (corrected timing): PID:PROFILE:START, an exact
+        2.5s wall-clock sleep (comfortably inside the 1s-ramp/3s-flat-
+        top window, confirmed STATE? still FIRING right before the
+        fault), OCP:TEST:FAULT 2 sent immediately with no intervening
+        commands. Same real-hardware pattern as the original OCP
+        verification: 3-channel open-loop shot, 600A/1000A/1400A on
+        channels 1/2/3, channel 4 disabled.
+
+        Decoded with the SAME corrected complementary-pair channel
+        mapping established earlier this day (DSLogic Ch0/2/4 <-> WHAM
+        channels 1/2/3, the non-inverted phase of each pair) -- a fresh
+        streaming/chunked decoder (75 blocks/channel, 1.25B samples/
+        channel at 250MHz/8ch, same multi-block-file handling as
+        before) extracted rising-edge timestamps for the 3 active
+        channels.
+
+        RESULTS -- the fix is confirmed, cleanly and quantitatively:
+          - WHAM Ch1 (Phase U): pre-fault 16426.0 Hz steady state.
+            Literal 33% derate target = 16426.0 * (1 - 1/3) = 10950.7 Hz.
+            First edge after the fault instant (at +0.19ms): 10951.0 Hz
+            -- within 0.3 Hz of the exact target. (Old, slew-clamped
+            behavior, from the earlier same-day capture: ~14400 Hz --
+            nowhere close.)
+          - WHAM Ch3 (Phase W): pre-fault 31654.7 Hz. Literal target =
+            31654.7 * (1 - 1/3) = 21103.1 Hz. First edge after the fault
+            (at +0.09ms): 21100.6 Hz -- within 2.5 Hz of the exact
+            target. (Old behavior: ~29600 Hz.)
+          - WHAM Ch2 (Phase V, the faulted channel): pre-fault 24038.3
+            Hz, then ZERO edges recorded anywhere after the fault
+            instant for the rest of the 5-second capture -- confirms
+            the immediate hard disable, no ramp, exactly as designed.
+          - Both survivors then descend smoothly from their derated
+            starting points and reach the 5000 Hz floor (PFM_TURNON_FREQ_HZ)
+            at almost exactly 1.0s after the fault (0.9985s and 0.9986s
+            respectively -- matching FAULT_RAMP_DOWN_TIME_S=1.0f to
+            within a fraction of a percent), then go completely silent
+            (no further edges) -- confirms the ramp-down duration and
+            the final disable, both on the real physical output,
+            independent of any firmware self-report.
+
+        Two verification plots generated and shared: a zoomed view of
+        the first 10ms (shows the instant derate step landing on the
+        literal target line) and a full 1.05s view of the complete
+        ramp-to-floor for all three channels.
+
+  Verify: this entry's own DSLogic capture/decode/plot IS the
+        verification -- no further action needed. Board confirmed
+        clean (STATE? IDLE, FAULT? 0, all channels/loop-modes restored)
+        after both the discarded first attempt and the real capture.
+
 2026-09-15  —  OCP fault fix independently confirmed on real hardware
                via DSLogic; dslogic_shot_capture.py's WHAM<->DSLogic
                channel mapping corrected -- it was wrong all session
