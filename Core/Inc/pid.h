@@ -366,12 +366,20 @@ void PID_BeginFaultRampDown(void);
  *      (100 * 1/N)% of its own current output, where N is the number of
  *      channels that were enabled at the instant of the fault
  *      (faultedChannel included in that count) -- per direct
- *      instruction's exact formula. Still passes through the existing
- *      hard slew-rate clamp (ClampOutputSlew()) like every other output
- *      write in this file -- see this function's own .c comment for why
- *      that means a large derate is NOT achieved in a single tick despite
- *      being described as "simultaneous," a real tension worth knowing
- *      about, not silently resolved either direction.
+ *      instruction's exact formula. Landed EXACTLY, in a single tick --
+ *      unlike every other output write in pid.c, this step deliberately
+ *      BYPASSES the hard slew-rate clamp (ClampOutputSlew()), applying
+ *      only the [PID_OUTPUT_MIN_HZ, PID_OUTPUT_MAX_HZ] range clamp via
+ *      the new ClampOutputRangeOnly(). This was a real, flagged tension
+ *      (the slew clamp exists specifically to prevent a real, DSLogic-
+ *      confirmed hardware glitch -- see docs/changelog.txt, 2026-09-10)
+ *      -- confirmed via real DSLogic data that the slew-clamped version
+ *      never actually reached or held the specified percentage, just
+ *      transited through a smaller clamp-limited step on the way to the
+ *      ramp-to-floor. User explicitly decided (2026-09-15, asked
+ *      directly) the literal percentage matters more than slew-limiting
+ *      this one step. See ClampOutputRangeOnly()'s own .c comment for
+ *      the full justification.
  *   3. Hands off to the EXISTING PID_BeginFaultRampDown() (unmodified)
  *      to ramp the survivors on down to PFM_TURNON_FREQ_HZ over
  *      FAULT_RAMP_DOWN_TIME_S, same duration/shape as General Fault --

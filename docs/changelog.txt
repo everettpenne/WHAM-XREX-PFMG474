@@ -1,6 +1,84 @@
 WHAM-XREX-PFMG474 Firmware Changelog
 =====================================
 
+2026-09-15  —  OCP derate step now bypasses the slew-rate clamp -- lands
+               on the literal (100*1/N)% target instead of a smaller,
+               clamp-limited step
+-----------------------------------------------------------------------
+  Change:  Direct request, in response to "double check the percentage
+        by which the non-OCP-faulted channels reduce their outputs. In
+        the case of 3 output channels outputting and one faulting, we
+        should see the non faulted channels each reduce their overall
+        output frequency by ~33% to compensate." Re-analyzed both the
+        code and the previously-captured DSLogic data (same 3-channel,
+        N=3 shot from earlier today) and confirmed the derate step was
+        NOT hitting the literal target: PID_BeginOvercurrentRampDown()'s
+        derateFactor math correctly computes 0.6667 for N=3, but the
+        result was passed through the SAME hard slew-rate clamp
+        (ClampOutputSlew(), 2000 Hz/tick) as every other output write in
+        pid.c -- so the actual step was whatever the clamp allowed, not
+        the computed target, e.g. channel 1 (Phase U): 16420 Hz ->
+        measured ~14400 Hz (target was ~10933 Hz); channel 3 (Phase W):
+        31645 Hz -> measured ~29600 Hz (target was ~21067 Hz). After
+        that one clamped tick the channel doesn't hold at any derated
+        value at all -- it immediately proceeds into the existing ramp-
+        to-floor (PID_BeginFaultRampDown()), so the 33%-derated value
+        was never actually reached, just transited through incidentally.
+        This was a real, deliberately-flagged tension from when the OCP
+        feature was first built earlier today (see this file's OCP
+        entry, and pid.h/state_machine.h's own comments at the time).
+        Presented the finding with a comparison table and asked directly
+        how it should behave; user chose "bypass the clamp for this one
+        step" over "keep it slew-clamped."
+
+        Fix: new ClampOutputRangeOnly() (pid.c, static) -- range clamp
+        to [PID_OUTPUT_MIN_HZ, PID_OUTPUT_MAX_HZ] ONLY, deliberately no
+        slew limiting. This is the FIRST exception to ClampOutputSlew()
+        anywhere in this file. Used for exactly one write:
+        PID_BeginOvercurrentRampDown()'s derate step (replacing
+        ClampOutputSlew(desiredHz, lastOutputHz) with
+        ClampOutputRangeOnly(desiredHz)) -- every other output write in
+        pid.c is untouched and still goes through the full slew clamp.
+        Justification, documented at length in ClampOutputRangeOnly()'s
+        own comment: the slew clamp exists specifically to prevent a
+        real, DSLogic-confirmed hardware glitch (2026-09-10 entry) --
+        that risk is not waived lightly, but OCP is already the faster,
+        more aggressive fault path (the faulted channel itself is hard-
+        disabled with no slew limit either), so a single larger step on
+        the survivors is consistent with that same urgency, not a new
+        risk class. pid.h and state_machine.h's doc comments updated to
+        match (previously described the OLD, slew-clamped behavior and
+        flagged it as an unresolved tension -- now resolved).
+
+  Verify: clean arm-none-eabi-gcc build, zero warnings. Rebuilt,
+        reflashed, re-ran the same real-hardware pattern as the earlier
+        OCP entry (3-channel open-loop shot, 600A/1000A/1400A on
+        channels 1/2/3, channel 4 disabled, OCP:TEST:FAULT 2 mid-flat-
+        top) and polled PID:STATus? repeatedly post-fault. Confirmed:
+        channel 2 (faulted) hard-disabled immediately, state/output
+        frozen at its pre-fault value (not touched by the derate/ramp
+        code, as designed); channels 1/3 (survivors) observed already
+        descending from their derated starting points toward the floor
+        within the first serial round-trip after the fault (e.g.
+        channel 1: 16400 Hz pre-fault -> 9679 Hz observed ~0.3-0.7s
+        post-fault, consistent with a ramp that started from the
+        literal ~10933 Hz derated target, not the ~14400 Hz clamp-
+        limited value seen before this fix) -- STATE? showed
+        "FAULT OVERCURRENT 2" throughout, FAULT:CLEAR returned cleanly
+        to IDLE. The true single-tick instantaneous value (the derated
+        target held for exactly one PID_Update() tick, up to 1ms, before
+        ProcessFaultRampDown() starts moving it toward the floor) is
+        confirmed by CODE INSPECTION -- PID_BeginOvercurrentRampDown()
+        writes st->lastOutputHz to the range-clamped-only derate target
+        and calls PID_BeginFaultRampDown() (which captures that exact
+        value as faultRampStartHz) WITHOUT invoking ProcessFaultRampDown()
+        itself; the next write only happens on the following real tick.
+        This single-tick value cannot be captured over this serial link
+        (round-trip latency is two to three orders of magnitude slower
+        than one 1kHz tick) -- a DSLogic re-capture, with microsecond-
+        scale real edges, would be the way to see it directly if ever
+        wanted; not done this round (not yet asked for).
+
 2026-09-15  —  OCP fault fix independently confirmed on real hardware
                via DSLogic; dslogic_shot_capture.py's WHAM<->DSLogic
                channel mapping corrected -- it was wrong all session

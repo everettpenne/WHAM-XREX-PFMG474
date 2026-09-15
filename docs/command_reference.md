@@ -327,7 +327,12 @@ REVISIT" comments).
     opposite of `GENERAL`'s treatment of every channel), every OTHER
     currently-enabled channel is stepped down by `(100 * 1/N)%` of its
     own current output (`N` = channels enabled at the fault instant,
-    the faulted one included), and the survivors then ramp on down to
+    the faulted one included) — landed EXACTLY, in a single tick,
+    deliberately bypassing the hard slew-rate clamp used by every other
+    output write in this codebase (added 2026-09-15 after real DSLogic
+    data showed the clamped version never actually reached the literal
+    percentage; see `ClampOutputRangeOnly()`'s comment in `pid.c`) — and
+    the survivors then ramp on down to
     `PFM_TURNON_FREQ_HZ` over the same `FAULT_RAMP_DOWN_TIME_S` as
     `GENERAL`. If the fault hit while `IDLE`/`ARMED`, or the faulted
     channel was the only one enabled, falls through to the same
@@ -704,7 +709,10 @@ cover yet.
 of change from the previous tick's actual output, in either direction.
 Compile-time only, no wire command; see that macro's own extensive
 comment for why (a real, DSLogic-confirmed single-tick output glitch)
-and its current placeholder status.
+and its current placeholder status. **One deliberate exception** (added
+2026-09-15): the OCP `(100*1/N)%` derate step (`OVERCURRENT` fault,
+above) bypasses this clamp for that one write only -- see
+`ClampOutputRangeOnly()`'s comment in `pid.c`.
 
 ## Adding a command
 

@@ -311,6 +311,45 @@ static float ClampOutputSlew(float desiredHz, float prevHz)
     return clampedHz;
 }
 
+/* ClampOutputRangeOnly() -- range clamp ONLY, deliberately no slew limiting.
+   *** FIRST AND ONLY exception to ClampOutputSlew() in this codebase, added
+   2026-09-15. *** Every other output write in this file goes through the
+   full ClampOutputSlew() specifically because an unclamped frequency jump
+   is a real, DSLogic-confirmed hardware glitch (see docs/changelog.txt,
+   2026-09-10 entry) -- that risk is NOT waived lightly.
+
+   This exists for exactly one caller: PID_BeginOvercurrentRampDown()'s
+   derate step. The OCP fault spec calls for the surviving channels to
+   step to a literal (100 * 1/N)% reduction; with the normal slew clamp
+   (PID_OUTPUT_MAX_SLEW_HZ_PER_TICK, 2000 Hz/tick) that target is instead
+   silently overridden by whatever the clamp allows, then the channel
+   immediately proceeds into the ramp-to-floor -- meaning the derated
+   value is never actually reached or held, just transited through
+   incidentally. Confirmed on real hardware via DSLogic (3-channel shot,
+   N=3): observed step matched the ~2000 Hz clamp prediction, not the
+   33% target (e.g. one channel: ~16420 Hz -> ~14400 Hz measured vs.
+   ~10933 Hz target). User explicitly decided (2026-09-15, asked directly
+   when this tension was found) that the literal percentage matters more
+   than slew-limiting this one step -- OCP is already the FASTER, more
+   aggressive fault path (immediate hard disable of the faulted channel,
+   no slew limit there either), so a single larger step on the survivors
+   is consistent with that same urgency, not a new risk class. */
+static float ClampOutputRangeOnly(float desiredHz)
+{
+    float clampedHz = desiredHz;
+
+    if (clampedHz < (float)PID_OUTPUT_MIN_HZ)
+    {
+        clampedHz = (float)PID_OUTPUT_MIN_HZ;
+    }
+    else if (clampedHz > (float)PID_OUTPUT_MAX_HZ)
+    {
+        clampedHz = (float)PID_OUTPUT_MAX_HZ;
+    }
+
+    return clampedHz;
+}
+
 void PID_Init(void)
 {
     for (uint8_t ch = 0U; ch < HRTIM_NUM_CHANNELS; ch++)
@@ -651,11 +690,12 @@ void PID_BeginOvercurrentRampDown(uint8_t faultedChannel)
             }
 
             float desiredHz = (float)st->lastOutputHz * derateFactor;
-            /* ClampOutputSlew() already re-clamps to [PID_OUTPUT_MIN_HZ,
-               PID_OUTPUT_MAX_HZ] internally -- no separate floor/ceiling
-               check needed here, matching every other caller of it in
-               this file. */
-            float clampedHzF = ClampOutputSlew(desiredHz, (float)st->lastOutputHz);
+            /* Deliberately ClampOutputRangeOnly(), NOT ClampOutputSlew() --
+               see that function's own comment for the full justification.
+               This lands the derate step on the literal (100*1/N)% target,
+               range-clamped to [PID_OUTPUT_MIN_HZ, PID_OUTPUT_MAX_HZ] only,
+               skipping the per-tick slew limit for this one write. */
+            float clampedHzF = ClampOutputRangeOnly(desiredHz);
             uint32_t outputHz = (uint32_t)clampedHzF;
 
             st->lastOutputHz = outputHz;

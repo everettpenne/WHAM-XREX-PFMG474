@@ -112,11 +112,15 @@ extern "C" {
  *                              FAULT_RAMP_DOWN_TIME_S exactly like
  *                              General Fault -- see PID_BeginOvercurrentRampDown()'s
  *                              own extensive doc comment (pid.h) for the
- *                              full 3-step mechanism and a real, flagged
- *                              tension between "simultaneous" and the
- *                              existing hard slew-rate clamp that was
- *                              deliberately NOT bypassed for this. If the
- *                              fault hit while IDLE/ARMED, or the faulted
+ *                              full 3-step mechanism. The (100*1/N)% step
+ *                              itself deliberately BYPASSES the hard
+ *                              slew-rate clamp used by every other output
+ *                              write in this codebase (decided 2026-09-15
+ *                              after real DSLogic data showed the clamped
+ *                              version never actually reached the literal
+ *                              percentage) -- see ClampOutputRangeOnly()'s
+ *                              comment in pid.c for the full justification.
+ *                              If the fault hit while IDLE/ARMED, or the faulted
  *                              channel was the only one enabled, falls
  *                              through to the same "nothing to ramp, stop
  *                              immediately" handling General Fault

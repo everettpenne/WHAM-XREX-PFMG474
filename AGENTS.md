@@ -571,7 +571,14 @@ decision (see `docs/command_reference.md`'s `FIRE` entry).
   `docs/command_reference.md`) -- General Fault's OWN real-hardware
   triggers (GateDriverStatus/PC10) are fixed by the same code path but
   not independently re-verified this session (no way to trigger either
-  without physical access to those pins).
+  without physical access to those pins). **Also 2026-09-15, same day,
+  later**: OCP's `(100*1/N)%` derate step now deliberately bypasses
+  `pid.c`'s hard slew-rate clamp (`ClampOutputSlew()`) -- the FIRST
+  exception to it anywhere in this codebase, added after real DSLogic
+  data showed the clamped version never reached the literal percentage.
+  See `ClampOutputRangeOnly()`'s comment in `pid.c` and this same
+  changelog file's matching entry before touching that clamp or the OCP
+  derate math again.
   plus CubeMX-generated `stm32g4xx_hal_msp.c`/`stm32g4xx_it.c`/
   `system_stm32g4xx.c`/`syscalls.c`/`sysmem.c`.
 - `python/` -- host-side tooling (see above).
