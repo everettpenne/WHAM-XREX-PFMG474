@@ -345,6 +345,28 @@ void SM_ReportOcpFault(uint8_t channel)
     __enable_irq();
 }
 
+void SM_ReportGeneralFault(void)
+{
+    /* Same critical-section reasoning as SM_PollFaults()/SM_ReportOcpFault()
+       above -- see SM_PollFaults()'s own extensive comment. */
+    __disable_irq();
+
+    if (g_state == SM_STATE_FAULT)
+    {
+        /* Already faulted -- matches SM_PollFaults()'s own "already
+           latched -- nothing new to do" behavior. Unlike
+           SM_ReportOcpFault(), there is no per-channel action to take
+           here even redundantly -- General Fault has no specific
+           channel target. */
+        __enable_irq();
+        return;
+    }
+
+    EnterFault(SM_FAULT_GENERAL, 0xFFU);   /* channel N/A for a system-wide fault,
+                                                same sentinel SM_PollFaults() uses */
+    __enable_irq();
+}
+
 uint8_t SM_ClearFault(void)
 {
     if (g_state != SM_STATE_FAULT)

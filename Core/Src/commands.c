@@ -559,6 +559,35 @@ void cmd_ocp_test_fault(uart_instance_t *inst, char *args)
 }
 
 /* --------------------------------------------------------------------------
+ * GENERAL:TEST:FAULT
+ *
+ * TEMPORARY debug/verification command, added 2026-09-15 -- same
+ * removability precedent as OCP:TEST:FAULT above (and PFMIN:DMASTAT?/
+ * qspi_test.c before it): lets General Fault's ramp-down (see
+ * state_machine.h's own header comment and PID_BeginFaultRampDown(),
+ * pid.h) be exercised end-to-end on REAL hardware at a moment of the
+ * operator's own choosing -- e.g. EARLY in a shot, mid-ramp-up, rather
+ * than only the steady-state/flat-top case OCP:TEST:FAULT has been
+ * exercised against so far -- without needing to actually trip a real
+ * PC10/HRTIM1_FLT6 or GateDriverStatus condition. No channel argument:
+ * General Fault is system-wide, unlike OCP. Software-only fault
+ * injection -- calls SM_ReportGeneralFault() directly, exactly as
+ * SM_PollFaults() itself does the instant it polls a real tripped
+ * source. Same "safe direction, never gated" reasoning as
+ * OCP:TEST:FAULT/FAULT:CLEAR/PID:STOP -- triggering a fault only ever
+ * stops/reduces output.
+ *
+ * Remove once a real reason to keep it around after all fault paths are
+ * otherwise well-exercised stops applying -- same "not assumed here"
+ * deferral as OCP:TEST:FAULT's own comment. */
+void cmd_general_test_fault(uart_instance_t *inst, char *args)
+{
+    (void)args;   /* no arguments -- General Fault is system-wide */
+    SM_ReportGeneralFault();
+    uart_send(inst, "OK\r\n");
+}
+
+/* --------------------------------------------------------------------------
  * GDS?
  *
  * Raw HIGH/LOW snapshot of all 12 GateDriverStatus pins (PE0..PE11,
@@ -701,6 +730,103 @@ void cmd_pfmin_dmastat(uart_instance_t *inst, char *args)
     }
     snprintf(&buf[len], sizeof(buf) - (size_t)len, "\r\n");
 
+    uart_send(inst, buf);
+}
+
+/* --------------------------------------------------------------------------
+ * PFMIN:DEBUG:RAW? <ch>
+ *
+ * TEMPORARY debug command, added 2026-09-15 -- same removability
+ * precedent as PFMIN:DMASTAT? just above: diagnosing why PID:STATus?'s
+ * measuredHz reads persistently 0 for WHAM channels 2/3/4 while
+ * channel 1 works, confirmed on real hardware (each channel isolated
+ * alone, driving confirmed-correct real HRTIM output over a full
+ * shot). Non-destructive read of PfmInput_GetDebugRaw() (pfm_input.h)
+ * -- unlike PID:STATus?'s own PfmInput_ConsumeAveragePeriod() call,
+ * does NOT reset the accumulator, so repeated polling can watch
+ * avgCount accumulate (or not) live during a shot without disturbing
+ * the real control loop's own consumption. `ch` is 1-based (WHAM
+ * channel numbering, matching PID:STATus?), internally
+ * channel = ch - 1 (PFM_Input_01..04, the first 4 of the 6 physical
+ * PFM_Input channels -- see pid.c's own per-channel loop). Remove once
+ * the root cause is found and fixed. */
+void cmd_pfmin_debug_raw(uart_instance_t *inst, char *args)
+{
+    char *tok;
+    long  chArg;
+
+    tok = (args != NULL) ? strtok(args, " \r\n") : NULL;
+    if (tok == NULL)
+    {
+        SendErr(inst, 12, "PFMIN:DEBUG:RAW? needs one argument: channel");
+        return;
+    }
+    chArg = atol(tok);
+
+    if ((chArg < 1L) || (chArg > (long)PFM_INPUT_NUM_CHANNELS))
+    {
+        SendErr(inst, 8, "Invalid PFM_Input channel (1-6)");
+        return;
+    }
+
+    uint8_t  continuous = 0U, running = 0U, haveFirstRise = 0U;
+    uint16_t avgCount = 0U, overcaptureCount = 0U;
+    uint32_t lastPeriod = 0U;
+    (void)PfmInput_GetDebugRaw((uint8_t)(chArg - 1L), &continuous, &running,
+                                &haveFirstRise, &avgCount, &lastPeriod, &overcaptureCount);
+
+    char buf[96];
+    snprintf(buf, sizeof(buf), "OK cont=%u run=%u firstRise=%u avgCount=%u lastPeriod=%lu overcap=%u\r\n",
+             (unsigned int)continuous, (unsigned int)running, (unsigned int)haveFirstRise,
+             (unsigned int)avgCount, (unsigned long)lastPeriod, (unsigned int)overcaptureCount);
+    uart_send(inst, buf);
+}
+
+/* --------------------------------------------------------------------------
+ * PFMIN:DEBUG:REG? <ch>
+ *
+ * TEMPORARY debug command, added 2026-09-15 -- see
+ * PfmInput_GetDebugRegs()'s own doc comment (pfm_input.h) for the full
+ * reasoning: raw TIMx register readback, bypassing all software
+ * layers, while diagnosing why measuredHz reads 0 for WHAM channels
+ * 2/3 despite confirmed-correct real output AND confirmed-correct
+ * physical wiring. Poll twice in a row during an active shot and
+ * compare CNT/CCR -- if they're not moving, the hardware itself isn't
+ * seeing this channel's signal; if they ARE moving but software never
+ * reports it, the bug is downstream in the DMA/ISR path instead.
+ * Remove once the root cause is found and fixed. */
+void cmd_pfmin_debug_reg(uart_instance_t *inst, char *args)
+{
+    char *tok;
+    long  chArg;
+
+    tok = (args != NULL) ? strtok(args, " \r\n") : NULL;
+    if (tok == NULL)
+    {
+        SendErr(inst, 12, "PFMIN:DEBUG:REG? needs one argument: channel");
+        return;
+    }
+    chArg = atol(tok);
+
+    if ((chArg < 1L) || (chArg > (long)PFM_INPUT_NUM_CHANNELS))
+    {
+        SendErr(inst, 8, "Invalid PFM_Input channel (1-6)");
+        return;
+    }
+
+    uint32_t cr1 = 0U, ccer = 0U, dier = 0U, sr = 0U, cnt = 0U, ccrChannel = 0U;
+    (void)PfmInput_GetDebugRegs((uint8_t)(chArg - 1L), &cr1, &ccer, &dier, &sr, &cnt, &ccrChannel);
+    uint32_t ccmr1 = PfmInput_GetDebugCcmr1((uint8_t)(chArg - 1L));
+    uint32_t moder = 0U, afr = 0U, idr = 0U;
+    (void)PfmInput_GetDebugGpio((uint8_t)(chArg - 1L), &moder, &afr, &idr);
+
+    char buf[176];
+    snprintf(buf, sizeof(buf),
+             "OK CR1=%08lX CCER=%08lX DIER=%08lX SR=%08lX CNT=%08lX CCR=%08lX "
+             "CCMR1=%08lX MODER=%lu AFR=%lu IDR=%lu\r\n",
+             (unsigned long)cr1, (unsigned long)ccer, (unsigned long)dier,
+             (unsigned long)sr, (unsigned long)cnt, (unsigned long)ccrChannel, (unsigned long)ccmr1,
+             (unsigned long)moder, (unsigned long)afr, (unsigned long)idr);
     uart_send(inst, buf);
 }
 

@@ -630,6 +630,81 @@ uint8_t PfmInput_ConsumeAveragePeriod(uint8_t channel, uint32_t *avgPeriodTicks,
     return 1U;
 }
 
+uint8_t PfmInput_GetDebugRaw(uint8_t channel, uint8_t *continuous, uint8_t *running,
+                              uint8_t *haveFirstRise, uint16_t *avgCount,
+                              uint32_t *lastPeriod, uint16_t *overcaptureCount)
+{
+    if (channel >= PFM_INPUT_NUM_CHANNELS)
+    {
+        return 0U;
+    }
+    PfmInputState_t *st = &g_state[channel];
+    if (continuous != NULL)      { *continuous = st->continuous; }
+    if (running != NULL)         { *running = st->running; }
+    if (haveFirstRise != NULL)   { *haveFirstRise = st->haveFirstRise; }
+    if (avgCount != NULL)        { *avgCount = st->avgCount; }
+    if (lastPeriod != NULL)      { *lastPeriod = st->lastPeriod; }
+    if (overcaptureCount != NULL){ *overcaptureCount = st->overcaptureCount; }
+    return 1U;
+}
+
+uint8_t PfmInput_GetDebugRegs(uint8_t channel, uint32_t *cr1, uint32_t *ccer,
+                               uint32_t *dier, uint32_t *sr, uint32_t *cnt,
+                               uint32_t *ccrChannel)
+{
+    if (channel >= PFM_INPUT_NUM_CHANNELS)
+    {
+        return 0U;
+    }
+    TIM_TypeDef *inst = kDesc[channel].timer;
+    if (cr1 != NULL)  { *cr1  = inst->CR1; }
+    if (ccer != NULL) { *ccer = inst->CCER; }
+    if (dier != NULL) { *dier = inst->DIER; }
+    if (sr != NULL)   { *sr   = inst->SR; }
+    if (cnt != NULL)  { *cnt  = inst->CNT; }
+    if (ccrChannel != NULL)
+    {
+        *ccrChannel = (kDesc[channel].timChannel == TIM_CHANNEL_1) ? inst->CCR1 : inst->CCR2;
+    }
+    return 1U;
+}
+
+uint32_t PfmInput_GetDebugCcmr1(uint8_t channel)
+{
+    if (channel >= PFM_INPUT_NUM_CHANNELS)
+    {
+        return 0U;
+    }
+    return kDesc[channel].timer->CCMR1;
+}
+
+uint8_t PfmInput_GetDebugGpio(uint8_t channel, uint32_t *moder, uint32_t *afr,
+                               uint32_t *idr)
+{
+    if (channel >= PFM_INPUT_NUM_CHANNELS)
+    {
+        return 0U;
+    }
+    GPIO_TypeDef *port = kDesc[channel].port;
+    uint16_t      pin  = kDesc[channel].pin;
+    /* Find the pin NUMBER (0-15) from the GPIO_PIN_x bitmask this
+       channel's own descriptor stores. */
+    uint8_t pinNum = 0U;
+    for (uint8_t b = 0U; b < 16U; b++)
+    {
+        if ((pin & (1U << b)) != 0U) { pinNum = b; break; }
+    }
+    if (moder != NULL) { *moder = (port->MODER >> (pinNum * 2U)) & 0x3U; }
+    if (afr != NULL)
+    {
+        uint32_t afrReg = (pinNum < 8U) ? port->AFR[0] : port->AFR[1];
+        uint8_t  shift  = (uint8_t)((pinNum % 8U) * 4U);
+        *afr = (afrReg >> shift) & 0xFU;
+    }
+    if (idr != NULL) { *idr = (port->IDR >> pinNum) & 0x1U; }
+    return 1U;
+}
+
 /* --------------------------------------------------------------------------
  * ProcessDmaChunk() -- shared by both DMA batch callbacks below.
  * Processes `count` freshly-DMA'd raw tick values starting at
@@ -952,6 +1027,27 @@ uint32_t PfmInput_GetLatestPeriod(uint8_t channel) { (void)channel; return 0U; }
 uint8_t PfmInput_ConsumeAveragePeriod(uint8_t channel, uint32_t *avgPeriodTicks, uint16_t *sampleCount)
 {
     (void)channel; (void)avgPeriodTicks; (void)sampleCount; return 0U;
+}
+uint8_t PfmInput_GetDebugRaw(uint8_t channel, uint8_t *continuous, uint8_t *running,
+                              uint8_t *haveFirstRise, uint16_t *avgCount,
+                              uint32_t *lastPeriod, uint16_t *overcaptureCount)
+{
+    (void)channel; (void)continuous; (void)running; (void)haveFirstRise;
+    (void)avgCount; (void)lastPeriod; (void)overcaptureCount;
+    return 0U;
+}
+uint8_t PfmInput_GetDebugRegs(uint8_t channel, uint32_t *cr1, uint32_t *ccer,
+                               uint32_t *dier, uint32_t *sr, uint32_t *cnt,
+                               uint32_t *ccrChannel)
+{
+    (void)channel; (void)cr1; (void)ccer; (void)dier; (void)sr; (void)cnt; (void)ccrChannel;
+    return 0U;
+}
+uint32_t PfmInput_GetDebugCcmr1(uint8_t channel) { (void)channel; return 0U; }
+uint8_t PfmInput_GetDebugGpio(uint8_t channel, uint32_t *moder, uint32_t *afr, uint32_t *idr)
+{
+    (void)channel; (void)moder; (void)afr; (void)idr;
+    return 0U;
 }
 
 #endif /* PFM_INPUT_FEATURE_ENABLED */

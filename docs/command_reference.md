@@ -23,11 +23,11 @@ Ported from the sibling PFM-STM32G474 project, per project decision:
 | 5 | Table is empty — `FIRE` has nothing to play back |
 | 6 | Fault latched — either PC10/HRTIM1_FLT6 (native HRTIM hardware fault input) or the GateDriverStatus_01..12 EXTI interrupt (`PE0`-`PE11`) — `FAULT:CLEAR` required before `FIRE` will work again |
 | 7 | QUADSPI command failed or timed out (see `QSPI:ID?`) |
-| 8 | Invalid `PFM_Input` channel (1-6) |
+| 8 | Invalid `PFM_Input` channel (1-6) (also reused by `PFMIN:DEBUG:RAW?`/`PFMIN:DEBUG:REG?`) |
 | 9 | `M` out of range for `PFMIN:CAPTURE` (1-`PFM_INPUT_MAX_PERIODS`) |
 | 10 | `TABLE:STEP` `per` value implies a carrier frequency above `PFM_MAX_CARRIER_FREQ_HZ` |
 | 11 | Invalid `PID` channel (also reused by `OCP:TEST:FAULT`, same channel-range check) |
-| 12 | Invalid `PID:*` argument count/value -- see the specific command's own usage (also reused by `OCP:TEST:FAULT`) |
+| 12 | Invalid `PID:*` argument count/value -- see the specific command's own usage (also reused by `OCP:TEST:FAULT`, `PFMIN:DEBUG:RAW?`/`PFMIN:DEBUG:REG?`) |
 | 13 | Invalid state-machine transition for the current state (`ARM`/`DISARM`/`PID:PROFile:STARt`, see that section) |
 | 14 | Invalid `PID:CHANnel:NICKname` -- name must be 1-`PID_CHANNEL_NICKNAME_MAX_LEN` chars, no spaces, and not the reserved value `-` |
 
@@ -419,6 +419,68 @@ own (not-yet-written) interrupt handler will eventually call.
   fault only ever stops/reduces output, the same "safe direction, never
   gated" treatment `FAULT:CLEAR`/`PID:STOP` already get. Remove once
   real OCP hardware detection exists and has its own real trigger path.
+
+### `GENERAL:TEST:FAULT`
+
+Added 2026-09-15 — **TEMPORARY**, same precedent as `OCP:TEST:FAULT`
+above: software fault injection for `SM_FAULT_GENERAL`
+(`SM_ReportGeneralFault()`, state_machine.h), so General Fault's
+ramp-down can be exercised at a moment of the operator's own choosing
+(e.g. mid-ramp-up, not just steady-state flat-top) without needing to
+actually trip a real PC10/HRTIM1_FLT6 or GateDriverStatus condition. No
+channel argument — General Fault is system-wide.
+
+```
+> GENERAL:TEST:FAULT
+< OK
+> STATE?
+< OK FAULT GENERAL
+> FAULT:CLEAR
+< OK
+> STATE?
+< OK IDLE
+```
+
+- **`GENERAL:TEST:FAULT`** — `OK`, triggers a GENERAL fault exactly as
+  described above. Not gated by the operator consoles' dangerous-command
+  confirmation, same reasoning as `OCP:TEST:FAULT`. Remove once real
+  fault triggers are otherwise well-exercised enough that this is no
+  longer useful.
+
+### `PFMIN:DEBUG:RAW?` / `PFMIN:DEBUG:REG?`
+
+Added 2026-09-15 — **TEMPORARY**, diagnostic-only, built while tracking
+down why `measuredHz` (`PID:STATus?`) read 0 (or, later, a swapped
+channel's frequency) for some WHAM channels despite confirmed-correct
+real HRTIM output. Root cause turned out to be a physical fiber-optic
+patching mix-up on the bench (which physical `PFM_Input_0X` receiver
+port each phase's fiber was plugged into), not a firmware bug — these
+two commands were how that was actually found: frequency-fingerprint
+each of the 6 physical ports (each phase driven at a distinct,
+easily-recognizable frequency) to see which port is really receiving
+which phase's signal, independent of which WHAM channel firmware
+normally associates with which port.
+
+- **`PFMIN:DEBUG:RAW? <ch>`** (`ch` = 1-6, all 6 physical `PFM_Input`
+  ports, not just the 4 WHAM channels) — `OK cont=<0|1> run=<0|1>
+  firstRise=<0|1> avgCount=<n> lastPeriod=<ticks> overcap=<n>` — a
+  non-destructive read of `pfm_input.c`'s internal continuous-mode
+  accumulator state (unlike `PID:STATus?`'s own consumption of the same
+  data, this does NOT reset `avgCount` — repeated polling can watch it
+  accumulate, or not, live during a shot). `lastPeriod` in raw 170 MHz
+  ticks — convert to Hz as `170000000 / lastPeriod`.
+- **`PFMIN:DEBUG:REG? <ch>`** (`ch` = 1-6) — `OK CR1=.. CCER=.. DIER=..
+  SR=.. CNT=.. CCR=.. CCMR1=.. MODER=.. AFR=.. IDR=..` — raw TIMx
+  peripheral + GPIO register readback for that channel's underlying
+  timer/pin, bypassing every software layer. `IDR` is the pin's live
+  logic level sampled directly, no software interpretation at all.
+- `ERR 8` for an out-of-range channel (1-6, reusing `PFMIN:DATA?`'s own
+  code), `ERR 12` for a missing argument.
+
+Remove once the fiber-patching investigation is fully closed and these
+are no longer needed for verifying the bench's own physical setup — see
+`docs/changelog.txt`'s 2026-09-15 entry for the full investigation
+writeup.
 
 ### `CONFig:CHANnels?`
 

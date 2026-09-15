@@ -331,6 +331,30 @@ void SM_PollFaults(void);
  * itself was fixed for. */
 void SM_ReportOcpFault(uint8_t channel);
 
+/* Reports a General (system-wide) fault directly -- added 2026-09-15,
+ * per direct request for a software way to test the General Fault
+ * ramp-down (a shot in progress, an EARLY fault -- e.g. mid-ramp-up,
+ * before any channel has reached its plateau -- not just the
+ * steady-state/flat-top case OCP:TEST:FAULT has been exercised
+ * against so far). Backs the new GENERAL:TEST:FAULT command
+ * (commands.c), same software-fault-injection precedent as
+ * OCP:TEST:FAULT/SM_ReportOcpFault() above -- there is still no real
+ * software path to this otherwise: SM_PollFaults() only ever reaches
+ * SM_FAULT_GENERAL by POLLING the two real hardware sources (PC10/
+ * HRTIM1_FLT6, GateDriverStatus), and neither can be triggered from a
+ * SCPI command.
+ *
+ * Unlike SM_ReportOcpFault(), takes no channel argument -- General
+ * Fault is system-wide by design, exactly like SM_PollFaults()'s own
+ * EnterFault(SM_FAULT_GENERAL, 0xFFU) call. A no-op if already
+ * SM_STATE_FAULT (matches SM_PollFaults()'s own "already latched --
+ * nothing new to do" behavior; there is no OCP-style "still hard-
+ * disable something" fallback needed here since General Fault has no
+ * per-channel target). Same __disable_irq()/__enable_irq() critical-
+ * section pattern as SM_PollFaults()/SM_ReportOcpFault(), for the same
+ * main-loop/ISR race protection. */
+void SM_ReportGeneralFault(void);
+
 /* FAULT -> IDLE, ONLY if the underlying condition is actually gone --
  * backs FAULT:CLEAR (commands.c's existing cmd_fault_clear(), now also
  * calling this) alongside its existing HRTIM1_FaultClear()/

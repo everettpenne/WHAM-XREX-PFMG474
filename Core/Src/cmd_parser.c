@@ -113,6 +113,11 @@ static const command_t command_table[] = {
        cmd_ocp_test_fault(). */
     { "OCP:TEST:FAULT",      cmd_ocp_test_fault },
 
+    /* TEMPORARY debug/verification command -- software General Fault
+       injection, see commands.c's own header comment on
+       cmd_general_test_fault(). */
+    { "GENERAL:TEST:FAULT",  cmd_general_test_fault },
+
     /* Raw GateDriverStatus_01..12 (PE0..PE11) diagnostic readback --
        see commands.c's own header comment on cmd_gds_query(). */
     { "GDS?",                cmd_gds_query    },
@@ -133,6 +138,8 @@ static const command_t command_table[] = {
     { "PFMIN:CAPTURE",       cmd_pfmin_capture },
     { "PFMIN:STATus?",       cmd_pfmin_status  },
     { "PFMIN:DMASTAT?",      cmd_pfmin_dmastat },  /* TEMPORARY, see commands.h */
+    { "PFMIN:DEBUG:RAW?",    cmd_pfmin_debug_raw }, /* TEMPORARY, see commands.h */
+    { "PFMIN:DEBUG:REG?",    cmd_pfmin_debug_reg }, /* TEMPORARY, see commands.h */
     { "PFMIN:DATA?",         cmd_pfmin_data    },
 #endif
 

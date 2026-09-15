@@ -149,6 +149,14 @@ void cmd_state_query(uart_instance_t *inst, char *args);  /* STATE? -- OK <IDLE|
 void cmd_ocp_test_fault(uart_instance_t *inst, char *args);  /* OCP:TEST:FAULT <ch> -- OK,
                                                                   triggers SM_ReportOcpFault(ch-1) */
 
+/* TEMPORARY debug/verification command, added 2026-09-15 -- software
+ * fault injection for SM_ReportGeneralFault() (state_machine.h), the
+ * General-Fault counterpart to OCP:TEST:FAULT above. See
+ * cmd_general_test_fault()'s own doc comment (commands.c) for the full
+ * reasoning and removability precedent. */
+void cmd_general_test_fault(uart_instance_t *inst, char *args);  /* GENERAL:TEST:FAULT -- OK,
+                                                                      triggers SM_ReportGeneralFault() */
+
 /* Reports HRTIM_NUM_CHANNELS (ctrlr_config.h), the compile-time HRTIM
  * channel count this specific firmware build was configured for --
  * lets host tooling (python/pfm_table_upload.py) confirm what a board
@@ -203,6 +211,25 @@ void cmd_pfmin_dmastat(uart_instance_t *inst, char *args); /* PFMIN:DMASTAT? -- 
                                                                 <s1> .. <s6>, last
                                                                 HAL_TIM_IC_Start_DMA()
                                                                 return code per channel */
+
+/* TEMPORARY debug command, added 2026-09-15 -- see
+ * cmd_pfmin_debug_raw()'s own doc comment (commands.c) and
+ * PfmInput_GetDebugRaw()'s (pfm_input.h) for the full reasoning:
+ * diagnosing why measuredHz reads 0 for WHAM channels 2/3/4. Remove
+ * once the root cause is found and fixed. */
+void cmd_pfmin_debug_raw(uart_instance_t *inst, char *args); /* PFMIN:DEBUG:RAW? <ch> --
+                                                                  OK cont=.. run=..
+                                                                  firstRise=.. avgCount=..
+                                                                  lastPeriod=.. overcap=.. */
+
+/* TEMPORARY debug command, added 2026-09-15 -- see
+ * cmd_pfmin_debug_reg()'s own doc comment (commands.c) and
+ * PfmInput_GetDebugRegs()'s (pfm_input.h) for the full reasoning: raw
+ * TIMx register readback. Remove once the root cause is found and
+ * fixed. */
+void cmd_pfmin_debug_reg(uart_instance_t *inst, char *args); /* PFMIN:DEBUG:REG? <ch> --
+                                                                  OK CR1=.. CCER=.. DIER=..
+                                                                  SR=.. CNT=.. CCR=.. */
 #endif
 
 /* --------------------------------------------------------------------------

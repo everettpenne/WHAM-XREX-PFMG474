@@ -16,8 +16,12 @@
 ../Core/Src/pfm_input.c:566:6:PfmInput_StopContinuous	24	static
 ../Core/Src/pfm_input.c:586:10:PfmInput_GetLatestPeriod	16	static
 ../Core/Src/pfm_input.c:595:9:PfmInput_ConsumeAveragePeriod	32	static
-../Core/Src/pfm_input.c:642:13:ProcessDmaChunk	56	static
-../Core/Src/pfm_input.c:785:6:HAL_TIM_IC_CaptureHalfCpltCallback	24	static
-../Core/Src/pfm_input.c:798:6:HAL_TIM_IC_CaptureCallback	24	static
-../Core/Src/pfm_input.c:819:6:HAL_TIM_IC_MspInit	80	static
-../Core/Src/pfm_input.c:926:6:HAL_TIM_IC_MspDeInit	24	static
+../Core/Src/pfm_input.c:633:9:PfmInput_GetDebugRaw	32	static
+../Core/Src/pfm_input.c:651:9:PfmInput_GetDebugRegs	32	static
+../Core/Src/pfm_input.c:672:10:PfmInput_GetDebugCcmr1	16	static
+../Core/Src/pfm_input.c:681:9:PfmInput_GetDebugGpio	48	static
+../Core/Src/pfm_input.c:717:13:ProcessDmaChunk	56	static
+../Core/Src/pfm_input.c:860:6:HAL_TIM_IC_CaptureHalfCpltCallback	24	static
+../Core/Src/pfm_input.c:873:6:HAL_TIM_IC_CaptureCallback	24	static
+../Core/Src/pfm_input.c:894:6:HAL_TIM_IC_MspInit	80	static
+../Core/Src/pfm_input.c:1001:6:HAL_TIM_IC_MspDeInit	24	static

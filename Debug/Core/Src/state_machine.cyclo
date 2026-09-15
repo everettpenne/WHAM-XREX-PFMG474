@@ -13,4 +13,5 @@
 ../Core/Src/state_machine.c:251:6:SM_NotifyShotComplete	2
 ../Core/Src/state_machine.c:259:6:SM_PollFaults	4
 ../Core/Src/state_machine.c:314:6:SM_ReportOcpFault	3
-../Core/Src/state_machine.c:348:9:SM_ClearFault	4
+../Core/Src/state_machine.c:348:6:SM_ReportGeneralFault	2
+../Core/Src/state_machine.c:370:9:SM_ClearFault	4

@@ -547,7 +547,12 @@ decision (see `docs/command_reference.md`'s `FIRE` entry).
   arm-none-eabi-gcc 13.3.
 - `Core/Src|Inc/` -- all project code. Currently: `main.c`, `uart.c`,
   `cmd_parser.c`, `commands.c`, `boot_jump.c`, `hrtim.c`, `pfm.c`,
-  `gate_driver.c`, `qspi_test.c`, `pfm_input.c`, `pid.c`,
+  `gate_driver.c`, `qspi_test.c`, `pfm_input.c` (a real, once-persistent
+  "measuredHz reads 0/wrong channel" symptom for WHAM ch2/3 turned out
+  to be a bench fiber-optic PATCHING mix-up, not a `pfm_input.c` bug --
+  see `docs/changelog.txt`'s 2026-09-15 entry and the temporary
+  `PFMIN:DEBUG:RAW?`/`PFMIN:DEBUG:REG?` diagnostic commands, still
+  present, that found it), `pid.c`,
   `state_machine.c` (added 2026-09-13 -- the top-level IDLE/ARMED/
   FIRING/FAULT operating-state machine, see `docs/command_reference.md`'s
   `ARM`/`DISARM`/`STATE?` section and that file's own header comment).
@@ -578,7 +583,9 @@ decision (see `docs/command_reference.md`'s `FIRE` entry).
   data showed the clamped version never reached the literal percentage.
   See `ClampOutputRangeOnly()`'s comment in `pid.c` and this same
   changelog file's matching entry before touching that clamp or the OCP
-  derate math again.
+  derate math again. **Also added 2026-09-15**: `GENERAL:TEST:FAULT`
+  (`SM_ReportGeneralFault()`), the General-Fault counterpart to
+  `OCP:TEST:FAULT`.
   plus CubeMX-generated `stm32g4xx_hal_msp.c`/`stm32g4xx_it.c`/
   `system_stm32g4xx.c`/`syscalls.c`/`sysmem.c`.
 - `python/` -- host-side tooling (see above).

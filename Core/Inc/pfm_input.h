@@ -291,6 +291,60 @@ uint32_t PfmInput_GetLatestPeriod(uint8_t channel);
  * reporting the averaged number with no sense of how solid it is. */
 uint8_t PfmInput_ConsumeAveragePeriod(uint8_t channel, uint32_t *avgPeriodTicks, uint16_t *sampleCount);
 
+/* TEMPORARY debug aid, added 2026-09-15 -- diagnosing why measuredHz
+ * (PID:STATus?, backed by PfmInput_ConsumeAveragePeriod() above) reads
+ * persistently 0 for WHAM channels 2/3/4 while channel 1 works
+ * correctly, confirmed via real hardware (each channel isolated alone,
+ * driving confirmed-correct real HRTIM output, over a full shot).
+ * Non-destructive read of continuous-mode raw internal state --
+ * unlike PfmInput_ConsumeAveragePeriod(), does NOT reset avgSum/
+ * avgCount, so repeated polling can watch it accumulate (or not) live
+ * during a shot without disturbing PID_Update()'s own real consumption.
+ * `channel` out of range returns 0 with all outputs left untouched.
+ * Remove once the root cause is found and fixed. */
+uint8_t PfmInput_GetDebugRaw(uint8_t channel, uint8_t *continuous, uint8_t *running,
+                              uint8_t *haveFirstRise, uint16_t *avgCount,
+                              uint32_t *lastPeriod, uint16_t *overcaptureCount);
+
+/* TEMPORARY debug aid, added 2026-09-15 -- raw TIMx peripheral register
+ * readback for `channel`'s underlying timer/tim-channel, bypassing the
+ * DMA/ISR software layers entirely to check the hardware's own ground
+ * truth directly: is the counter (CR1.CEN) running, is the capture
+ * channel actually enabled at the hardware level (CCER's CCxE bit --
+ * this is what HAL_TIM_IC_Start_DMA()'s TIM_CCxChannelCmd() call is
+ * supposed to set), is the DMA request enabled (DIER's CCxDE bit), and
+ * does CNT/CCRx move between two successive calls (direct proof a real
+ * edge is landing in hardware, independent of whether software ever
+ * sees it). Added while diagnosing why WHAM channels 2/3's measuredHz
+ * reads persistently 0 despite confirmed-correct real HRTIM output AND
+ * confirmed-correct physical bench wiring -- see PfmInput_GetDebugRaw()
+ * above for the software-side half of this same investigation. Remove
+ * once the root cause is found and fixed. */
+uint8_t PfmInput_GetDebugRegs(uint8_t channel, uint32_t *cr1, uint32_t *ccer,
+                               uint32_t *dier, uint32_t *sr, uint32_t *cnt,
+                               uint32_t *ccrChannel);
+
+/* TEMPORARY debug aid, added 2026-09-15, same investigation as
+ * PfmInput_GetDebugRegs() above -- CCMR1 holds the IC1S/IC2S input-
+ * selection bits (is this channel's capture unit actually routed to
+ * its OWN TI input, or accidentally to the wrong one/disconnected) as
+ * well as the input filter/prescaler bits, none of which
+ * PfmInput_GetDebugRegs() exposes. Remove once the root cause is
+ * found and fixed. */
+uint32_t PfmInput_GetDebugCcmr1(uint8_t channel);
+
+/* TEMPORARY debug aid, added 2026-09-15, same investigation: raw GPIO
+ * config for `channel`'s own pin -- MODER (is it actually in Alternate
+ * Function mode, 0b10, not left in some other mode), AFR (which AF
+ * number is actually selected, cross-checked against kDesc[]'s
+ * intended value), and IDR (the pin's live logic level right now, a
+ * single instantaneous sample -- polled repeatedly during a shot, a
+ * genuinely toggling signal should show both 0 and 1 across samples;
+ * always-0 or always-1 is a real clue). Remove once the root cause is
+ * found and fixed. */
+uint8_t PfmInput_GetDebugGpio(uint8_t channel, uint32_t *moder, uint32_t *afr,
+                               uint32_t *idr);
+
 #ifdef __cplusplus
 }
 #endif

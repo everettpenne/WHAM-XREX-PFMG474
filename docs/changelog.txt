@@ -1,6 +1,153 @@
 WHAM-XREX-PFMG474 Firmware Changelog
 =====================================
 
+2026-09-15  —  GENERAL:TEST:FAULT added; PFM_Input channels 2/3's
+               measuredHz feedback investigated end to end -- root
+               cause found to be a physical fiber-patching mix-up on
+               the bench, NOT a firmware bug, and fixed by re-patching
+-----------------------------------------------------------------------
+  Change:  Direct request: "Run a series of tests without the DSLogic
+        with faults at various times. Check the results from the
+        measured PFM's ... and check the fault response times." Two
+        things needed before that test battery could run at all:
+
+        1. GENERAL:TEST:FAULT -- new software fault-injection command
+        (SM_ReportGeneralFault(), state_machine.h/.c; cmd_general_test_fault(),
+        commands.c/.h; cmd_parser.c), the General-Fault counterpart to
+        the existing OCP:TEST:FAULT. No real General Fault trigger
+        (PC10/HRTIM1_FLT6, GateDriverStatus) had ever been exercised at
+        an operator-chosen moment (e.g. mid-ramp-up) -- only steady-
+        state/flat-top, via OCP:TEST:FAULT's reuse of the same ramp
+        machinery. Verified on real hardware: IDLE-state case (immediate
+        fault, clean FAULT:CLEAR) and a FIRING-state case (fired mid-
+        ramp-up on a 4-channel shot, confirmed via STATE? still FIRING
+        immediately before the command; all 4 channels' knee points
+        landed within 0.06ms of each other, confirming a genuine
+        system-wide simultaneous trigger, ramp-to-floor duration matched
+        FAULT_RAMP_DOWN_TIME_S almost exactly). A real test-methodology
+        lesson surfaced and recorded along the way: status-polling
+        before a precisely-timed trigger command drifts the real
+        trigger instant later than intended (serial round-trip latency,
+        not a firmware issue) -- confirmed via DSLogic capture that the
+        fault landed ~163ms into flat-top instead of the intended
+        ~0.5s-into-ramp; fixed methodology (single wall-clock sleep, no
+        polling before the timed command) for the OCP work earlier this
+        session; the General Fault test above still shows some of the
+        same drift (targeted ~0.5s, landed ~1.16s -- past the 1.0s
+        ramp) despite that lesson, worth remembering it needs re-
+        applying every time, not just once.
+
+        2. PFM_Input measuredHz investigation. The requested test
+        battery needed WHAM channels 2/3's real-hardware feedback
+        (PID:STATus?'s measuredHz, backed by pfm_input.c's continuous-
+        mode capture) to be trustworthy -- it was not: both read 0
+        persistently, regardless of confirmed-correct real HRTIM
+        output on each channel (channel 1 worked throughout; channel 4/
+        Phase X has no PFM_Input measurement wiring at all, out of
+        scope per direct user statement).
+
+        Investigated in order, each step with real evidence, each
+        candidate explanation ruled out before moving to the next:
+          - NOT a serial-polling timing artifact -- confirmed via
+            careful wall-clock-timed isolated single-channel tests,
+            repeated for ch2/ch3/ch4 independently, each showing
+            correct setpoint/output ramp/hold/ramp-down but measuredHz
+            stuck at 0 on every single poll, the whole shot, every time.
+          - NOT a firmware code bug -- added two TEMPORARY diagnostic
+            commands specifically for this: PFMIN:DEBUG:RAW? <ch>
+            (non-destructive read of pfm_input.c's internal per-channel
+            accumulator/flags -- does NOT reset avgCount like
+            PID:STATus?'s own consumption does, so repeated polling can
+            watch it accumulate, or not, live) and PFMIN:DEBUG:REG?
+            <ch> (raw TIMx peripheral + GPIO register readback --
+            CR1/CCER/DIER/SR/CNT/CCRx/CCMR1/MODER/AFR/IDR -- bypassing
+            every software layer entirely). Results for ch2 (PD4/
+            TIM2_CH2) and ch3 (PB2/TIM5_CH1): haveFirstRise NEVER
+            became 1 (the capture ISR never saw one edge, the whole
+            shot); CR1=1 (counter genuinely running); CCER=0x11 (both
+            capture channels hardware-enabled, correct); CCMR1=0x101
+            (IC2 correctly mapped DIRECTLY to TI2, ruling out a
+            channel-mapping bug); MODER=2/AFR=2 (GPIO genuinely in
+            Alternate Function mode, correct AF number, exactly
+            matching pfm_input.c's own kDesc[] table); CCR stuck at
+            literal 0x00000000, never latching; IDR (the pin's live
+            logic level, read directly, zero software interpretation)
+            read 0 on every single sample. Every firmware-controlled
+            register was correct and symmetric with working channel 1
+            -- nothing left in software to blame. Cross-checked via
+            `git diff` between a real 2026-09-13 reference shot (a
+            DSLogic-vs-firmware comparison plot the user supplied,
+            showing ch3's measured genuinely tracking setpoint on THIS
+            SAME code) and current HEAD: zero changes to pfm_input.c or
+            to pid.c's PfmInput_StartContinuous() call site in that
+            whole window -- ruling out a code regression outright.
+          - NOT a stuck-DMA-state-from-repeated-soft-reflash artifact
+            -- a full controller power cycle (true POR, not the
+            bootloader's warm jump-and-reflash used ~8 times this
+            session) produced an identical symptom afterward.
+          - NOT a wiring continuity gap -- user directly confirmed
+            continuity end to end.
+          - NOT a dead/unpowered/unseated fiber-optic receiver -- user
+            directly confirmed receiver power and fiber seating/latch
+            on physical re-inspection.
+
+        ROOT CAUSE, found by frequency-fingerprinting: widened
+        PFMIN:DEBUG:RAW?/REG? to accept all 6 physical PFM_Input ports
+        (PFM_INPUT_NUM_CHANNELS) instead of being capped at
+        HRTIM_NUM_CHANNELS=4 (a real self-inflicted bug caught and
+        fixed BEFORE it shipped: a replace_all edit accidentally
+        widened FOURTEEN unrelated commands' own per-channel bounds
+        checks the same way -- e.g. PID:STATus?/PID:CHANnel:ENAble
+        would have silently accepted nonexistent channels 5/6 --
+        reverted surgically back to HRTIM_NUM_CHANNELS everywhere
+        except the 3 commands that genuinely operate on all 6 physical
+        ports: PFMIN:DATA?, PFMIN:DEBUG:RAW?, PFMIN:DEBUG:REG?; also
+        fixed those two's error message/code to correctly say "Invalid
+        PFM_Input channel (1-6)" / ERR 8, not the stale "Invalid PID
+        channel" / ERR 11 text copied from OCP:TEST:FAULT's own
+        precedent). Drove a 3-channel shot at three distinct, easily-
+        recognizable commanded frequencies (600A/1000A/1400A ->
+        16400/24000/31600 Hz) and read every physical port's real
+        captured frequency: PFM_Input_02 was receiving Phase W's real
+        31610 Hz signal (not Phase V's own 24000 Hz), PFM_Input_03 was
+        receiving nothing at all, and PFM_Input_04 (a port firmware
+        doesn't even normally read) was receiving Phase V's real
+        24004 Hz signal. This is a physical fiber-PATCHING mix-up, not
+        a receiver failure and not firmware -- Phase V's fiber was
+        plugged into port 04 instead of 02, Phase W's fiber was plugged
+        into port 02 instead of 03, and port 03 was genuinely empty.
+        Guided the user through two re-patch iterations (first attempt
+        landed Phase V on port 03 instead of 02, leaving ports 02/03
+        simply swapped with each other; second attempt, crossing those
+        two specific fibers, landed everything correctly) -- each
+        re-verified via the same frequency-fingerprinting technique
+        before declaring success. Final state: PFM_Input_01/02/03 read
+        16403/24004/31610 Hz exactly matching Phase U/V/W's own
+        commanded values, and PID:STATus?'s measuredHz for all 3 WHAM
+        channels now correctly tracks each channel's own setpoint --
+        the original symptom that triggered this whole investigation.
+
+  Verify: clean arm-none-eabi-gcc build (zero warnings) after every
+        change in this entry. GENERAL:TEST:FAULT verified on real
+        hardware as described above. The PFM_Input fix was verified
+        entirely through its own investigation process (the frequency-
+        fingerprinting IS the verification) -- re-confirmed with a
+        fresh 3-channel shot after the final re-patch showing all three
+        channels' measuredHz matching setpoint within measurement noise.
+
+  Files:  Core/Inc/state_machine.h, Core/Src/state_machine.c,
+        Core/Inc/commands.h, Core/Src/commands.c, Core/Src/cmd_parser.c,
+        Core/Inc/pfm_input.h, Core/Src/pfm_input.c,
+        docs/command_reference.md
+
+  NOT YET DONE, flagged not silently skipped: the two PFMIN:DEBUG:*
+        commands are TEMPORARY diagnostic tooling, still present in the
+        codebase as of this commit -- worth asking the user whether to
+        remove them now that the investigation is closed, or keep them
+        as permanent bench-fiber-verification tooling (this has now
+        happened once via fiber patching, a real recurring physical
+        risk on this bench, not necessarily a one-off).
+
 2026-09-15  —  OCP derate step now bypasses the slew-rate clamp -- lands
                on the literal (100*1/N)% target instead of a smaller,
                clamp-limited step
