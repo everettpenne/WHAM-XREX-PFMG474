@@ -93,25 +93,71 @@ extern "C" {
  *                              the fault hit while IDLE/ARMED (nothing
  *                              was actually outputting), stops
  *                              immediately instead -- nothing to ramp.
- *   SM_FAULT_OVERCURRENT   -- HandleOvercurrentFault() (state_machine.c),
- *                              STILL A STUB -- its own distinct
- *                              behavior (presumably more aggressive
- *                              than General Fault's graceful ramp, not
- *                              less, given the name) is not yet
- *                              decided. Currently just calls
- *                              PID_Stop() immediately as a safe
- *                              default in the meantime.
+ *   SM_FAULT_OVERCURRENT   -- HandleOvercurrentFault() (state_machine.c).
+ *                              POPULATED 2026-09-15, per direct
+ *                              instruction: unlike General Fault above,
+ *                              this is a PER-CHANNEL condition, reported
+ *                              for exactly one channel at a time via the
+ *                              new SM_ReportOcpFault(channel) (below),
+ *                              not detected by SM_PollFaults(). That
+ *                              channel's own HRTIM output is disabled
+ *                              IMMEDIATELY -- no ramp for it at all, the
+ *                              opposite of General Fault's treatment of
+ *                              every channel -- while every OTHER
+ *                              currently-enabled channel is stepped down
+ *                              by (100 * 1/N)% of its own current output
+ *                              (N = channels enabled at the fault
+ *                              instant, the faulted one included), THEN
+ *                              ramps on down to PFM_TURNON_FREQ_HZ over
+ *                              FAULT_RAMP_DOWN_TIME_S exactly like
+ *                              General Fault -- see PID_BeginOvercurrentRampDown()'s
+ *                              own extensive doc comment (pid.h) for the
+ *                              full 3-step mechanism and a real, flagged
+ *                              tension between "simultaneous" and the
+ *                              existing hard slew-rate clamp that was
+ *                              deliberately NOT bypassed for this. If the
+ *                              fault hit while IDLE/ARMED, or the faulted
+ *                              channel was the only one enabled, falls
+ *                              through to the same "nothing to ramp, stop
+ *                              immediately" handling General Fault
+ *                              already has.
  *
- * *** NOTE TO REVISIT *** -- per direct instruction, both of this
- * project's existing fault sources (PC10/HRTIM1_FLT6 hardware input,
- * GateDriverStatus_01..12 EXTI) currently route to SM_FAULT_GENERAL
- * unconditionally (SM_PollFaults(), state_machine.c) -- there is NO
- * overcurrent-specific detection mechanism wired up anywhere in this
- * codebase yet, and no decision has been made about which real-world
- * condition(s) should ever produce SM_FAULT_OVERCURRENT instead of
- * SM_FAULT_GENERAL, or what that fault type's own distinct handling
- * should actually be. Revisit both the routing decision and
- * HandleOvercurrentFault()'s body together.
+ * *** NOTE TO REVISIT *** -- per direct instruction, "we will define the
+ * mapping here at a later time": SM_ReportOcpFault(channel) is a real,
+ * callable, fully-implemented entry point (and OCP:TEST:FAULT, commands.c,
+ * exercises it end-to-end on real hardware without needing real pins --
+ * see that command's own doc comment), but there is NO actual per-channel
+ * OCP hardware detection wired up anywhere in this codebase yet -- no
+ * GPIO/EXTI configuration, no pin table, nothing in main.c's
+ * MX_GPIO_Init(). Deliberately NOT guessed/stubbed with placeholder pin
+ * numbers (this codebase's own established convention -- see e.g.
+ * pin_mapping_v4.csv-sourced decisions elsewhere -- is to work from real
+ * pin data, never invent it) -- whatever real per-channel OCP pins this
+ * board ends up with, wiring them is a self-contained follow-up: an EXTI
+ * ISR (or a new poll-based per-channel source, mirroring gate_driver.c's
+ * own shape, whichever the real hardware needs) that ultimately calls
+ * SM_ReportOcpFault(channel) once the condition is detected -- none of
+ * the logic built here needs to change to accommodate either shape.
+ * Separately, both of this project's EXISTING fault sources (PC10/
+ * HRTIM1_FLT6, GateDriverStatus_01..12) still route to SM_FAULT_GENERAL
+ * unconditionally (SM_PollFaults()) -- nothing about this update changes
+ * that; those two remain General Fault sources, not OCP ones, unless a
+ * future decision says otherwise.
+ *
+ * ALSO NOTE TO REVISIT, added 2026-09-15: SM_ReportOcpFault() called a
+ * SECOND time (a different channel) while already in SM_STATE_FAULT
+ * (from either fault type) does NOT re-run the redistribute-and-ramp
+ * sequence -- that only makes sense once, at the instant a fault is
+ * first detected (it captures a fresh N and a fresh ramp-start snapshot
+ * for whichever channels are still enabled at THAT moment). A second
+ * report still ALWAYS immediately hard-disables its own channel
+ * unconditionally (a real OCP condition must never be left connected
+ * just because some other channel's fault got there first) -- but true
+ * simultaneous/overlapping multi-channel OCP, and whether the survivors'
+ * ramp should be recomputed mid-flight for a newly-reduced N, is
+ * genuinely unresolved. The single-channel case this was actually
+ * specified for (direct instruction: "channel 1's OCP fault pin") is
+ * fully and correctly handled either way.
  *
  * ALSO NOTE TO REVISIT: SM_Arm()'s ArmConditionsMet() is a stub that
  * always allows arming (see its own comment) -- no real interlock
@@ -176,6 +222,14 @@ SM_State_t SM_GetState(void);
  * returns SM_FAULT_NONE otherwise. */
 SM_FaultType_t SM_GetFaultType(void);
 
+/* The channel (0-based) an OCP fault was reported for -- valid
+ * (meaningful) only when SM_GetFaultType() == SM_FAULT_OVERCURRENT.
+ * Returns 0xFF (never a real channel index) otherwise, including for
+ * SM_FAULT_GENERAL/SM_FAULT_NONE -- General Fault is system-wide, not
+ * per-channel, so it has no single channel to report here. Added
+ * 2026-09-15 alongside SM_ReportOcpFault(), below. */
+uint8_t SM_GetFaultChannel(void);
+
 /* IDLE -> ARMED. Backs the `ARM` command (commands.c). Returns 1 on
  * success, 0 if the current state isn't IDLE (already ARMED/FIRING/
  * FAULT) or if ArmConditionsMet() (state_machine.c, currently a stub
@@ -239,6 +293,40 @@ void SM_NotifyShotComplete(void);
  * tighter latency guarantee later. */
 void SM_PollFaults(void);
 
+/* Reports an OCP (per-channel overcurrent) fault for `channel` (0-based,
+ * 0..HRTIM_NUM_CHANNELS-1) -- added 2026-09-15, per direct instruction.
+ * Unlike SM_PollFaults() above (which POLLS two system-wide sources),
+ * this is a direct REPORT -- the entry point whatever eventually detects
+ * a real per-channel OCP condition (an EXTI ISR once real pins are
+ * defined, see state_machine.h's own header comment "NOTE TO REVISIT";
+ * OCP:TEST:FAULT, commands.c, meanwhile, for verifying this end-to-end
+ * on real hardware without needing them) is meant to call, the instant
+ * the condition is detected. `channel` out of range is a silent no-op
+ * (defensive -- a caller with a real, wired-up pin should never produce
+ * one).
+ *
+ * From IDLE/ARMED/FIRING: transitions straight to SM_STATE_FAULT with
+ * SM_FAULT_OVERCURRENT, exactly like SM_PollFaults()'s own EnterFault()
+ * path for SM_FAULT_GENERAL, then runs HandleOvercurrentFault()'s
+ * channel-aware response -- see state_machine.h's own header comment and
+ * PID_BeginOvercurrentRampDown()'s doc comment (pid.h) for the full
+ * 3-step behavior (immediate disable for THIS channel, an immediate
+ * proportional step-down for the others, then the same graceful ramp
+ * General Fault uses).
+ *
+ * From SM_STATE_FAULT (already faulted, either type): does NOT re-run
+ * that sequence -- see this header's own "ALSO NOTE TO REVISIT" comment
+ * on why (it only makes sense once) -- but STILL always immediately
+ * hard-disables `channel`'s own HRTIM output unconditionally, a cheap,
+ * safe action regardless of what else is already in progress.
+ *
+ * Same __disable_irq()/__enable_irq() critical-section pattern as
+ * SM_PollFaults() (state_machine.c), for the same reason: this may
+ * eventually be called from ISR context (a real OCP pin's EXTI handler)
+ * and needs to be safe against the same main-loop/ISR race that function
+ * itself was fixed for. */
+void SM_ReportOcpFault(uint8_t channel);
+
 /* FAULT -> IDLE, ONLY if the underlying condition is actually gone --
  * backs FAULT:CLEAR (commands.c's existing cmd_fault_clear(), now also
  * calling this) alongside its existing HRTIM1_FaultClear()/
@@ -247,7 +335,23 @@ void SM_PollFaults(void);
  * comments). Returns 1 if now clear (state -> IDLE), 0 if still
  * faulted (state stays FAULT, matching GateDriver_FaultClear()'s own
  * "re-latches before this even returns" behavior for a still-present
- * condition) or if not currently in FAULT at all (nothing to clear). */
+ * condition) or if not currently in FAULT at all (nothing to clear).
+ *
+ * *** REAL GAP, added 2026-09-15, not silently left implicit ***: this
+ * only re-validates HRTIM1_FaultIsTripped()/GateDriver_FaultIsLatched()
+ * -- there is no third check for SM_FAULT_OVERCURRENT, because (see this
+ * header's own "NOTE TO REVISIT" above) no real OCP hardware detection
+ * exists yet to re-validate against. Concretely: an OCP fault reported
+ * via SM_ReportOcpFault() will ALWAYS successfully clear on the very
+ * next FAULT:CLEAR, unconditionally, regardless of whether a real,
+ * future OCP condition on that channel is still physically present --
+ * unlike General Fault, which genuinely re-latches immediately if its
+ * sources are still bad. Once real per-channel OCP detection exists,
+ * this function needs a matching re-check added alongside the two it
+ * already has (mirroring GateDriver_FaultIsLatched()'s own shape,
+ * whichever way OCP's real detection ends up presenting a "still
+ * latched" query) -- do not assume this file's job here is finished
+ * just because SM_ReportOcpFault()/the ramp-down behavior are. */
 uint8_t SM_ClearFault(void);
 
 #ifdef __cplusplus

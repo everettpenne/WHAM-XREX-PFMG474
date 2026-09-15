@@ -344,6 +344,22 @@ uint8_t PFM_GetPhaseEnabled(uint8_t channel)
     return g_channelEnabled[channel];
 }
 
+/* Split out of PFM_ForceStop() below, 2026-09-15 -- see that function's
+   own doc comment for why, and this function's OWN doc comment (pfm.h)
+   for the real bug this fixes, found and confirmed on real hardware
+   while verifying the new OCP fault handling (state_machine.h). Same
+   bookkeeping PFM_ForceStop() does, WITHOUT the HRTIM1_PWM_Stop() call
+   -- i.e. without touching the shared Master/channel counters. */
+void PFM_ForceStopSoft(void)
+{
+    g_pfmState = PFM_STATE_STOPPED;
+
+    /* Bounds any still-running PFM_Input capture to the shot that's
+       ending here (fault-triggered stop) -- see pfm_input.h. Any
+       channel already finished on its own is a no-op. */
+    PfmInput_OnShotEnd();
+}
+
 void PFM_ForceStop(void)
 {
     /* See pfm.h's doc comment -- the exact stop-and-mark-STOPPED pair
@@ -352,14 +368,16 @@ void PFM_ForceStop(void)
        HRTIM master-repetition ISR (gate_driver.c's GateDriverStatus
        EXTI interrupt) can do the same thing and keep PFM_GetState()
        truthful. Deliberately does not touch g_pfmIndex, matching both
-       existing call sites. */
-    HRTIM1_PWM_Stop();
-    g_pfmState = PFM_STATE_STOPPED;
+       existing call sites.
 
-    /* Bounds any still-running PFM_Input capture to the shot that's
-       ending here (fault-triggered stop) -- see pfm_input.h. Any
-       channel already finished on its own is a no-op. */
-    PfmInput_OnShotEnd();
+       Implemented in terms of PFM_ForceStopSoft() (above) since
+       2026-09-15 -- same behavior as always for every EXISTING caller
+       (this function's own signature/effect is unchanged; only the two
+       fault-detection call sites that genuinely need it now call
+       PFM_ForceStopSoft() directly instead -- see that function's own
+       doc comment). */
+    HRTIM1_PWM_Stop();
+    PFM_ForceStopSoft();
 }
 
 void PFM_ResetIndices(void)

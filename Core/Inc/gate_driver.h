@@ -25,8 +25,14 @@ extern "C" {
  *     EXTI15_10 shared). Re-reads all 12 pins on every edge and
  *     evaluates them against GDS_FAULT_POLARITY (ctrlr_config.h): if
  *     ANY pin is in its fault state, immediately calls PFM_ForceStop()
- *     (pfm.h -- stops HRTIM output AND keeps PFM_GetState() truthful)
- *     and latches a software fault, queried/cleared via
+ *     or PFM_ForceStopSoft() (pfm.h -- see GateDriver_CheckFault()'s own
+ *     .c comment for which, and why: PFM_ForceStopSoft() when pid.c
+ *     currently has an active shot, so the shared HRTIM Master/channel
+ *     counters stay running for state_machine.c's own very next
+ *     SM_PollFaults() call to hand off to a General-Fault ramp-down,
+ *     added 2026-09-15 after a real-hardware bug confirmed the full
+ *     stop was killing that ramp-down before it could ever run) and
+ *     latches a software fault, queried/cleared via
  *     GateDriver_FaultIsLatched()/GateDriver_FaultClear() -- unified
  *     with the PC10/HRTIM1_FLT6 native hardware fault (hrtim.h) at the
  *     commands.c level (FAULT?/FAULT:CLEAR/FIRE's ERR 6 check both

@@ -108,6 +108,11 @@ static const command_t command_table[] = {
     { "DISARM",              cmd_disarm       },
     { "STATE?",              cmd_state_query  },
 
+    /* TEMPORARY debug/verification command -- software OCP fault
+       injection, see commands.c's own header comment on
+       cmd_ocp_test_fault(). */
+    { "OCP:TEST:FAULT",      cmd_ocp_test_fault },
+
     /* Raw GateDriverStatus_01..12 (PE0..PE11) diagnostic readback --
        see commands.c's own header comment on cmd_gds_query(). */
     { "GDS?",                cmd_gds_query    },

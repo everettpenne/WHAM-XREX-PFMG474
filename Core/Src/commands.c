@@ -470,9 +470,12 @@ void cmd_disarm(uart_instance_t *inst, char *args)
     uart_send(inst, "OK\r\n");
 }
 
-/* OK <IDLE|ARMED|FIRING|FAULT>, or OK FAULT <GENERAL|OVERCURRENT> when
-   in FAULT -- see SM_GetFaultType()'s own doc comment (meaningful only
-   in that state). */
+/* OK <IDLE|ARMED|FIRING|FAULT>, OK FAULT GENERAL, or OK FAULT OVERCURRENT
+   <ch> (1-based, this project's usual wire convention -- see
+   SM_GetFaultChannel()'s own doc comment, state_machine.h) when in
+   FAULT. The trailing <ch> token is new 2026-09-15, alongside
+   SM_ReportOcpFault() -- only present for OVERCURRENT, since General
+   Fault is system-wide and has no single channel to report. */
 void cmd_state_query(uart_instance_t *inst, char *args)
 {
     char buf[32];
@@ -490,15 +493,69 @@ void cmd_state_query(uart_instance_t *inst, char *args)
 
     if (SM_GetState() == SM_STATE_FAULT)
     {
-        const char *faultName = (SM_GetFaultType() == SM_FAULT_OVERCURRENT)
-                                     ? "OVERCURRENT" : "GENERAL";
-        snprintf(buf, sizeof(buf), "OK %s %s\r\n", name, faultName);
+        if (SM_GetFaultType() == SM_FAULT_OVERCURRENT)
+        {
+            snprintf(buf, sizeof(buf), "OK %s OVERCURRENT %u\r\n",
+                      name, (unsigned)(SM_GetFaultChannel() + 1U));
+        }
+        else
+        {
+            snprintf(buf, sizeof(buf), "OK %s GENERAL\r\n", name);
+        }
     }
     else
     {
         snprintf(buf, sizeof(buf), "OK %s\r\n", name);
     }
     uart_send(inst, buf);
+}
+
+/* --------------------------------------------------------------------------
+ * OCP:TEST:FAULT <ch>
+ *
+ * TEMPORARY debug/verification command, added 2026-09-15 -- same
+ * removability precedent as PFMIN:DMASTAT? (pfm_input.h's own comment)
+ * and qspi_test.c: exists to let real per-channel OCP behavior
+ * (SM_ReportOcpFault(), state_machine.h -- immediate disable for `ch`,
+ * an immediate proportional step-down for the other enabled channels,
+ * then the same graceful ramp General Fault uses, see that function's
+ * own doc comment) be exercised end-to-end on REAL hardware, since there
+ * is no real per-channel OCP pin wired up anywhere in this codebase yet
+ * (see state_machine.h's own "NOTE TO REVISIT" -- the mapping is still
+ * to be defined). Software-only fault injection -- calls
+ * SM_ReportOcpFault(ch - 1) directly, exactly as a real OCP pin's own
+ * (not-yet-written) EXTI handler eventually will. Not gated/dangerous in
+ * the operator-console sense (wham_console.py/wham_llm_console.py's
+ * _is_dangerous()) -- triggering a fault only ever STOPS/reduces output,
+ * never starts new output, the same "safe direction, never gated"
+ * reasoning FAULT:CLEAR/PID:STOP already get.
+ *
+ * Remove once real OCP hardware detection exists and has its own real
+ * trigger path -- keeping a software fault-injection command around
+ * even after that point could still be useful for bench verification
+ * without needing to actually force a real overcurrent condition, but
+ * that's a decision for whoever wires the real pins, not assumed here. */
+void cmd_ocp_test_fault(uart_instance_t *inst, char *args)
+{
+    char *tok;
+    long  chArg;
+
+    tok = (args != NULL) ? strtok(args, " \r\n") : NULL;
+    if (tok == NULL)
+    {
+        SendErr(inst, 12, "OCP:TEST:FAULT needs one argument: channel");
+        return;
+    }
+    chArg = atol(tok);
+
+    if ((chArg < 1L) || (chArg > (long)HRTIM_NUM_CHANNELS))
+    {
+        SendErr(inst, 11, "Invalid PID channel");
+        return;
+    }
+
+    SM_ReportOcpFault((uint8_t)(chArg - 1L));
+    uart_send(inst, "OK\r\n");
 }
 
 /* --------------------------------------------------------------------------

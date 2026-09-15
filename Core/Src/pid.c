@@ -571,6 +571,109 @@ static void ProcessFaultRampDown(void)
     }
 }
 
+/* OCP (per-channel overcurrent) ramp-down -- see this function's own
+   extensive doc comment in pid.h for the 3-step behavior. Implementation
+   notes that belong here, not the public header:
+
+   - N (channels enabled at the fault instant, faultedChannel included)
+     is counted in its own first pass, BEFORE PID_SetChannelEnable()
+     touches anything -- so faultedChannel still counts toward N even
+     though it's about to be disabled, matching "the number of channels
+     enabled AT THE TIME OF THE FAULT" literally, not "after".
+
+   - The derate step writes directly into st->lastOutputHz/setpointHz and
+     HRTIM1_SetChannelPeriod(), the SAME pattern ProcessFaultRampDown()
+     itself uses for its own per-tick writes -- this is a single,
+     one-time write here (not a per-tick loop), since it happens once, at
+     the moment the fault is reported, before the ramp-down even starts.
+
+   - ClampOutputSlew() is applied to the derated value, exactly like
+     every other output-Hz write in this file. *** WORTH FLAGGING, NOT
+     SILENTLY DECIDED ***: per direct instruction, this step-down should
+     happen "simultaneously" with disabling faultedChannel -- but
+     ClampOutputSlew() bounds any single tick's change to
+     PID_OUTPUT_MAX_SLEW_HZ_PER_TICK (2000 Hz, ctrlr_config.h). A large
+     derate on a channel running near PFM_MAX_FREQ_HZ (e.g. N=4,
+     100000 Hz -> 75000 Hz is a 25000 Hz cut) CANNOT actually land in one
+     tick under that clamp -- ClampOutputSlew() only lets it move 2000 Hz
+     this tick, and the true derated level is reached gradually over
+     several more ticks instead, governed by the slew rate, not achieved
+     as a literal single-tick step. Chose to keep the slew clamp active
+     anyway rather than carve out an exception for this one case --
+     EVERY other output write in this file, including the General-Fault
+     ramp-down itself, goes through this same clamp with zero exceptions
+     found anywhere, and it exists specifically because an unclamped
+     frequency change is a real, DSLogic-confirmed hardware glitch risk
+     (ctrlr_config.h's own PID_OUTPUT_MAX_SLEW_HZ_PER_TICK comment) --
+     bypassing it for an "urgent" case felt like exactly the kind of
+     reasoning that glitch already disproved once. If literal same-tick
+     simultaneity is actually required here, that's a direct, explicit
+     decision to make (and likely means raising
+     PID_OUTPUT_MAX_SLEW_HZ_PER_TICK for this one path, or accepting the
+     glitch risk), not something to assume silently either way. */
+void PID_BeginOvercurrentRampDown(uint8_t faultedChannel)
+{
+    if (faultedChannel >= HRTIM_NUM_CHANNELS)
+    {
+        return;   /* defensive -- state_machine.c already validates */
+    }
+
+    uint8_t n = 0U;
+    for (uint8_t ch = 0U; ch < HRTIM_NUM_CHANNELS; ch++)
+    {
+        if (g_ch[ch].outputEnabled != 0U)
+        {
+            n++;
+        }
+    }
+
+    /* Immediate hard disable -- exactly PID_SetChannelEnable(ch, 0)'s
+       existing behavior (HRTIM1_SetChannelOutputEnable(), no ramp, no
+       slew clamp -- a full disconnect, same path `enable <ch> off`
+       already uses). g_running is still 1 here (we're mid-FIRING), so
+       this takes effect on real hardware immediately, not just in
+       bookkeeping. */
+    (void)PID_SetChannelEnable(faultedChannel, 0U);
+
+    if (n > 1U)
+    {
+        float derateFactor = 1.0f - (1.0f / (float)n);
+        for (uint8_t ch = 0U; ch < HRTIM_NUM_CHANNELS; ch++)
+        {
+            if (ch == faultedChannel)
+            {
+                continue;
+            }
+            PidChannelState_t *st = &g_ch[ch];
+            if (st->outputEnabled == 0U)
+            {
+                continue;   /* wasn't contributing output -- nothing to derate */
+            }
+
+            float desiredHz = (float)st->lastOutputHz * derateFactor;
+            /* ClampOutputSlew() already re-clamps to [PID_OUTPUT_MIN_HZ,
+               PID_OUTPUT_MAX_HZ] internally -- no separate floor/ceiling
+               check needed here, matching every other caller of it in
+               this file. */
+            float clampedHzF = ClampOutputSlew(desiredHz, (float)st->lastOutputHz);
+            uint32_t outputHz = (uint32_t)clampedHzF;
+
+            st->lastOutputHz = outputHz;
+            st->setpointHz   = outputHz;   /* same reporting-consistency reasoning
+                                               as ProcessFaultRampDown()'s own write */
+
+            uint16_t per = (uint16_t)((HRTIM_TIMER_CLK_HZ / outputHz) - 1U);
+            HRTIM1_SetChannelPeriod(ch, per);
+        }
+    }
+
+    /* Survivors now ramp from their newly-derated lastOutputHz down to
+       the floor, exactly like General Fault -- see PID_BeginFaultRampDown()'s
+       own comment. faultedChannel is automatically excluded (outputEnabled
+       is now 0, just set above). */
+    PID_BeginFaultRampDown();
+}
+
 void PID_Update(void)
 {
     if (g_running == 0U)

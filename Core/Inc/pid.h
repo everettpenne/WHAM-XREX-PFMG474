@@ -350,6 +350,45 @@ const char *PID_GetChannelNickname(uint8_t channel);
 void PID_BeginFaultRampDown(void);
 
 /* --------------------------------------------------------------------------
+ * OCP (per-channel overcurrent) ramp-down -- added 2026-09-15, per direct
+ * instruction (state_machine.h's HandleOvercurrentFault(), state_machine.c).
+ * Distinct from General Fault above: an OCP fault is reported for ONE
+ * specific channel (its own, still-to-be-defined fault pin -- see
+ * state_machine.h's SM_ReportOcpFault()), not the whole system, so the
+ * response is channel-aware rather than uniform:
+ *   1. `faultedChannel` itself is disabled IMMEDIATELY (HRTIM output
+ *      disconnected outright, via the same PID_SetChannelEnable() path
+ *      `enable <ch> off` already uses) -- it does NOT ramp down at all,
+ *      unlike General Fault's treatment of every channel. An overcurrent
+ *      condition on a channel means don't trust that channel's output
+ *      for even one more tick.
+ *   2. Every OTHER currently-enabled channel is stepped down by
+ *      (100 * 1/N)% of its own current output, where N is the number of
+ *      channels that were enabled at the instant of the fault
+ *      (faultedChannel included in that count) -- per direct
+ *      instruction's exact formula. Still passes through the existing
+ *      hard slew-rate clamp (ClampOutputSlew()) like every other output
+ *      write in this file -- see this function's own .c comment for why
+ *      that means a large derate is NOT achieved in a single tick despite
+ *      being described as "simultaneous," a real tension worth knowing
+ *      about, not silently resolved either direction.
+ *   3. Hands off to the EXISTING PID_BeginFaultRampDown() (unmodified)
+ *      to ramp the survivors on down to PFM_TURNON_FREQ_HZ over
+ *      FAULT_RAMP_DOWN_TIME_S, same duration/shape as General Fault --
+ *      it already does the right thing given steps 1/2: it only captures
+ *      currently-ENABLED channels' CURRENT output as each one's ramp-
+ *      start point, so the just-disabled faulted channel is automatically
+ *      excluded and the survivors ramp from their newly-derated values,
+ *      not from wherever they were in the normal shot profile.
+ * If the fault hit while IDLE/ARMED, or faultedChannel was the only
+ * enabled channel, or nothing else was actually enabled besides it,
+ * falls through to PID_BeginFaultRampDown()'s own existing "nothing to
+ * ramp, stop immediately" handling -- no separate case needed here.
+ * `faultedChannel` out of range is a defensive no-op (the caller,
+ * state_machine.c, already validates before this is ever reached). */
+void PID_BeginOvercurrentRampDown(uint8_t faultedChannel);
+
+/* --------------------------------------------------------------------------
  * Demand profile -- added 2026-09-10, the real production shot shape.
  * See this file's own header comment for the full picture. Ramp Time/
  * Flat Top Time are SHARED (one synchronized clock for all

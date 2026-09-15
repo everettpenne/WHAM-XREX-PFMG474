@@ -1,6 +1,156 @@
 WHAM-XREX-PFMG474 Firmware Changelog
 =====================================
 
+2026-09-15  —  OCP (per-channel overcurrent) fault populated: isolate +
+               derate + ramp; found and fixed TWO real, pre-existing
+               fault-handling bugs while verifying it on real hardware
+               (verified working end-to-end on real hardware)
+-----------------------------------------------------------------------
+  Change:  Direct request: populate SM_FAULT_OVERCURRENT (left as a stub
+        alongside General Fault, 2026-09-13). Exact behavior specified:
+        on channel N's OCP fault pin tripping, immediately disable that
+        channel's HRTIM output, simultaneously decrease every OTHER
+        enabled channel's output by (100 * 1/N)% (N = channels enabled
+        at the fault instant, the faulted one included), and ramp the
+        shot down with the faulted channel excluded. Real per-channel
+        OCP pin mapping explicitly deferred ("we will define the
+        mapping here at a later time").
+
+        state_machine.h/.c: new SM_ReportOcpFault(channel) -- the real
+        entry point whatever eventually detects a per-channel OCP
+        condition (a future EXTI ISR once pins are defined) is meant to
+        call; new SM_GetFaultChannel() (STATE? now reports
+        "OK FAULT OVERCURRENT <ch>", 1-based, in addition to the
+        existing "OK FAULT GENERAL"). EnterFault() extended to carry a
+        channel alongside the fault type. A second SM_ReportOcpFault()
+        call while already faulted does NOT re-run the redistribute-
+        and-ramp sequence (only makes sense once) but still always
+        hard-disables its own channel -- true simultaneous multi-channel
+        OCP is flagged as a real open question, not silently resolved
+        either way (the literal single-channel case this was specified
+        for is fully correct).
+
+        pid.h/.c: new PID_BeginOvercurrentRampDown(channel) -- disables
+        `channel` immediately (PID_SetChannelEnable(), the same path
+        `enable <ch> off` uses -- no ramp for it at all), steps every
+        OTHER enabled channel down by the derate factor (one-time write,
+        still through the existing ClampOutputSlew() -- see its own doc
+        comment for a real, deliberately-not-silently-resolved tension:
+        a large derate on a channel near PFM_MAX_FREQ_HZ can't actually
+        land in one tick under the existing 2000 Hz/tick slew clamp,
+        despite being asked for "simultaneously" -- kept the clamp
+        active rather than carve out the first exception to it anywhere
+        in this file), then hands off to the EXISTING, unmodified
+        PID_BeginFaultRampDown() to ramp the survivors on down exactly
+        like General Fault, from their newly-derated starting point.
+
+        commands.c/.h, cmd_parser.c: new OCP:TEST:FAULT <ch> -- software
+        fault injection (calls SM_ReportOcpFault(ch-1) directly), added
+        specifically because no real OCP pin exists yet to trigger this
+        with -- same TEMPORARY-debug-command precedent as PFMIN:DMASTAT?
+        /qspi_test.c. Not gated/dangerous in the operator-console sense
+        -- triggering a fault only ever stops/reduces output, the same
+        "safe direction" reasoning FAULT:CLEAR/PID:STOP already get.
+
+  Two REAL, PRE-EXISTING bugs found and fixed while verifying this on
+  real hardware -- neither is new; both predate this session and were
+  masked because General Fault's own ramp-down had never actually been
+  exercised on real hardware before (every prior changelog entry for it
+  says "real-hardware verification PENDING -- board still disconnected"):
+
+  Bug 1 -- fault ramp-down was silently frozen on real hardware, for
+  BOTH fault types: EnterFault() (state_machine.c) called the FULL
+  PFM_ForceStop() unconditionally, for every fault, before either fault
+  handler even ran. PFM_ForceStop() calls HRTIM1_PWM_Stop(), which
+  stops the shared HRTIM Master counter BY DESIGN (see its own comment:
+  prevents the Master-repetition ISR from firing forever after a normal
+  stop) -- but that is the EXACT SAME counter PID_Update() needs to keep
+  firing to drive ProcessFaultRampDown()/the new OCP equivalent forward,
+  one tick at a time, for up to FAULT_RAMP_DOWN_TIME_S more seconds.
+  Confirmed on real hardware with a temporary debug query
+  (PID_DebugRampStat(), removed once resolved): every surviving
+  channel's SOFTWARE ramp state correctly interpolated and correctly
+  WROTE new shadow-register values every call, but the elapsed-ticks
+  counter never advanced past 0 -- PID_Update() was never called again
+  at all. The REAL PHYSICAL output would have frozen at a static level
+  (whatever the counter's position was at the instant of the fault),
+  not smoothly ramped to zero, for the entire ramp window -- the exact
+  opposite of General/Overcurrent Fault's whole documented point.
+  gate_driver.c's GateDriver_CheckFault() had the identical issue for
+  its OWN PFM_ForceStop() call, run from the EXTI ISR the instant a
+  real GateDriverStatus pin trips -- BEFORE state_machine.c's EnterFault()
+  even runs, so fixing EnterFault() alone would not have fixed a REAL
+  GateDriverStatus-triggered General Fault, only OCP:TEST:FAULT (which
+  doesn't route through gate_driver.c at all).
+
+  Fix: new PFM_ForceStopSoft() (pfm.c/pfm.h) -- identical bookkeeping to
+  PFM_ForceStop() WITHOUT the HRTIM1_PWM_Stop() call. PFM_ForceStop()
+  itself refactored to call it internally (zero behavior change for
+  every OTHER existing caller -- pfm.c's own 2 internal early-stop
+  cases, GateDriver_FaultClear() -- all unaffected). Used conditionally
+  at exactly the two call sites that needed it: EnterFault() uses the
+  soft stop when g_stateBeforeFault == SM_STATE_FIRING (a ramp might
+  begin); GateDriver_CheckFault() uses it when PID_IsRunning() (pid.c
+  currently has an active shot) -- both fall back to the full stop
+  otherwise (IDLE/ARMED, or the legacy pfm.c TABLE:FIRE path is what's
+  actually active), unchanged from today. PC10/HRTIM1_FLT6 investigated
+  and confirmed NOT affected -- that path forces outputs safe
+  autonomously in silicon (hrtim.h's own documented design), independent
+  of counter state, so General Fault via PC10 was never relying on the
+  counter staying alive for output safety in the first place (though its
+  own software ramp math is equally moot there, since hardware has
+  already zeroed the output by the time software runs).
+
+  Bug 2 -- FAULT:CLEAR could never actually clear a GateDriverStatus (or
+  likely PC10) fault at all: SM_ClearFault()'s own long-standing comment
+  claimed "HRTIM1_FaultClear()/GateDriver_FaultClear() above already
+  force-stop HRTIM unconditionally" -- but a full search confirmed
+  NEITHER function is called ANYWHERE in this codebase. Concretely:
+  GateDriver_FaultClear() is the only thing that ever resets
+  g_gdsFaultLatched back to 0 (gate_driver.c) -- since nothing called
+  it, GateDriver_FaultIsLatched() would stay 1 forever once a
+  GateDriverStatus fault ever latched, and SM_ClearFault()'s own
+  re-check would see it "still faulted" on every single FAULT:CLEAR
+  attempt, forever -- a full power cycle would be the only recovery.
+  Found while investigating Bug 1 above (same area, unrelated root
+  cause) -- fixed alongside it rather than left for later now that it's
+  found. Fix: SM_ClearFault() now actually calls HRTIM1_FaultClear()
+  and GateDriver_FaultClear() (after the existing unconditional
+  PID_Stop(), so hardware is already fully stopped by the time they
+  run) before its own re-check -- exactly what the comment already
+  (wrongly) claimed was happening.
+
+  Verify: python3 -m py_compile-equivalent (clean arm-none-eabi-gcc
+        build, zero warnings) after every change in this entry. Full
+        real-hardware verification, repeated across 3 build/reflash
+        cycles as each bug was found and fixed: a real 3-channel open-
+        loop shot (600A/1000A/1400A demand, channels 1/2/3, channel 4
+        disabled), OCP:TEST:FAULT 2 mid-flat-top. Confirmed via
+        PID:DEBUG:RAMPSTAT? (temporary, removed) that elapsed ticks
+        genuinely progressed tick-by-tick to completion (0 -> 211 -> 444
+        -> 676 -> 908 -> done, matching real elapsed wall time) once
+        both fixes landed -- frozen at 0 forever before them. Confirmed
+        channel 2 hard-disabled immediately (PID:CHANnel:ENAble? 0
+        throughout); channels 1/3 smoothly stepped down and ramped to
+        the PFM_TURNON_FREQ_HZ floor (16400->12360->10170->7989->5808->
+        5000 and 31600->23966->18210->12527->6820->5000); STATE? showed
+        "FAULT OVERCURRENT 2" throughout and FAULT:CLEAR correctly
+        returned to IDLE. Also verified the IDLE-fault edge case
+        (OCP:TEST:FAULT with nothing FIRING -- immediate disable +
+        FAULT, no ramp needed, matches PID_BeginFaultRampDown()'s own
+        existing "nothing to ramp" path) and the derate-math edge case
+        (N channels enabled including the faulted one, matching "at the
+        time of the fault" literally). Board confirmed clean (STATE?
+        IDLE, FAULT? 0, all channels re-enabled/restored) after every
+        test. Not verified: a REAL per-channel OCP pin trip (no
+        hardware exists yet -- OCP:TEST:FAULT is the verification path
+        until it does); true simultaneous multi-channel OCP (flagged as
+        an open question, not this session's scope); Bug 2's fix
+        against a REAL GateDriverStatus/PC10 fault specifically (no way
+        to trigger either without physical access to those pins this
+        session -- fixed by code inspection + the missing-call-site
+        confirmation, not re-verified against a live trip).
+
 2026-09-14  —  wham_llm_console.py: default model switched qwen3:4b ->
                qwen3:1.7b (4-9x faster, real benchmark) -- with a
                newly-found, not-fully-resolved reliability caveat

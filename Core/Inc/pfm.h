@@ -155,6 +155,47 @@ PFM_State_t PFM_GetState(void);  /* optional, for debug/status */
  * idempotent). */
 void PFM_ForceStop(void);
 
+/* Same as PFM_ForceStop() -- SAME g_pfmState/PfmInput_OnShotEnd()
+ * bookkeeping -- WITHOUT the HRTIM1_PWM_Stop() call, i.e. does NOT
+ * touch the shared HRTIM Master/channel counters. Added 2026-09-15,
+ * found and confirmed on real hardware while verifying the new OCP
+ * fault handling (state_machine.h):
+ *
+ * PFM_ForceStop()'s HRTIM1_PWM_Stop() call stops the Master counter
+ * (by design -- see that function's own doc comment: "leaving the
+ * counters running... means the Master repetition ISR keeps firing
+ * forever"). That's correct when nothing else needs the Master ISR
+ * afterward. But state_machine.c's EnterFault() called the FULL
+ * PFM_ForceStop() UNCONDITIONALLY, for every fault, BEFORE either fault
+ * handler even runs -- including the case where a PID fault ramp-down
+ * (General OR Overcurrent, whichever hit while FIRING) is about to
+ * begin, and NEEDS that same Master counter to keep running for up to
+ * FAULT_RAMP_DOWN_TIME_S more seconds (PID_Update() is what drives
+ * ProcessFaultRampDown()/the OCP equivalent, one tick at a time, and
+ * ONLY fires from the Master's own repetition interrupt). Symptom,
+ * confirmed on real hardware with a new debug query: the ramp's
+ * SOFTWARE state (lastOutputHz/setpointHz) correctly interpolates every
+ * call, and the derated/ramped values get correctly WRITTEN to each
+ * channel's shadow registers -- but since the counter that would ever
+ * PROMOTE a shadow write into the active register never rolls over
+ * again, PID_Update() itself is never called a second time at all
+ * (elapsed ticks measured stuck at 0, indefinitely) -- the REAL
+ * PHYSICAL output freezes at whatever static level the counter
+ * happened to be at, for the entire ramp window, not a smooth ramp to
+ * zero. gate_driver.c's GateDriver_CheckFault() has the same issue for
+ * its own PFM_ForceStop() call, run from the EXTI ISR the instant a
+ * real GateDriverStatus pin trips, BEFORE state_machine.c's own
+ * EnterFault() even runs.
+ *
+ * Used at exactly those two call sites, conditionally (only when a PID
+ * ramp-down might actually need the counters -- otherwise the full
+ * PFM_ForceStop() is still correct and unchanged) -- see EnterFault()
+ * (state_machine.c) and GateDriver_CheckFault() (gate_driver.c) for the
+ * condition each one checks. NOT used anywhere else -- every OTHER
+ * existing PFM_ForceStop() caller (pfm.c's own two internal early-stop
+ * cases, GateDriver_FaultClear()) is unaffected by this addition. */
+void PFM_ForceStopSoft(void);
+
 /* Per-channel output enable -- standalone, mode-independent, durable
  * state. Not reset by PFM_Init() or PFM_ResetIndices() -- only changes
  * via an explicit call to PFM_SetPhaseEnabled(). Defaults to all

@@ -26,8 +26,8 @@ Ported from the sibling PFM-STM32G474 project, per project decision:
 | 8 | Invalid `PFM_Input` channel (1-6) |
 | 9 | `M` out of range for `PFMIN:CAPTURE` (1-`PFM_INPUT_MAX_PERIODS`) |
 | 10 | `TABLE:STEP` `per` value implies a carrier frequency above `PFM_MAX_CARRIER_FREQ_HZ` |
-| 11 | Invalid `PID` channel |
-| 12 | Invalid `PID:*` argument count/value -- see the specific command's own usage |
+| 11 | Invalid `PID` channel (also reused by `OCP:TEST:FAULT`, same channel-range check) |
+| 12 | Invalid `PID:*` argument count/value -- see the specific command's own usage (also reused by `OCP:TEST:FAULT`) |
 | 13 | Invalid state-machine transition for the current state (`ARM`/`DISARM`/`PID:PROFile:STARt`, see that section) |
 | 14 | Invalid `PID:CHANnel:NICKname` -- name must be 1-`PID_CHANNEL_NICKNAME_MAX_LEN` chars, no spaces, and not the reserved value `-` |
 
@@ -262,6 +262,19 @@ separate:
   specifically remains open there. `FAULT:CLEAR` now also clears the
   top-level state machine (below) back to `IDLE`, if the underlying
   condition is actually gone.
+- **Real bug, found and fixed 2026-09-15**: the "still physically
+  present → re-latches" case above was genuinely verified, but the
+  OPPOSITE case — a fault that's actually gone → `FAULT:CLEAR` actually
+  succeeds — was not: `SM_ClearFault()` (`state_machine.c`) never
+  actually called `HRTIM1_FaultClear()`/`GateDriver_FaultClear()`
+  anywhere in the codebase, despite its own comment claiming it did —
+  meaning a GateDriverStatus (and likely PC10) fault, once latched,
+  could never actually be cleared at all, requiring a full power cycle
+  to recover. Fixed — see `docs/changelog.txt`'s matching entry — but
+  not yet re-verified against a real trip-then-actually-clear sequence
+  on hardware (no way to trigger a real GateDriverStatus/PC10 fault
+  this session); fixed by code inspection and confirming the missing
+  call sites, not a live re-test.
 
 ### `ARM`, `DISARM`, `STATE?`
 
@@ -304,15 +317,27 @@ REVISIT" comments).
     settles into `FAULT` to wait for `FAULT:CLEAR`. If the fault hit
     while `IDLE`/`ARMED` (nothing was actually outputting), stops
     immediately instead.
-  - **`OVERCURRENT`** (`SM_FAULT_OVERCURRENT`) — still a **STUB**: an
-    immediate, unconditional stop (no ramp) as a safe default, pending
-    a real decision on its own distinct behavior.
+  - **`OVERCURRENT`** (`SM_FAULT_OVERCURRENT`) — populated 2026-09-15,
+    per direct instruction. PER-CHANNEL, unlike `GENERAL`: reported for
+    exactly one channel via `SM_ReportOcpFault()` (see
+    `OCP:TEST:FAULT` below — no real per-channel OCP hardware pin is
+    wired up anywhere in this codebase yet, mapping still to be
+    defined). If the fault hit while `FIRING`: that channel's own HRTIM
+    output is disabled IMMEDIATELY (no ramp for it at all — the
+    opposite of `GENERAL`'s treatment of every channel), every OTHER
+    currently-enabled channel is stepped down by `(100 * 1/N)%` of its
+    own current output (`N` = channels enabled at the fault instant,
+    the faulted one included), and the survivors then ramp on down to
+    `PFM_TURNON_FREQ_HZ` over the same `FAULT_RAMP_DOWN_TIME_S` as
+    `GENERAL`. If the fault hit while `IDLE`/`ARMED`, or the faulted
+    channel was the only one enabled, falls through to the same
+    "nothing to ramp, stop immediately" handling `GENERAL` already has
+    — the faulted channel is still disabled either way.
 
-  Both of this project's existing fault sources currently route to
-  `GENERAL` unconditionally; there is no overcurrent-specific detection
-  mechanism wired up anywhere yet, and no decision has been made about
-  what eventually should produce `OVERCURRENT` instead. Left only via
-  `FAULT:CLEAR`, always back to `IDLE` — never directly to
+  Both of this project's existing system-wide fault sources (`PC10`/
+  `HRTIM1_FLT6`, `GateDriverStatus_01..12`) still route to `GENERAL`
+  unconditionally — nothing about `OVERCURRENT` changes that. Left only
+  via `FAULT:CLEAR`, always back to `IDLE` — never directly to
   `ARMED`/`FIRING`.
 
 ```
@@ -344,8 +369,8 @@ REVISIT" comments).
   or if the (currently stub) readiness check refuses.
 - **`DISARM`** — `OK`, `ARMED` → `IDLE`. No-op (still `OK`, not an
   error) if not currently `ARMED`.
-- **`STATE?`** — `OK <IDLE|ARMED|FIRING>`, or `OK FAULT <GENERAL|OVERCURRENT>`
-  while faulted.
+- **`STATE?`** — `OK <IDLE|ARMED|FIRING>`, or `OK FAULT GENERAL` /
+  `OK FAULT OVERCURRENT <ch>` (1-based) while faulted.
 - New error code **13**: an invalid state-machine transition for the
   current state (e.g. `PID:PROFile:STARt` sent while not `ARMED`;
   `ARM` sent while not `IDLE`).
@@ -358,6 +383,37 @@ by this state machine at all — it can start real output regardless of
 wired up as the "fire" trigger this round; `PID:START` bypassing the
 whole state machine is a known, real inconsistency worth resolving
 later, not an oversight to silently work around.
+
+### `OCP:TEST:FAULT`
+
+Added 2026-09-15 — **TEMPORARY** software fault injection for
+`SM_FAULT_OVERCURRENT` (above), matching this project's established
+temporary-debug-command precedent (`PFMIN:DMASTAT?`, `qspi_test.c`):
+exists so the new per-channel OCP behavior can be exercised end-to-end
+on real hardware, since no real OCP fault pin is wired up yet. Calls
+`SM_ReportOcpFault(ch - 1)` directly — exactly what a real OCP pin's
+own (not-yet-written) interrupt handler will eventually call.
+
+```
+> OCP:TEST:FAULT 2
+< OK
+> STATE?
+< OK FAULT OVERCURRENT 2
+> PID:CHANNEL:ENABLE? 2
+< OK 0
+> FAULT:CLEAR
+< OK
+> STATE?
+< OK IDLE
+```
+
+- **`OCP:TEST:FAULT <ch>`** — `OK`, triggers an OVERCURRENT fault for
+  channel `<ch>` (1-based) exactly as described above. `ERR 11` for an
+  out-of-range channel, `ERR 12` for a missing argument. Not gated by
+  the operator consoles' dangerous-command confirmation — triggering a
+  fault only ever stops/reduces output, the same "safe direction, never
+  gated" treatment `FAULT:CLEAR`/`PID:STOP` already get. Remove once
+  real OCP hardware detection exists and has its own real trigger path.
 
 ### `CONFig:CHANnels?`
 

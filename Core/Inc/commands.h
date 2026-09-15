@@ -136,8 +136,18 @@ void cmd_disarm(uart_instance_t *inst, char *args);       /* DISARM -- OK, ARMED
                                                                 no-op if not ARMED */
 void cmd_state_query(uart_instance_t *inst, char *args);  /* STATE? -- OK <IDLE|ARMED|
                                                                 FIRING|FAULT>, or
-                                                                OK FAULT <GENERAL|
-                                                                OVERCURRENT> */
+                                                                OK FAULT GENERAL, or
+                                                                OK FAULT OVERCURRENT <ch>
+                                                                (1-based) */
+
+/* TEMPORARY debug/verification command, added 2026-09-15 -- software
+ * fault injection for SM_ReportOcpFault() (state_machine.h), since no
+ * real per-channel OCP pin is wired up anywhere yet (mapping still TBD
+ * -- see that header's own "NOTE TO REVISIT"). See cmd_ocp_test_fault()'s
+ * own doc comment (commands.c) for the full reasoning and removability
+ * precedent (same pattern as PFMIN:DMASTAT?/qspi_test.c). */
+void cmd_ocp_test_fault(uart_instance_t *inst, char *args);  /* OCP:TEST:FAULT <ch> -- OK,
+                                                                  triggers SM_ReportOcpFault(ch-1) */
 
 /* Reports HRTIM_NUM_CHANNELS (ctrlr_config.h), the compile-time HRTIM
  * channel count this specific firmware build was configured for --

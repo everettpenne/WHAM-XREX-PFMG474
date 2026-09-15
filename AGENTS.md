@@ -550,7 +550,28 @@ decision (see `docs/command_reference.md`'s `FIRE` entry).
   `gate_driver.c`, `qspi_test.c`, `pfm_input.c`, `pid.c`,
   `state_machine.c` (added 2026-09-13 -- the top-level IDLE/ARMED/
   FIRING/FAULT operating-state machine, see `docs/command_reference.md`'s
-  `ARM`/`DISARM`/`STATE?` section and that file's own header comment),
+  `ARM`/`DISARM`/`STATE?` section and that file's own header comment).
+  Both fault types (General + per-channel Overcurrent/OCP, the latter
+  populated 2026-09-15) are ramp-down-capable now -- **before touching
+  ANY fault-handling code in state_machine.c/pid.c/gate_driver.c/pfm.c
+  again, read `docs/changelog.txt`'s 2026-09-15 entry first**: General
+  Fault's ramp-down had never actually been exercised on real hardware
+  since it was written (every prior changelog entry for it says
+  "real-hardware verification PENDING"), and turned out to be silently
+  broken -- `PFM_ForceStop()`'s `HRTIM1_PWM_Stop()` call was killing the
+  same shared HRTIM Master counter the ramp needs to keep running,
+  freezing the REAL physical output at a static level instead of
+  ramping it, for both fault types, from two different call sites
+  (`EnterFault()` and `GateDriver_CheckFault()`). A second, unrelated
+  bug in the same area (`SM_ClearFault()` never actually called
+  `HRTIM1_FaultClear()`/`GateDriver_FaultClear()`, so a real
+  GateDriverStatus/PC10 fault could never actually be cleared) was
+  found and fixed alongside it. Both fixes are verified on real
+  hardware via the new `OCP:TEST:FAULT` (software fault injection, see
+  `docs/command_reference.md`) -- General Fault's OWN real-hardware
+  triggers (GateDriverStatus/PC10) are fixed by the same code path but
+  not independently re-verified this session (no way to trigger either
+  without physical access to those pins).
   plus CubeMX-generated `stm32g4xx_hal_msp.c`/`stm32g4xx_it.c`/
   `system_stm32g4xx.c`/`syscalls.c`/`sysmem.c`.
 - `python/` -- host-side tooling (see above).

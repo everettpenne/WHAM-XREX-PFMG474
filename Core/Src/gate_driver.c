@@ -12,6 +12,7 @@
 #include "ctrlr_config.h"
 #include "hrtim.h"
 #include "pfm.h"
+#include "pid.h"
 #include "main.h"
 
 #define GDS_PIN_MASK   (GPIO_PIN_0  | GPIO_PIN_1  | GPIO_PIN_2  | GPIO_PIN_3  | \
@@ -49,7 +50,38 @@ void GateDriver_CheckFault(void)
 
     if (badBits != 0U)
     {
-        PFM_ForceStop();
+        /* *** REAL BUG, FIXED 2026-09-15, confirmed on real hardware ***
+           -- see PFM_ForceStopSoft()'s own extensive doc comment
+           (pfm.h) for the full diagnostic. This used to call the FULL
+           PFM_ForceStop() unconditionally, here, from the EXTI ISR, the
+           INSTANT a real GateDriverStatus pin trips -- BEFORE
+           state_machine.c's SM_PollFaults()/EnterFault() ever get a
+           chance to run and decide whether a General-Fault ramp-down
+           should begin. That full stop kills the shared HRTIM Master/
+           channel counters the ramp-down needs, so even after
+           EnterFault()'s OWN fix (same date, state_machine.c), a REAL
+           GateDriverStatus-triggered fault would still have arrived
+           with the hardware already dead.
+
+           Fixed: soft-stop (no counter touch) when pid.c currently has
+           an active shot (PID_IsRunning()) -- state_machine.c's very
+           next SM_PollFaults() call (main loop, every iteration, or
+           PID_Update() itself -- whichever reaches it first, within at
+           most one ~1ms Master tick) will pick this fault up and decide
+           ramp-down vs. immediate stop from there, needing these same
+           counters. When PID is NOT running (the legacy pfm.c
+           TABLE:FIRE path is what's actually active, or nothing is),
+           the full stop is still correct and unchanged -- there is no
+           OTHER mechanism that will ever safe that hardware otherwise,
+           since the legacy path has no ramp-down concept at all. */
+        if (PID_IsRunning() != 0U)
+        {
+            PFM_ForceStopSoft();
+        }
+        else
+        {
+            PFM_ForceStop();
+        }
         g_gdsFaultLatched = 1U;
     }
 }

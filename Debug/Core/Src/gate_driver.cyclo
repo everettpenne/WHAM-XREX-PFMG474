@@ -1,4 +1,4 @@
-../Core/Src/gate_driver.c:28:10:GateDriver_Read	1
-../Core/Src/gate_driver.c:33:6:GateDriver_CheckFault	2
-../Core/Src/gate_driver.c:57:9:GateDriver_FaultIsLatched	1
-../Core/Src/gate_driver.c:62:6:GateDriver_FaultClear	1
+../Core/Src/gate_driver.c:29:10:GateDriver_Read	1
+../Core/Src/gate_driver.c:34:6:GateDriver_CheckFault	3
+../Core/Src/gate_driver.c:89:9:GateDriver_FaultIsLatched	1
+../Core/Src/gate_driver.c:94:6:GateDriver_FaultClear	1

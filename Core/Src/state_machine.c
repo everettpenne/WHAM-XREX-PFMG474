@@ -14,6 +14,12 @@
 static SM_State_t     g_state         = SM_STATE_IDLE;
 static SM_FaultType_t g_faultType     = SM_FAULT_NONE;
 
+/* Meaningful only when g_faultType == SM_FAULT_OVERCURRENT -- see
+   SM_GetFaultChannel()'s own doc comment (state_machine.h). 0xFF is the
+   "not applicable" sentinel (never a real channel index). Added
+   2026-09-15 alongside SM_ReportOcpFault(). */
+static uint8_t g_faultChannel = 0xFFU;
+
 /* Captured by EnterFault(), before it transitions g_state to
    SM_STATE_FAULT -- lets the fault-type handlers below tell whether
    there was real output in progress (SM_STATE_FIRING) at the exact
@@ -60,24 +66,36 @@ static void HandleGeneralFault(void)
     }
 }
 
-/* Called on entering SM_STATE_FAULT with g_faultType == SM_FAULT_OVERCURRENT.
-   Nothing in this codebase currently produces this fault type -- see
-   state_machine.h's own "NOTE TO REVISIT". Its own DISTINCT behavior
-   (as opposed to General Fault's open-loop ramp-down, above) is still
-   undecided -- an immediate, unconditional PID_Stop() is kept here as
-   the safe default in the meantime (matching this function's own
-   behavior before General Fault was populated) -- an "overcurrent
-   protection fault" sounds, if anything, like it should be MORE
-   aggressive/immediate than General Fault's graceful ramp-down, not
-   less, so defaulting to the fastest possible stop until a real
-   decision is made seems like the safer placeholder of the two
-   options, not an oversight. */
-static void HandleOvercurrentFault(void)
+/* Called on entering SM_STATE_FAULT with g_faultType == SM_FAULT_OVERCURRENT
+   -- POPULATED 2026-09-15, per direct instruction. Channel-aware, unlike
+   General Fault: if the fault hit while FIRING, `channel`'s own HRTIM
+   output is disabled IMMEDIATELY (no ramp for it at all), every OTHER
+   currently-enabled channel is stepped down by (100 * 1/N)% of its own
+   current output (N = channels enabled at the fault instant, `channel`
+   included), and the survivors then ramp on down to PFM_TURNON_FREQ_HZ
+   exactly like General Fault -- see PID_BeginOvercurrentRampDown()'s own
+   extensive doc comment (pid.h) for the full mechanism, including a real,
+   deliberately-not-silently-resolved tension between "simultaneous" and
+   the existing hard slew-rate clamp.
+
+   If the fault hit while IDLE or ARMED, nothing was actually outputting
+   for it to have interrupted -- PID_BeginOvercurrentRampDown() itself
+   falls through to an immediate stop in that case (via the same path
+   PID_BeginFaultRampDown()'s own "anyParticipating" check already
+   provides), so no separate branch is needed here, unlike
+   HandleGeneralFault()'s explicit if/else above. */
+static void HandleOvercurrentFault(uint8_t channel)
 {
-    PID_Stop();
-    /* TODO (2026-09-13): populate this fault type's own distinct
-       behavior, once decided -- see state_machine.h's own
-       "NOTE TO REVISIT". */
+    if (g_stateBeforeFault == SM_STATE_FIRING)
+    {
+        PID_BeginOvercurrentRampDown(channel);
+    }
+    else
+    {
+        PID_SetChannelEnable(channel, 0U);   /* still disable it, even with
+                                                  nothing else to ramp */
+        PID_Stop();
+    }
 }
 
 /* Readiness gate for SM_Arm() -- STUB, per direct instruction: always
@@ -92,38 +110,64 @@ static uint8_t ArmConditionsMet(void)
     return 1U;   /* TODO (2026-09-13): populate real conditions. */
 }
 
-/* Shared by SM_PollFaults() -- the one place a fault is actually
-   latched into the state machine, regardless of which of the two
-   sources tripped or which of the two call sites (main loop vs.
-   PID_Update()) noticed it. */
-static void EnterFault(SM_FaultType_t type)
+/* Shared by SM_PollFaults() AND SM_ReportOcpFault() -- the one place a
+   fault is actually latched into the state machine, regardless of which
+   source/call site noticed it. `channel` is meaningless for anything
+   other than SM_FAULT_OVERCURRENT -- pass 0xFF (SM_PollFaults()'s own
+   call site does) when it doesn't apply, matching SM_GetFaultChannel()'s
+   own "not applicable" sentinel. Extended 2026-09-15 to take `channel` --
+   previously SM_FAULT_GENERAL was this function's only real caller. */
+static void EnterFault(SM_FaultType_t type, uint8_t channel)
 {
     g_stateBeforeFault = g_state;   /* captured BEFORE transitioning --
                                         see this variable's own comment
                                         above for why the handlers need it */
-    g_state     = SM_STATE_FAULT;
-    g_faultType = type;
+    g_state        = SM_STATE_FAULT;
+    g_faultType    = type;
+    g_faultChannel = channel;
 
-    /* Legacy (pfm.c TABLE:STEP/FIRE) output path -- always stopped
-       immediately and unconditionally here, regardless of fault type
-       or which state pid.c's own state machine was in. This path is
-       NOT part of the new IDLE/ARMED/FIRING/FAULT model at all (the
-       legacy FIRE command never calls SM_Fire()), so it has no
-       ramp-down concept to preserve -- an instant stop is correct for
-       it either way. Idempotent/safe to call when nothing was running
-       (matching HRTIM1_FaultClear()'s own established pattern). The
-       CURRENT (pid.c PID:*) output path's own stop is now each fault
-       type's OWN responsibility (see HandleGeneralFault()/
-       HandleOvercurrentFault(), below) -- General Fault's whole point
-       (2026-09-13, per direct instruction) is NOT stopping it
+    /* Legacy (pfm.c TABLE:STEP/FIRE) output path -- always safed here,
+       regardless of fault type or which state pid.c's own state
+       machine was in. This path is NOT part of the new IDLE/ARMED/
+       FIRING/FAULT model at all (the legacy FIRE command never calls
+       SM_Fire()), so it has no ramp-down concept to preserve -- an
+       instant stop is correct for it either way. Idempotent/safe to
+       call when nothing was running (matching HRTIM1_FaultClear()'s
+       own established pattern). The CURRENT (pid.c PID:*) output
+       path's own stop is now each fault type's OWN responsibility (see
+       HandleGeneralFault()/HandleOvercurrentFault(), below) --
+       General/Overcurrent Fault's whole point is NOT stopping it
        immediately here, but instead beginning a controlled ramp-down
-       that keeps Master's counter running until it finishes. */
-    PFM_ForceStop();
+       that keeps Master's counter running until it finishes.
+
+       *** REAL BUG, FIXED 2026-09-15, confirmed on real hardware ***:
+       this used to call the FULL PFM_ForceStop() unconditionally,
+       EVERY time, before either handler even ran -- which stops the
+       SAME shared HRTIM Master/channel counters a ramp-down needs to
+       keep running (HRTIM1_PWM_Stop(), see PFM_ForceStopSoft()'s own
+       extensive doc comment, pfm.h, for the full diagnostic). The
+       comment directly above THIS one already said the point was "NOT
+       stopping it immediately here" -- the code contradicted its own
+       stated intent. Fixed: use the SOFT stop (no counter touch) when
+       a ramp-down might actually begin (g_stateBeforeFault ==
+       SM_STATE_FIRING, for EITHER fault type -- both handlers check
+       this same condition before deciding to ramp vs. stop
+       immediately); the FULL stop is still correct and unchanged for
+       IDLE/ARMED (nothing was outputting, nothing needs the counters
+       to keep running). */
+    if (g_stateBeforeFault == SM_STATE_FIRING)
+    {
+        PFM_ForceStopSoft();
+    }
+    else
+    {
+        PFM_ForceStop();
+    }
 
     switch (type)
     {
         case SM_FAULT_OVERCURRENT:
-            HandleOvercurrentFault();
+            HandleOvercurrentFault(channel);
             break;
         case SM_FAULT_GENERAL:
         case SM_FAULT_NONE:
@@ -135,8 +179,9 @@ static void EnterFault(SM_FaultType_t type)
 
 void SM_Init(void)
 {
-    g_state     = SM_STATE_IDLE;
-    g_faultType = SM_FAULT_NONE;
+    g_state        = SM_STATE_IDLE;
+    g_faultType    = SM_FAULT_NONE;
+    g_faultChannel = 0xFFU;
 }
 
 SM_State_t SM_GetState(void)
@@ -147,6 +192,11 @@ SM_State_t SM_GetState(void)
 SM_FaultType_t SM_GetFaultType(void)
 {
     return (g_state == SM_STATE_FAULT) ? g_faultType : SM_FAULT_NONE;
+}
+
+uint8_t SM_GetFaultChannel(void)
+{
+    return (SM_GetFaultType() == SM_FAULT_OVERCURRENT) ? g_faultChannel : 0xFFU;
 }
 
 uint8_t SM_Arm(void)
@@ -255,9 +305,43 @@ void SM_PollFaults(void)
        sites (main loop + PID_Update()) this reaches from. */
     if ((HRTIM1_FaultIsTripped() != 0U) || (GateDriver_FaultIsLatched() != 0U))
     {
-        EnterFault(SM_FAULT_GENERAL);
+        EnterFault(SM_FAULT_GENERAL, 0xFFU);   /* channel N/A for a system-wide fault */
     }
 
+    __enable_irq();
+}
+
+void SM_ReportOcpFault(uint8_t channel)
+{
+    if (channel >= HRTIM_NUM_CHANNELS)
+    {
+        return;   /* defensive -- a real, correctly-wired caller never
+                      produces this */
+    }
+
+    /* Same critical-section reasoning as SM_PollFaults() above -- see
+       that function's own extensive comment. This can eventually be
+       called from an ISR (a real OCP pin's EXTI handler, once wired up)
+       just like GateDriver_CheckFault() already is, and needs the same
+       protection against the same main-loop/ISR race SM_PollFaults()
+       itself was fixed for. */
+    __disable_irq();
+
+    if (g_state == SM_STATE_FAULT)
+    {
+        /* Already faulted (either type) -- see this header's own "ALSO
+           NOTE TO REVISIT" comment (state_machine.h) on why the full
+           redistribute-and-ramp sequence does NOT re-run here. Still
+           always hard-disables THIS channel's own output unconditionally
+           -- cheap, safe, and a real OCP condition must never be left
+           connected just because some other channel's fault got here
+           first. */
+        (void)PID_SetChannelEnable(channel, 0U);
+        __enable_irq();
+        return;
+    }
+
+    EnterFault(SM_FAULT_OVERCURRENT, channel);
     __enable_irq();
 }
 
@@ -268,38 +352,55 @@ uint8_t SM_ClearFault(void)
         return 0U;   /* nothing to clear */
     }
 
-    /* Both already re-validate their own source before truly clearing
-       (see their own doc comments in hrtim.h/gate_driver.h) -- a
-       condition that's still physically present re-latches before
-       either call even returns, so SM_PollFaults()'s next check would
-       just re-detect it and re-enter FAULT again anyway. Re-check
-       directly here instead, for an honest return value on THIS call
-       rather than making the caller poll again to find out.
-
-       Also unconditionally calls PID_Stop() (added 2026-09-13,
-       alongside the General-Fault ramp-down): a General Fault caught
+    /* Unconditionally calls PID_Stop() (added 2026-09-13, alongside the
+       General-Fault ramp-down): a General/Overcurrent Fault caught
        while FIRING leaves g_running deliberately 1 -- and possibly a
        ramp-down actively in progress -- for as long as
        PID_BeginFaultRampDown()'s own ramp hasn't finished yet (see
-       pid.c). HRTIM1_FaultClear()/GateDriver_FaultClear() above
-       already force-stop HRTIM unconditionally regardless (same as
-       PFM_ForceStop() in EnterFault()), so an operator clearing the
-       fault mid-ramp already gets an immediate hard stop physically --
-       but without this PID_Stop() call, pid.c's own g_running/
-       g_faultRampActive bookkeeping would be left stale (g_running
-       still 1 with nothing actually running), which is exactly the
-       2026-09-11 bug (docs/changelog.txt) all over again if left
-       unfixed. Idempotent/harmless if the ramp had already finished
-       normally (PID_Stop() would have already been called then, by
-       pid.c itself). */
+       pid.c). Called FIRST, before either FaultClear() below, so the
+       shared HRTIM hardware is already fully, unconditionally stopped
+       (PID_Stop() -> HRTIM1_PWM_Stop()) by the time they run -- clearing
+       a fault mid-ramp is an immediate hard stop, not a resumed ramp.
+       Without this call, pid.c's own g_running/g_faultRampActive
+       bookkeeping would be left stale (g_running still 1 with nothing
+       actually running), which is exactly the 2026-09-11 bug
+       (docs/changelog.txt) all over again if left unfixed. Idempotent/
+       harmless if the ramp had already finished normally (PID_Stop()
+       would have already been called then, by pid.c itself). */
     PID_Stop();
+
+    /* *** REAL BUG, FIXED 2026-09-15 *** -- this function's own
+       long-standing comment (now corrected) claimed
+       "HRTIM1_FaultClear()/GateDriver_FaultClear() above already
+       force-stop HRTIM unconditionally," but neither was EVER actually
+       called anywhere in this codebase -- confirmed by a full search,
+       not an assumption. Concretely: GateDriver_FaultClear() is the
+       ONLY thing that ever resets g_gdsFaultLatched back to 0
+       (gate_driver.c); since nothing called it, a GateDriverStatus-
+       triggered fault could NEVER actually be cleared via FAULT:CLEAR
+       -- GateDriver_FaultIsLatched() below would stay 1 forever,
+       forcing a full power cycle to recover from ANY such fault. PC10/
+       HRTIM1_FLT6 is likely equally affected (HRTIM fault flags latch
+       in hardware until explicitly cleared). Found while investigating
+       the separate frozen-ramp bug above (PFM_ForceStopSoft(), pfm.h)
+       -- unrelated root cause, same area, real enough to fix alongside
+       it rather than leave for later now that it's found. Both
+       re-validate their own source before truly clearing (see their
+       own doc comments in hrtim.h/gate_driver.h) -- a condition that's
+       still physically present re-latches before either call even
+       returns, which is exactly what the re-check right below now
+       genuinely observes, instead of unconditionally seeing the same
+       stale "still latched" state every time. */
+    HRTIM1_FaultClear();
+    GateDriver_FaultClear();
 
     if ((HRTIM1_FaultIsTripped() != 0U) || (GateDriver_FaultIsLatched() != 0U))
     {
         return 0U;   /* still faulted -- stays in SM_STATE_FAULT */
     }
 
-    g_state     = SM_STATE_IDLE;
-    g_faultType = SM_FAULT_NONE;
+    g_state        = SM_STATE_IDLE;
+    g_faultType    = SM_FAULT_NONE;
+    g_faultChannel = 0xFFU;
     return 1U;
 }
