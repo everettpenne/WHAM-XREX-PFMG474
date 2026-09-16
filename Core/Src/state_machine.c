@@ -20,6 +20,21 @@ static SM_FaultType_t g_faultType     = SM_FAULT_NONE;
    shots/tests are unaffected unless explicitly turned on. */
 static uint8_t g_externalEnableRequired = 0U;
 
+/* External trigger (rising edge on PF15 fires a shot while ARMED) --
+   see this file's own header comment for the full design. OFF by
+   default; also forced off whenever g_externalEnableRequired goes to 0
+   (SM_SetExternalEnableRequired(), below). */
+static uint8_t g_externalTriggerRequired = 0U;
+
+/* Baseline PF15 level for edge detection, meaningful only while
+   g_state == SM_STATE_ARMED and g_externalTriggerRequired != 0 --
+   captured fresh by SM_Arm() the instant it succeeds, then kept
+   current by SM_PollFaults() on every call while still ARMED. See the
+   external-trigger design comment (state_machine.h) for why a fresh
+   capture at arm-time (not a stale value from a previous cycle)
+   matters. */
+static uint8_t g_lastExternalEnableLevelWhileArmed = 0U;
+
 /* GPIO_PULLDOWN in main.c's MX_GPIO_Init() means an unconnected/
    floating PF15 reads LOW here -- the deliberate fail-safe default,
    see this file's header comment. */
@@ -238,6 +253,16 @@ uint8_t SM_Arm(void)
     }
 
     g_state = SM_STATE_ARMED;
+
+    /* External trigger's edge-detection baseline, added 2026-09-16 --
+       captured fresh here regardless of whether the trigger feature is
+       even on right now (cheap, and avoids a stale value if it gets
+       turned on later while already ARMED) -- see the external-trigger
+       design comment (state_machine.h) for why arm-time capture
+       matters: a signal already HIGH at the moment of arming must NOT
+       look like a rising edge on the next poll. */
+    g_lastExternalEnableLevelWhileArmed = ExternalEnableInputIsHigh();
+
     return 1U;
 }
 
@@ -362,6 +387,27 @@ void SM_PollFaults(void)
              (ExternalEnableInputIsHigh() == 0U))
     {
         EnterFault(SM_FAULT_EXTERNAL_ENABLE, 0xFFU);   /* channel N/A, system-wide */
+    }
+
+    /* External trigger, added 2026-09-16 -- see state_machine.h's own
+       design comment for the full reasoning. Independent of the fault
+       checks above (mutually exclusive in practice: this only ever
+       looks at SM_STATE_ARMED, which neither fault branch above can
+       leave g_state in). SM_Fire()'s own return value is deliberately
+       ignored here -- if it fails (e.g. profile timing never set), the
+       state simply stays ARMED with the baseline now recording HIGH,
+       so this genuinely is edge-triggered (needs a fresh falling-then-
+       rising transition to try again), not level-triggered (which
+       would otherwise retry every single poll for as long as PF15
+       stayed HIGH). */
+    if ((g_externalTriggerRequired != 0U) && (g_state == SM_STATE_ARMED))
+    {
+        uint8_t level = ExternalEnableInputIsHigh();
+        if ((g_lastExternalEnableLevelWhileArmed == 0U) && (level != 0U))
+        {
+            (void)SM_Fire();
+        }
+        g_lastExternalEnableLevelWhileArmed = level;
     }
 
     __enable_irq();
@@ -496,6 +542,13 @@ uint8_t SM_ClearFault(void)
 void SM_SetExternalEnableRequired(uint8_t required)
 {
     g_externalEnableRequired = (required != 0U) ? 1U : 0U;
+    if (g_externalEnableRequired == 0U)
+    {
+        /* Trigger depends structurally on this interlock -- see this
+           function's own doc comment (state_machine.h). Added
+           2026-09-16. */
+        g_externalTriggerRequired = 0U;
+    }
 }
 
 uint8_t SM_GetExternalEnableRequired(void)
@@ -515,4 +568,21 @@ uint8_t SM_ExternalEnableOk(void)
 uint8_t SM_GetExternalEnableInputRaw(void)
 {
     return ExternalEnableInputIsHigh();
+}
+
+uint8_t SM_SetExternalTriggerRequired(uint8_t required)
+{
+    if ((required != 0U) && (g_externalEnableRequired == 0U))
+    {
+        return 0U;   /* refused -- external-enable must be on first,
+                         see this function's own doc comment
+                         (state_machine.h) */
+    }
+    g_externalTriggerRequired = (required != 0U) ? 1U : 0U;
+    return 1U;
+}
+
+uint8_t SM_GetExternalTriggerRequired(void)
+{
+    return g_externalTriggerRequired;
 }

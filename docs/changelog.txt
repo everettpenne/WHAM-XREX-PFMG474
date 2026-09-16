@@ -1,6 +1,97 @@
 WHAM-XREX-PFMG474 Firmware Changelog
 =====================================
 
+2026-09-16  —  External trigger added (rising edge on PF15 fires a shot
+               while ARMED); PID:LOOPMODE now accepts ch=0 for "every
+               channel" -- NOT YET VERIFIED ON REAL HARDWARE, board
+               still unavailable
+-----------------------------------------------------------------------
+  Change:  Direct follow-up request, same session as the external-enable
+        interlock just below: expand PF15's role so a rising edge, while
+        ARMED, fires a shot -- "the same behavior as running
+        PID:PROF:STAR when in closed loop operation, or our open loop
+        start call when in open loop operation. Closed vs open loop
+        should be set by SCPI command."
+
+        Real clarification needed and resolved before writing any code:
+        asked directly whether "our open loop start call" meant the
+        legacy pfm.c TABLE:*/FIRE path (the only genuinely open-loop,
+        zero-PID-involvement mechanism in this codebase), or something
+        that didn't exist yet and would need building. User's answer
+        revealed the real architecture: open- vs. closed-loop has
+        ALWAYS been the per-channel PID:LOOPMODE flag, checked inside
+        the SAME PID_Update() loop both PID:START and
+        PID:PROFile:STARt already share -- there was never a second,
+        structurally-different "open-loop start call" to invoke. Once
+        that was clear, confirmed the design directly: the trigger
+        always calls SM_Fire() (PID:PROFile:STARt's own function, the
+        state-machine-gated path, not the ungated PID:START), and the
+        "closed vs open loop, set by SCPI command" request becomes a
+        plain convenience for setting every channel's PID:LOOPMODE at
+        once, not a second code path the trigger branches on.
+
+        PID:LOOPMODE (cmd_pid_loopmode(), commands.c): `ch=0` now means
+        "every channel at once" -- reuses PID:LOG's own existing
+        `ch=0`-means-all convention (added 2026-09-10, PID_ArmLogAll())
+        rather than inventing a new command. Real channels are still
+        1..HRTIM_NUM_CHANNELS as always.
+
+        External trigger itself (state_machine.h/.c): reuses PF15, the
+        SAME pin the external-enable interlock (below) already uses --
+        not a second signal. Structurally DEPENDS on external-enable
+        being on: SM_SetExternalTriggerRequired(1) refuses (new ERR 16)
+        unless SM_GetExternalEnableRequired() is already 1, and turning
+        external-enable back OFF forces trigger back off too --
+        enforced both directions so an operator can never end up with
+        triggering active while the "lose the signal -> fault"
+        protection it depends on is silently disabled. Per direct
+        instruction ("as usual, if we lose the enable signal we should
+        interpret this as a general fault"), this is the EXISTING
+        SM_FAULT_EXTERNAL_ENABLE mechanism (previous entry), reused
+        as-is -- no second fault path.
+
+        Edge detection, not level detection: a baseline PF15 level is
+        captured fresh the instant SM_Arm() succeeds (so a signal
+        already HIGH at the moment of arming doesn't look like a rising
+        edge on the next check), then kept current by SM_PollFaults()
+        on every call while still ARMED. Checked from INSIDE
+        SM_PollFaults() itself (not a new, separate poll function) --
+        shares that function's already-established call-site guarantee
+        (main loop + every real PID_Update() tick) rather than adding a
+        second entry point every caller would need to remember. While
+        merely ARMED (not yet FIRING), the only caller actually reaching
+        SM_PollFaults() is the main loop -- its own iteration rate is
+        unbounded/undocumented (the SAME pre-existing "NOTE TO REVISIT"
+        this project already carries for fault-poll cadence), so
+        trigger latency while ARMED inherits that same limitation, not
+        a new one. If the resulting SM_Fire() call itself fails (e.g.
+        profile timing never set), the state simply stays ARMED with
+        the baseline now recording HIGH -- a genuine falling-then-rising
+        edge is needed to retry, not just PF15 remaining HIGH.
+
+        New wire commands (commands.c/.h, cmd_parser.c): EXTernal:TRIGger
+        <0|1>, EXTernal:TRIGger?. New ERR 16 (EXTernal:TRIGger refused,
+        EXTernal:ENAble must be on first).
+
+  Verify: clean arm-none-eabi-gcc build, zero warnings. *** NOT YET
+        VERIFIED ON REAL HARDWARE *** -- board still unavailable this
+        session (see the previous entry's own verify note -- same
+        board, same reason). Nothing here has been exercised on actual
+        silicon: not the ch=0 PID:LOOPMODE convenience, not the
+        EXTernal:TRIGger refusal when EXTernal:ENAble is off, not a
+        real rising edge actually firing a shot from ARMED, not the
+        edge-vs-level distinction, not the arm-time baseline capture.
+        Next session (or whenever the board is back): rebuild, reflash,
+        and verify all of this alongside the external-enable checklist
+        from the previous entry -- they share the same pin and can
+        reasonably be tested together (bench jumper/switch to PF15,
+        drive it through a realistic ARM -> rising edge -> FIRING ->
+        drop -> FAULT -> restore -> FAULT:CLEAR sequence).
+
+  Files:  Core/Inc/state_machine.h, Core/Src/state_machine.c,
+        Core/Inc/commands.h, Core/Src/commands.c, Core/Src/cmd_parser.c,
+        docs/command_reference.md
+
 2026-09-16  —  External-enable interlock added (PF15, "Fiber_Enable"):
                new SM_FAULT_EXTERNAL_ENABLE fault type, EXTernal:ENAble
                commands -- NOT YET VERIFIED ON REAL HARDWARE, board

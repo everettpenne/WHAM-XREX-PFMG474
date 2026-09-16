@@ -120,6 +120,12 @@ static const command_t command_table[] = {
     { "EXTernal:ENAble?",    cmd_ext_enable_query  },
     { "EXTernal:INPut?",     cmd_ext_enable_input_query },
 
+    /* External trigger (rising edge on PF15 fires a shot while ARMED)
+       -- see commands.h's own comment on cmd_ext_trigger(). Added
+       2026-09-16. */
+    { "EXTernal:TRIGger",    cmd_ext_trigger       },
+    { "EXTernal:TRIGger?",   cmd_ext_trigger_query },
+
     /* TEMPORARY debug/verification command -- software OCP fault
        injection, see commands.c's own header comment on
        cmd_ocp_test_fault(). */

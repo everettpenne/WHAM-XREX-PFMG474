@@ -591,10 +591,21 @@ decision (see `docs/command_reference.md`'s `FIRE` entry).
   considered first and rejected, it's documented as an OUTPUT in
   `docs/pin_mapping_v4.csv`, the wrong direction), gating `ARM`/
   `PID:PROFile:STARt` and faulting if lost while `FIRING`. New
-  `EXTernal:ENAble`/`EXTernal:ENAble?`/`EXTernal:INPut?` commands. See
-  `docs/changelog.txt`'s 2026-09-16 entry before assuming this is
-  hardware-confirmed -- rebuild/reflash/verify on real hardware is the
-  next real step whenever the board is back.
+  `EXTernal:ENAble`/`EXTernal:ENAble?`/`EXTernal:INPut?` commands.
+  **Also added 2026-09-16, same session, same NOT-YET-VERIFIED status**:
+  external trigger -- a rising edge on that SAME PF15 pin, while ARMED,
+  now calls `SM_Fire()` directly (same function `PID:PROFile:STARt`
+  itself calls). Structurally depends on `EXTernal:ENAble` being on
+  first (new `EXTernal:TRIGger`/`EXTernal:TRIGger?`, ERR 16). There is
+  NO separate "open-loop start call" anywhere in this codebase --
+  open-/closed-loop has always been the per-channel `PID:LOOPMODE` flag,
+  not a different start mechanism; `PID:LOOPMODE`'s `ch` argument now
+  also accepts `0` for "every channel at once" (matching `PID:LOG`'s own
+  existing convention), added in service of this feature but usable
+  standalone. See `docs/changelog.txt`'s 2026-09-16 entries (two, this
+  one and the external-enable one just below it) before assuming any of
+  this is hardware-confirmed -- rebuild/reflash/verify on real hardware
+  is the next real step whenever the board is back.
   plus CubeMX-generated `stm32g4xx_hal_msp.c`/`stm32g4xx_it.c`/
   `system_stm32g4xx.c`/`syscalls.c`/`sysmem.c`.
 - `python/` -- host-side tooling (see above).

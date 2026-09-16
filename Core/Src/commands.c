@@ -572,6 +572,46 @@ void cmd_ext_enable_input_query(uart_instance_t *inst, char *args)
 }
 
 /* --------------------------------------------------------------------------
+ * EXTernal:TRIGger <0|1> / EXTernal:TRIGger?
+ *
+ * Added 2026-09-16, per direct follow-up request. See state_machine.h's
+ * own external-trigger design comment (SM_SetExternalTriggerRequired()
+ * and friends) for the full design -- this is just the wire-command
+ * wrapper. Reuses PF15, the SAME pin EXTernal:ENAble above already
+ * uses -- structurally depends on that interlock being on first (see
+ * SM_SetExternalTriggerRequired()'s own comment for why); ERR 16
+ * (new) is what that refusal looks like on the wire. */
+void cmd_ext_trigger(uart_instance_t *inst, char *args)
+{
+    char *tok;
+    long  val;
+
+    tok = (args != NULL) ? strtok(args, " \r\n") : NULL;
+    if (tok == NULL)
+    {
+        SendErr(inst, 12, "EXTernal:TRIGger needs one argument: 0|1");
+        return;
+    }
+    val = atol(tok);
+
+    if (SM_SetExternalTriggerRequired((val != 0L) ? 1U : 0U) == 0U)
+    {
+        SendErr(inst, 16, "EXTernal:ENAble must be on before EXTernal:TRIGger can be turned on");
+        return;
+    }
+    uart_send(inst, "OK\r\n");
+}
+
+void cmd_ext_trigger_query(uart_instance_t *inst, char *args)
+{
+    char buf[16];
+    (void)args;
+
+    snprintf(buf, sizeof(buf), "OK %u\r\n", (unsigned)SM_GetExternalTriggerRequired());
+    uart_send(inst, buf);
+}
+
+/* --------------------------------------------------------------------------
  * OCP:TEST:FAULT <ch>
  *
  * TEMPORARY debug/verification command, added 2026-09-15 -- same
@@ -1355,17 +1395,26 @@ void cmd_pid_ramp(uart_instance_t *inst, char *args)
  * See pid.h's "DEMAND PROFILE"/"OPEN-LOOP MODE" doc sections.
  * -------------------------------------------------------------------------- */
 
+/* `ch` = 0 means "every channel at once" -- added 2026-09-16, per
+   direct request for a system-wide loop-mode convenience (originally
+   asked for in service of the external-trigger feature, but not
+   restricted to that use -- a plain global setter). Matches
+   PID:LOG's own existing "0 = all channels" convention (pid.h's own
+   PfmInput_ArmLogAll() precedent) rather than inventing a new command
+   -- reuses this exact command/argument slot instead. Real channels
+   are still 1..HRTIM_NUM_CHANNELS as always. */
 void cmd_pid_loopmode(uart_instance_t *inst, char *args)
 {
     char *tok;
     long  chArg;
     long  modeArg;
     uint8_t ch;
+    uint8_t mode;
 
     tok = (args != NULL) ? strtok(args, " \r\n") : NULL;
     if (tok == NULL)
     {
-        SendErr(inst, 12, "PID:LOOPMODE needs two arguments: channel 0|1");
+        SendErr(inst, 12, "PID:LOOPMODE needs two arguments: channel(0=all) 0|1");
         return;
     }
     chArg = atol(tok);
@@ -1373,19 +1422,30 @@ void cmd_pid_loopmode(uart_instance_t *inst, char *args)
     tok = strtok(NULL, " \r\n");
     if (tok == NULL)
     {
-        SendErr(inst, 12, "PID:LOOPMODE needs two arguments: channel 0|1");
+        SendErr(inst, 12, "PID:LOOPMODE needs two arguments: channel(0=all) 0|1");
         return;
     }
     modeArg = atol(tok);
 
-    if ((chArg < 1L) || (chArg > (long)HRTIM_NUM_CHANNELS))
+    if ((chArg < 0L) || (chArg > (long)HRTIM_NUM_CHANNELS))
     {
         SendErr(inst, 11, "Invalid PID channel");
         return;
     }
-    ch = (uint8_t)(chArg - 1L);
+    mode = (modeArg != 0L) ? 1U : 0U;
 
-    (void)PID_SetLoopMode(ch, (modeArg != 0L) ? 1U : 0U);
+    if (chArg == 0L)
+    {
+        for (ch = 0U; ch < HRTIM_NUM_CHANNELS; ch++)
+        {
+            (void)PID_SetLoopMode(ch, mode);
+        }
+    }
+    else
+    {
+        ch = (uint8_t)(chArg - 1L);
+        (void)PID_SetLoopMode(ch, mode);
+    }
     uart_send(inst, "OK\r\n");
 }
 

@@ -465,11 +465,16 @@ uint8_t SM_ClearFault(void);
  * already the safe direction there; the same reasoning would be UNSAFE
  * here, where floating-read-as-enabled would be the dangerous one.
  *
- * *** NOT re-checked while IDLE or ARMED other than at the two explicit
- * gate points above (ARM, PID:PROFile:STARt) -- only genuinely
- * continuously monitored while FIRING. If tighter, always-on monitoring
- * is ever wanted, that's a real, separate decision to make explicitly,
- * not something to assume was already covered here. *** */
+ * *** As a FAULT source, NOT re-checked while IDLE or ARMED other than
+ * at the two explicit gate points above (ARM, PID:PROFile:STARt) --
+ * only genuinely continuously monitored for FAULT purposes while
+ * FIRING. If tighter, always-on FAULT monitoring is ever wanted,
+ * that's a real, separate decision to make explicitly, not something
+ * to assume was already covered here. (PF15's raw LEVEL is, separately,
+ * read continuously while ARMED too, as of 2026-09-16 -- see the
+ * external-trigger feature directly below -- but a drop while ARMED
+ * still does not itself enter FAULT; only the trigger-edge logic
+ * reacts to it there.) *** */
 
 /* Turns the interlock above on (1) or off (0). Persists across shots
  * until changed again or the board reboots (RAM state, like every
@@ -477,7 +482,16 @@ uint8_t SM_ClearFault(void);
  * PID:LOOPMODE, etc.) -- NOT saved to non-volatile storage. Backs
  * `EXTernal:ENAble <0|1>` (commands.c). Takes effect immediately: if turned
  * ON while already FIRING, the very next SM_PollFaults() call (at most
- * one PID_Update() tick away) starts checking PF15. */
+ * one PID_Update() tick away) starts checking PF15.
+ *
+ * Turning this OFF also forces the external-trigger feature (below)
+ * off, if it was on -- added 2026-09-16, when that feature was built:
+ * triggering depends structurally on this same interlock (its own
+ * "lose the signal mid-shot -> fault" protection IS this mechanism),
+ * so an operator can never end up with triggering enabled while the
+ * enable check itself is silently off. See SM_SetExternalTriggerRequired()
+ * below for the matching one-way dependency enforced when turning
+ * triggering ON. */
 void SM_SetExternalEnableRequired(uint8_t required);
 
 /* Current mode, as last set by SM_SetExternalEnableRequired() (0 by
@@ -504,6 +518,76 @@ uint8_t SM_ExternalEnableOk(void);
  * rely on it" role PFMIN:DEBUG:RAW?/REG? played for the PF_Input fiber-
  * patching investigation (docs/changelog.txt, 2026-09-15). */
 uint8_t SM_GetExternalEnableInputRaw(void);
+
+/* --------------------------------------------------------------------------
+ * External trigger (rising edge on PF15 fires a shot), added 2026-09-16,
+ * per direct follow-up request.
+ *
+ * Reuses the SAME PF15 signal as the external-enable interlock above --
+ * NOT a second pin. Opt-in, OFF by default, and structurally DEPENDS on
+ * external-enable also being on: SM_SetExternalTriggerRequired(1)
+ * REFUSES (returns 0) unless SM_GetExternalEnableRequired() is already
+ * 1, and SM_SetExternalEnableRequired(0) forces this back off too (see
+ * that function's own updated comment above) -- an operator can never
+ * end up with triggering active while the "lose the signal -> fault"
+ * protection it relies on is silently disabled. Per direct
+ * instruction, "as usual" losing the signal mid-shot means a fault --
+ * that IS the existing SM_FAULT_EXTERNAL_ENABLE mechanism above,
+ * reused as-is, not a second fault path.
+ *
+ * When ON, and the state machine is currently SM_STATE_ARMED: a
+ * LOW-to-HIGH transition on PF15 calls SM_Fire() directly -- the exact
+ * same function `PID:PROFile:STARt` itself calls, so every one of that
+ * path's own guarantees (the redundant external-enable re-check right
+ * before firing, the profile-timing-configured check, the resulting
+ * FIRING-state fault monitoring) apply identically whether a shot
+ * started by operator command or by this trigger. Per direct
+ * instruction ("this is the same behavior as running PID:PROF:STAR"),
+ * there is no second/different start path for a triggered shot -- see
+ * this file's own investigation into whether a distinct "open-loop
+ * start call" exists (it doesn't: open- vs. closed-loop has always
+ * been the PER-CHANNEL PID:LOOPMODE flag, checked inside the SAME
+ * PID_Update() loop both PID:START and PID:PROFile:STARt already
+ * share -- there was never a second, structurally-open-loop start
+ * mechanism to call here, aside from the unrelated legacy pfm.c
+ * TABLE:*-and-FIRE path, which this feature does NOT touch).
+ *
+ * Edge detection: a baseline PF15 level is captured fresh the instant
+ * SM_Arm() succeeds (SM_Fire() -- state_machine.c -- also updates it on
+ * every SM_PollFaults() call while still ARMED and this feature is on)
+ * specifically so a signal that's ALREADY HIGH at the moment of arming
+ * does not look like a rising edge on the very next poll -- only a
+ * genuine LOW-then-HIGH transition AFTER arming counts. If SM_Fire()
+ * itself fails for some other reason (e.g. profile timing never set),
+ * the state simply stays ARMED with the baseline now recording HIGH --
+ * a real falling-then-rising edge is needed to try again, not just
+ * PF15 remaining HIGH; this is an edge-triggered mechanism, not a
+ * level-triggered one.
+ *
+ * Checked from INSIDE SM_PollFaults() (not a separate poll function) --
+ * same reasoning as the FIRING-state fault check above: shares that
+ * function's already-established call-site guarantee (main loop +
+ * every real PID_Update() tick) rather than requiring every caller to
+ * also remember a second poll entry point. While merely ARMED (not yet
+ * FIRING), the only caller actually reaching SM_PollFaults() is the
+ * main loop -- its own iteration rate is unbounded/undocumented (see
+ * this file's pre-existing "NOTE TO REVISIT" on that), so trigger
+ * latency while ARMED inherits that same, already-flagged limitation;
+ * not a new one introduced here. */
+
+/* Turns the trigger feature on (1) or off (0). Returns 1 on success, 0
+ * if refused -- ONLY possible refusal: `required` is nonzero (turning
+ * ON) while SM_GetExternalEnableRequired() is currently 0. Backs
+ * `EXTernal:TRIGger <0|1>` (commands.c), which reports a distinct error
+ * for that refusal rather than a generic one. RAM-only, resets to 0 on
+ * reboot, same as every other runtime config in this project. */
+uint8_t SM_SetExternalTriggerRequired(uint8_t required);
+
+/* Current mode, as last set by SM_SetExternalTriggerRequired() (0 by
+ * default at boot, and forced back to 0 if external-enable is ever
+ * turned off -- see SM_SetExternalEnableRequired()'s own comment).
+ * Backs `EXTernal:TRIGger?` (commands.c). */
+uint8_t SM_GetExternalTriggerRequired(void);
 
 #ifdef __cplusplus
 }

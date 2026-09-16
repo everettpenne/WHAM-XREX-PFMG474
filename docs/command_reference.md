@@ -480,12 +480,62 @@ floating-reads-as-fault is already the safe outcome.
 - New error code **15**: `PID:PROFile:STARt` refused because the
   interlock is on and PF15 currently reads LOW.
 
+### `EXTernal:TRIGger` / `EXTernal:TRIGger?`
+
+Added 2026-09-16, per direct follow-up request: a **rising edge on
+PF15** (the SAME pin `EXTernal:ENAble` above uses — not a second
+signal) fires a shot while `ARMED`, exactly as if `PID:PROFile:STARt`
+had been sent manually. **Structurally depends on `EXTernal:ENAble`
+being on first** — `EXTernal:TRIGger 1` refuses (`ERR 16`) unless it
+is, and turning `EXTernal:ENAble` back off also forces this back off —
+the "lose the signal mid-shot → fault" protection this feature relies
+on to behave sanely IS that same interlock, not a separate mechanism.
+
+There is no separate "open-loop start call" to invoke here: open- vs.
+closed-loop has always been the **per-channel** `PID:LOOPMODE` flag,
+checked inside the same control loop both `PID:START` and
+`PID:PROFile:STARt` already share — not a different start mechanism.
+`PID:LOOPMODE 0 <0|1>` (above, also added this same day) is a plain
+convenience for setting every channel's mode at once before an
+externally-triggered shot, not something this feature reads or
+branches on itself.
+
+Edge-triggered, not level-triggered: a baseline PF15 level is captured
+fresh the instant `ARM` succeeds, so a signal already HIGH at the
+moment of arming does **not** look like a rising edge on the next
+check — only a genuine LOW→HIGH transition after arming fires. If the
+resulting `PID:PROFile:STARt` call itself fails for some other reason
+(e.g. profile timing never set), the state simply stays `ARMED` — a
+fresh falling-then-rising edge is needed to try again, not just PF15
+remaining HIGH.
+
+```
+> EXTernal:ENAble 1
+< OK
+> EXTernal:TRIGger 1
+< OK
+> ARM
+< OK
+  ... (PF15 rises) ...
+> STATE?
+< OK FIRING
+```
+
+- **`EXTernal:TRIGger <0|1>`** — `OK`, turns the trigger feature
+  on/off. `ERR 12` if the argument is missing, `ERR 16` if turning it
+  on while `EXTernal:ENAble` is currently off.
+- **`EXTernal:TRIGger?`** — `OK <0|1>`, current mode.
+- New error code **16**: `EXTernal:TRIGger` refused because
+  `EXTernal:ENAble` must be turned on first.
+
 **NOT YET VERIFIED ON REAL HARDWARE** as of this writing — build-clean
 only (zero warnings), the board was unavailable this session. In
-particular: the `GPIO_PULLDOWN` fail-safe default, the actual PF15
-signal once real external hardware drives it, and the FIRING-time fault
-response have not been exercised on the bench yet — see
-`docs/changelog.txt`'s matching entry.
+particular, for BOTH `EXTernal:ENAble` and `EXTernal:TRIGger`: the
+`GPIO_PULLDOWN` fail-safe default, the actual PF15 signal once real
+external hardware drives it, the FIRING-time fault response, and (new
+for `EXTernal:TRIGger`) a real rising edge actually firing a shot from
+`ARMED` have not been exercised on the bench yet — see
+`docs/changelog.txt`'s matching entries.
 
 ### `OCP:TEST:FAULT`
 
@@ -749,7 +799,13 @@ cover yet.
   generous read timeout (`wham_console.py` uses 8s).
 - **`PID:LOOPMODE <ch> <0|1>`** -- `0` = open-loop (setpoint/profile
   value written straight to HRTIM, no PID correction; feedback still
-  read/reported for comparison), `1` = closed-loop (default).
+  read/reported for comparison), `1` = closed-loop (default). `ch = 0`
+  (added 2026-09-16) means "every channel at once" -- matches
+  `PID:LOG`'s own existing `ch=0` convention rather than a new command;
+  real channels are still `1..HRTIM_NUM_CHANNELS` as always. Added
+  originally in service of the external-trigger feature below (a
+  single system-wide mode setting, not a new control-loop behavior),
+  but usable standalone any time.
 - **`PID:LOOPMODE? <ch>`** -- `OK <0|1>` -- added 2026-09-10 (see
   `PID_GetLoopMode()`).
 - **`PID:CHANnel:ENAble <ch> <0|1>`** -- added 2026-09-11, per direct

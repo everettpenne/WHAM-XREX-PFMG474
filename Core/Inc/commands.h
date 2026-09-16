@@ -53,6 +53,8 @@ extern "C" {
  *   15  PID:PROFile:STARt refused -- the external-enable interlock
  *       (EXTernal:ENAble) is on and PF15 currently reads LOW
  *       (state_machine.h)
+ *   16  EXTernal:TRIGger refused -- EXTernal:ENAble must be turned on
+ *       before EXTernal:TRIGger can be (state_machine.h)
  *
  * Mnemonics are SCPI-style hierarchical patterns matched by
  * cmd_parser.c's scpi_match() -- see that file's header for the
@@ -158,6 +160,16 @@ void cmd_ext_enable_input_query(uart_instance_t *inst, char *args); /* EXTernal:
                                                                          level, independent
                                                                          of whether the
                                                                          interlock is on */
+
+/* External trigger (rising edge on PF15 fires a shot while ARMED),
+ * added 2026-09-16 -- see state_machine.h's own design comment
+ * (SM_SetExternalTriggerRequired() and friends). Reuses PF15, requires
+ * EXTernal:ENAble on first. ERR 16 (new): refused because
+ * EXTernal:ENAble is off. */
+void cmd_ext_trigger(uart_instance_t *inst, char *args);       /* EXTernal:TRIGger <0|1> --
+                                                                    OK, or ERR 16 */
+void cmd_ext_trigger_query(uart_instance_t *inst, char *args); /* EXTernal:TRIGger? -- OK
+                                                                    <0|1> */
 
 /* TEMPORARY debug/verification command, added 2026-09-15 -- software
  * fault injection for SM_ReportOcpFault() (state_machine.h), since no
