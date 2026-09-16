@@ -126,6 +126,25 @@ extern "C" {
  *                              immediately" handling General Fault
  *                              already has.
  *
+ *   SM_FAULT_EXTERNAL_ENABLE -- ADDED 2026-09-16, per direct request: a
+ *                              real, physical operator/facility
+ *                              permissive signal (PF15, "Fiber_Enable"),
+ *                              not a hardware fault condition in the
+ *                              PC10/GateDriverStatus sense. System-wide,
+ *                              same shape as General Fault -- reuses
+ *                              HandleGeneralFault() directly (EnterFault()'s
+ *                              switch) for an IDENTICAL open-loop
+ *                              ramp-down response, reported as its own
+ *                              distinct type purely so an operator can
+ *                              tell "the interlock dropped" apart from
+ *                              "a real HRTIM/gate-driver fault" via
+ *                              STATE?. See the external-enable section further
+ *                              down this file for the full design
+ *                              (opt-in, ARM/PID:PROFile:STARt gating,
+ *                              FIRING-only continuous monitoring,
+ *                              FAULT:CLEAR re-validation, the deliberate
+ *                              GPIO_PULLDOWN fail-safe choice).
+ *
  * *** NOTE TO REVISIT *** -- per direct instruction, "we will define the
  * mapping here at a later time": SM_ReportOcpFault(channel) is a real,
  * callable, fully-implemented entry point (and OCP:TEST:FAULT, commands.c,
@@ -211,13 +230,21 @@ typedef enum
     SM_FAULT_NONE = 0,     /* meaningful only via SM_GetFaultType() when
                                SM_GetState() != SM_STATE_FAULT */
     SM_FAULT_GENERAL,
-    SM_FAULT_OVERCURRENT
+    SM_FAULT_OVERCURRENT,
+    SM_FAULT_EXTERNAL_ENABLE   /* added 2026-09-16 -- see the external-enable
+                                   section below and this file's own
+                                   header comment for the full design */
 } SM_FaultType_t;
 
-/* Called once at boot (main.c), after pid.c's own PID_Init(). Sets the
+/* Called once at boot (main.c), after pid.c's own PID_Init() AND after
+ * main.c's own MX_GPIO_Init() (which now also configures PF15,
+ * Fiber_Enable -- see the external-enable interlock's own doc comment below). Sets the
  * state to IDLE. Does not touch any hardware itself -- pid.c/hrtim.c's
- * own init already leaves outputs off; this just makes that the
- * explicit, queryable state from the start. */
+ * own init already leaves outputs off, and PF15's GPIO config lives in
+ * main.c's MX_GPIO_Init() (matching gate_driver.c's own precedent for
+ * plain-input pins: GPIO config in main.c, the read/fault logic in the
+ * owning module) -- this just makes IDLE the explicit, queryable state
+ * from the start. */
 void SM_Init(void);
 
 SM_State_t SM_GetState(void);
@@ -381,6 +408,102 @@ void SM_ReportGeneralFault(void);
  * latched" query) -- do not assume this file's job here is finished
  * just because SM_ReportOcpFault()/the ramp-down behavior are. */
 uint8_t SM_ClearFault(void);
+
+/* --------------------------------------------------------------------------
+ * External-enable interlock (PF15, "Fiber_Enable" -- docs/pin_mapping_v4.csv),
+ * added 2026-09-16, per direct request.
+ *
+ * A pin the operator reads, not drives -- confirmed GPI in the pin
+ * mapping doc (PC14, the pin first proposed for this, was rejected:
+ * it's documented GPO there, "STM_Enable_Pin" -- the STM32 DRIVES that
+ * one outward, the opposite direction needed here; PF15 is the correct
+ * pin). Opt-in: OFF by default at boot (SM_SetExternalEnableRequired()
+ * was never called, or was last called with 0) -- existing shots/tests
+ * are completely unaffected unless this is explicitly turned on.
+ *
+ * When ON:
+ *   1. `ARM` refuses (ArmConditionsMet(), state_machine.c) unless PF15
+ *      currently reads HIGH -- folded into that function's existing
+ *      generic "arm conditions not met" failure (ERR 13), no new error
+ *      code needed for this case.
+ *   2. `PID:PROFile:STARt` ALSO re-checks PF15 immediately before
+ *      firing (SM_ExternalEnableOk(), below, checked by the command
+ *      handler for a precise error -- see cmd_pid_profile_start()'s own
+ *      comment -- AND redundantly inside SM_Fire() itself as a last-
+ *      line-of-defense, in case some other future caller ever bypasses
+ *      the command handler's own check). Closes the real gap where PF15
+ *      could drop in the window between a successful ARM and the
+ *      eventual START -- ARM alone is NOT enough to guarantee this.
+ *   3. While FIRING, SM_PollFaults() (below) ALSO checks PF15 every
+ *      time it runs (the main loop, AND every real PID_Update() tick --
+ *      the same cadence General Fault's own two hardware sources
+ *      already get). If PF15 reads LOW while FIRING, enters
+ *      SM_STATE_FAULT with SM_FAULT_EXTERNAL_ENABLE -- identical
+ *      open-loop ramp-down response to General Fault (HandleGeneralFault()
+ *      is reused directly, see EnterFault()'s switch, state_machine.c)
+ *      -- reported as a DISTINCT fault type purely for operator
+ *      diagnostics (STATE? -> "OK FAULT EXTERNAL_ENABLE"), not a
+ *      different physical response. Per direct instruction, this is
+ *      checked only while actually FIRING ("if that input is lost
+ *      during a shot") -- losing PF15 while merely ARMED (nothing
+ *      outputting yet) is NOT itself treated as a fault here; the next
+ *      PID:PROFile:STARt attempt will simply fail its own re-check
+ *      (item 2 above) instead. Deliberately not decided either way
+ *      whether ARMED should also actively fault on PF15 loss -- not
+ *      asked for, flagged rather than silently added.
+ *   4. `FAULT:CLEAR` (SM_ClearFault(), above) re-validates PF15 is back
+ *      HIGH before actually clearing an EXTERNAL_ENABLE fault, same
+ *      "only clear if the condition is actually gone" philosophy
+ *      already applied to PC10/GateDriverStatus.
+ *
+ * GPIO_PULLDOWN (main.c's MX_GPIO_Init(), not this project's usual
+ * GPIO_NOPULL for actively-driven inputs) is a DELIBERATE fail-safe
+ * choice specific to this one signal: an unconnected/floating PF15
+ * must read LOW (no permission), never an undefined level that could
+ * accidentally read HIGH and silently permit firing. GateDriverStatus's
+ * own NOPULL is fine for that pin because floating-read-as-fault is
+ * already the safe direction there; the same reasoning would be UNSAFE
+ * here, where floating-read-as-enabled would be the dangerous one.
+ *
+ * *** NOT re-checked while IDLE or ARMED other than at the two explicit
+ * gate points above (ARM, PID:PROFile:STARt) -- only genuinely
+ * continuously monitored while FIRING. If tighter, always-on monitoring
+ * is ever wanted, that's a real, separate decision to make explicitly,
+ * not something to assume was already covered here. *** */
+
+/* Turns the interlock above on (1) or off (0). Persists across shots
+ * until changed again or the board reboots (RAM state, like every
+ * other runtime config in this project -- PID:PROFILE:CURRENT,
+ * PID:LOOPMODE, etc.) -- NOT saved to non-volatile storage. Backs
+ * `EXTernal:ENAble <0|1>` (commands.c). Takes effect immediately: if turned
+ * ON while already FIRING, the very next SM_PollFaults() call (at most
+ * one PID_Update() tick away) starts checking PF15. */
+void SM_SetExternalEnableRequired(uint8_t required);
+
+/* Current mode, as last set by SM_SetExternalEnableRequired() (0 by
+ * default at boot). Backs `EXTernal:ENAble?` (commands.c). */
+uint8_t SM_GetExternalEnableRequired(void);
+
+/* 1 if the interlock isn't required at all (SM_GetExternalEnableRequired()
+ * == 0 -- always "ok" in that case, matching this feature's opt-in
+ * design), OR it IS required and PF15 currently reads HIGH. 0 only when
+ * required AND PF15 currently reads LOW. This is the single source of
+ * truth `ArmConditionsMet()`/`SM_Fire()` (state_machine.c) both check
+ * internally -- also exposed publicly so the command layer
+ * (cmd_pid_profile_start(), commands.c) can give a precise, distinct
+ * error message instead of a generic failure, matching the same
+ * "distinct failure reasons, reported distinctly" precedent that
+ * function's own comment already established for
+ * PID:PROFILE:TIMING-not-set. */
+uint8_t SM_ExternalEnableOk(void);
+
+/* Raw PF15 logic level right now (1 = HIGH, 0 = LOW) -- independent of
+ * whether the interlock is even turned on. Diagnostic: lets an operator
+ * confirm real wiring/signal presence (`EXTernal:INPut?`, commands.c)
+ * before actually turning the interlock on, the same "verify before you
+ * rely on it" role PFMIN:DEBUG:RAW?/REG? played for the PF_Input fiber-
+ * patching investigation (docs/changelog.txt, 2026-09-15). */
+uint8_t SM_GetExternalEnableInputRaw(void);
 
 #ifdef __cplusplus
 }

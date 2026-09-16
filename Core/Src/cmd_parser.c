@@ -108,6 +108,18 @@ static const command_t command_table[] = {
     { "DISARM",              cmd_disarm       },
     { "STATE?",              cmd_state_query  },
 
+    /* External-enable interlock (PF15) -- see commands.h's own comment
+       on cmd_ext_enable(). Added 2026-09-16. Two-level namespace
+       (mandatory "EXT"/"ENA"/"INP", matching this project's existing
+       PID:CHANnel:ENAble-style abbreviation convention) rather than one
+       compound word -- a single "EXTEnable" token would only let
+       "EXTE" (an unrecognizable fragment) be typed as its short form,
+       since scpi_token_match() only recognizes a LEADING uppercase
+       run, not caps resuming mid-word. */
+    { "EXTernal:ENAble",     cmd_ext_enable        },
+    { "EXTernal:ENAble?",    cmd_ext_enable_query  },
+    { "EXTernal:INPut?",     cmd_ext_enable_input_query },
+
     /* TEMPORARY debug/verification command -- software OCP fault
        injection, see commands.c's own header comment on
        cmd_ocp_test_fault(). */

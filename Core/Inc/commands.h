@@ -50,6 +50,9 @@ extern "C" {
  *       DISARM/PID:PROFile:STARt) -- see state_machine.h
  *   14  Invalid PID:CHANnel:NICKname -- 1-PID_CHANNEL_NICKNAME_MAX_LEN
  *       chars, no whitespace, and not the reserved value "-" (pid.h)
+ *   15  PID:PROFile:STARt refused -- the external-enable interlock
+ *       (EXTernal:ENAble) is on and PF15 currently reads LOW
+ *       (state_machine.h)
  *
  * Mnemonics are SCPI-style hierarchical patterns matched by
  * cmd_parser.c's scpi_match() -- see that file's header for the
@@ -138,7 +141,23 @@ void cmd_state_query(uart_instance_t *inst, char *args);  /* STATE? -- OK <IDLE|
                                                                 FIRING|FAULT>, or
                                                                 OK FAULT GENERAL, or
                                                                 OK FAULT OVERCURRENT <ch>
-                                                                (1-based) */
+                                                                (1-based), or
+                                                                OK FAULT EXTERNAL_ENABLE */
+
+/* External-enable interlock (PF15, "Fiber_Enable"), added 2026-09-16 --
+ * see state_machine.h's own external-enable section for the full design.
+ * Bare top-level namespace, same reasoning as ARM/DISARM above. ERR 15
+ * (new): PID:PROFile:STARt refused because the interlock is on and
+ * PF15 currently reads LOW. */
+void cmd_ext_enable(uart_instance_t *inst, char *args);             /* EXTernal:ENAble <0|1> --
+                                                                         OK */
+void cmd_ext_enable_query(uart_instance_t *inst, char *args);       /* EXTernal:ENAble? -- OK
+                                                                         <0|1> */
+void cmd_ext_enable_input_query(uart_instance_t *inst, char *args); /* EXTernal:INPut? --
+                                                                         OK <0|1>, raw PF15
+                                                                         level, independent
+                                                                         of whether the
+                                                                         interlock is on */
 
 /* TEMPORARY debug/verification command, added 2026-09-15 -- software
  * fault injection for SM_ReportOcpFault() (state_machine.h), since no

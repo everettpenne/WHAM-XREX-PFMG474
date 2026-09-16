@@ -1,6 +1,121 @@
 WHAM-XREX-PFMG474 Firmware Changelog
 =====================================
 
+2026-09-16  —  External-enable interlock added (PF15, "Fiber_Enable"):
+               new SM_FAULT_EXTERNAL_ENABLE fault type, EXTernal:ENAble
+               commands -- NOT YET VERIFIED ON REAL HARDWARE, board
+               unavailable this session
+-----------------------------------------------------------------------
+  Change:  Direct request: a config parameter to "set external enable
+        true"/"set external enable false" on pin PC14 -- when true, the
+        controller should refuse to output a shot unless that pin reads
+        HIGH, and should register a fault if the signal is lost during
+        a shot.
+
+        Pin correction BEFORE any code was written: PC14 is documented
+        in docs/pin_mapping_v4.csv as "STM_Enable_Pin", direction GPO
+        (General Purpose Output) -- the STM32 DRIVES that pin outward
+        per the schematic, the opposite direction needed for a signal
+        the controller is supposed to READ. Flagged directly rather
+        than silently reconfiguring a documented output pin as an
+        input; user confirmed the real intended pin is PF15
+        ("Fiber_Enable"), which IS documented GPI (input) in the same
+        CSV -- the correct pin for this purpose.
+
+        Implementation, in state_machine.c/.h (this project's existing
+        top-level IDLE/ARMED/FIRING/FAULT machine -- the natural home,
+        since this interlock directly gates ARM/FIRE and is itself a
+        new fault source, exactly the two things that module already
+        owns):
+          - New SM_FAULT_EXTERNAL_ENABLE fault type -- system-wide, like
+            SM_FAULT_GENERAL, and reuses its exact ramp-down response
+            (HandleGeneralFault() called directly) -- reported as its
+            own distinct type purely for operator diagnostics (STATE?
+            -> "OK FAULT EXTERNAL_ENABLE"), not a different physical
+            response.
+          - ArmConditionsMet() (previously a pure stub, always returning
+            1 -- see the 2026-09-13 entry) now has its FIRST real
+            condition: refuses ARM unless the interlock is off, or on
+            AND PF15 reads HIGH.
+          - SM_Fire() (the ARMED -> FIRING transition, PID:PROFile:STARt)
+            ALSO re-checks the interlock immediately before firing --
+            closes a real gap where PF15 could drop in the window
+            between a successful ARM and the eventual START; ARM alone
+            does not guarantee the condition still holds at the actual
+            moment of firing. cmd_pid_profile_start() (commands.c)
+            checks this itself first, for a precise ERR 15, rather than
+            relying on SM_Fire()'s own generic failure return --
+            matching that function's existing "distinct failure
+            reasons, reported distinctly" precedent for the
+            PID:PROFILE:TIMING-not-set case.
+          - SM_PollFaults() checks PF15 continuously, but ONLY while
+            SM_STATE_FIRING -- per direct instruction ("if that input
+            is lost during a shot"), NOT while merely IDLE/ARMED
+            (nothing outputting yet to protect there; the next
+            PID:PROFile:STARt attempt simply fails its own re-check
+            instead). Whether ARMED should also actively fault on loss
+            was NOT decided either way -- not asked for, flagged rather
+            than silently added.
+          - SM_ClearFault() re-validates PF15 is back HIGH before
+            actually clearing an EXTERNAL_ENABLE fault, same "only
+            clear if the condition is actually gone" treatment
+            PC10/GateDriverStatus already get (see the 2026-09-15
+            entry on that same philosophy).
+
+        GPIO config: main.c's MX_GPIO_Init() (matching gate_driver.c's
+        own established precedent -- plain-input GPIO config lives in
+        main.c, the read/fault logic lives in the owning module, not a
+        new hand-rolled Msp-init pattern). PF15 is GPIO_PULLDOWN, NOT
+        this project's usual GPIO_NOPULL for actively-driven inputs
+        (GateDriverStatus, PFM_Input, QUADSPI) -- a DELIBERATE fail-safe
+        choice specific to this one signal: an unconnected/floating
+        PF15 must read LOW (no permission granted), never an undefined
+        level that could accidentally read HIGH and silently permit
+        firing. GateDriverStatus's own NOPULL is fine on its pins
+        because floating-reads-as-fault is already the safe direction
+        there; the same reasoning would be UNSAFE here, where
+        floating-reads-as-enabled would be the dangerous direction
+        instead. Plain polled input, no EXTI -- SM_PollFaults()'s own
+        existing cadence (main loop + every real PID_Update() tick,
+        ~1kHz while FIRING) was judged sufficient; an interrupt-driven
+        path was considered and not built, flagged as a real decision
+        to revisit if tighter latency ever matters, not silently
+        assumed already covered.
+
+        New wire commands (commands.c/.h, cmd_parser.c): EXTernal:ENAble
+        <0|1>, EXTernal:ENAble?, EXTernal:INPut? (raw PF15 level,
+        independent of whether the interlock is on -- same diagnostic
+        role PFMIN:DEBUG:RAW?/REG? played for the fiber-patching
+        investigation, previous entry). Two ':'-levels (not one
+        compound "EXTEnable" token) specifically so "ENAble"/"INPut"
+        each get their own independent SCPI short-form abbreviation
+        (EXT:ENA / EXT:INP) -- a single compound word would only let
+        the unrecognizable fragment "EXTE" be typed as a short form,
+        since this project's scpi_token_match() only recognizes a
+        LEADING uppercase run, not capitals resuming mid-word. New
+        ERR 15 (PID:PROFile:STARt refused, interlock on + PF15 LOW).
+        STATE? extended for the new fault type.
+
+  Verify: clean arm-none-eabi-gcc build, zero warnings. *** NOT YET
+        VERIFIED ON REAL HARDWARE *** -- the board's USB-serial adapter
+        was unavailable for the rest of this session (unplugged,
+        "won't be for a while," per direct statement). Nothing in this
+        entry has been exercised on actual silicon: not the GPIO_PULLDOWN
+        default, not ARM/PID:PROFile:STARt actually refusing, not a
+        real FIRING-time fault triggering the ramp-down, not
+        FAULT:CLEAR's re-validation. Next session (or whenever the
+        board is back): rebuild, reflash, and work through the same
+        kind of real-hardware verification this project's other fault
+        types got (OCP:TEST:FAULT/GENERAL:TEST:FAULT-style software
+        injection isn't applicable here since PF15 is a REAL external
+        signal, not something to fake in software -- verification needs
+        either real external hardware driving PF15, or a bench jumper/
+        switch to ground/3V3 to simulate it manually).
+
+  Files:  Core/Inc/state_machine.h, Core/Src/state_machine.c,
+        Core/Inc/commands.h, Core/Src/commands.c, Core/Src/cmd_parser.c,
+        Core/Src/main.c, docs/command_reference.md
+
 2026-09-15  —  GENERAL:TEST:FAULT added; PFM_Input channels 2/3's
                measuredHz feedback investigated end to end -- root
                cause found to be a physical fiber-patching mix-up on

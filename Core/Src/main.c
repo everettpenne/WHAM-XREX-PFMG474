@@ -461,6 +461,37 @@ static void MX_GPIO_Init(void)
       HAL_NVIC_EnableIRQ(EXTI15_10_IRQn);
   }
 
+  /* PF15 (Fiber_Enable, docs/pin_mapping_v4.csv -- confirmed GPI there),
+     added 2026-09-16 for the external-enable interlock
+     (state_machine.c's own external-enable section has the full design).
+     Plain polled input, no EXTI -- state_machine.c's SM_PollFaults()
+     already checks this at the same cadence (main loop + every real
+     PID_Update() tick, ~1kHz while FIRING) General Fault's own two
+     hardware sources get; an interrupt-driven path wasn't judged
+     necessary for this signal and wasn't built -- if tighter latency
+     ever matters, that's a real decision to make explicitly, not
+     something this comment claims was already covered.
+
+     GPIO_PULLDOWN, NOT this project's usual GPIO_NOPULL for actively-
+     driven inputs (GateDriverStatus above, PFM_Input, QUADSPI) --
+     deliberate: an unconnected/floating PF15 must read LOW (no
+     permission granted), never an undefined level that could
+     accidentally read HIGH and silently permit firing. GateDriverStatus's
+     NOPULL is fine on its own pins because floating-reads-as-fault is
+     already the safe direction there; the same reasoning would be
+     UNSAFE for this one, where floating-reads-as-enabled would be the
+     dangerous direction instead. */
+  {
+      GPIO_InitTypeDef extEnableInit = {0};
+
+      __HAL_RCC_GPIOF_CLK_ENABLE();
+
+      extEnableInit.Pin  = GPIO_PIN_15;
+      extEnableInit.Mode = GPIO_MODE_INPUT;
+      extEnableInit.Pull = GPIO_PULLDOWN;
+      HAL_GPIO_Init(GPIOF, &extEnableInit);
+  }
+
   /* USER CODE END MX_GPIO_Init_2 */
 }
 

@@ -585,7 +585,16 @@ decision (see `docs/command_reference.md`'s `FIRE` entry).
   changelog file's matching entry before touching that clamp or the OCP
   derate math again. **Also added 2026-09-15**: `GENERAL:TEST:FAULT`
   (`SM_ReportGeneralFault()`), the General-Fault counterpart to
-  `OCP:TEST:FAULT`.
+  `OCP:TEST:FAULT`. **Added 2026-09-16, NOT YET VERIFIED ON REAL
+  HARDWARE (board unavailable that session)**: a third fault type,
+  `SM_FAULT_EXTERNAL_ENABLE` (PF15, "Fiber_Enable" -- PC14 was
+  considered first and rejected, it's documented as an OUTPUT in
+  `docs/pin_mapping_v4.csv`, the wrong direction), gating `ARM`/
+  `PID:PROFile:STARt` and faulting if lost while `FIRING`. New
+  `EXTernal:ENAble`/`EXTernal:ENAble?`/`EXTernal:INPut?` commands. See
+  `docs/changelog.txt`'s 2026-09-16 entry before assuming this is
+  hardware-confirmed -- rebuild/reflash/verify on real hardware is the
+  next real step whenever the board is back.
   plus CubeMX-generated `stm32g4xx_hal_msp.c`/`stm32g4xx_it.c`/
   `system_stm32g4xx.c`/`syscalls.c`/`sysmem.c`.
 - `python/` -- host-side tooling (see above).

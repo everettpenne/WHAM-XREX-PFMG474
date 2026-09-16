@@ -498,6 +498,14 @@ void cmd_state_query(uart_instance_t *inst, char *args)
             snprintf(buf, sizeof(buf), "OK %s OVERCURRENT %u\r\n",
                       name, (unsigned)(SM_GetFaultChannel() + 1U));
         }
+        else if (SM_GetFaultType() == SM_FAULT_EXTERNAL_ENABLE)
+        {
+            /* Added 2026-09-16 -- distinct from GENERAL purely for
+               operator diagnostics (identical ramp-down response
+               either way, see state_machine.h's own external-enable
+               section). */
+            snprintf(buf, sizeof(buf), "OK %s EXTERNAL_ENABLE\r\n", name);
+        }
         else
         {
             snprintf(buf, sizeof(buf), "OK %s GENERAL\r\n", name);
@@ -507,6 +515,59 @@ void cmd_state_query(uart_instance_t *inst, char *args)
     {
         snprintf(buf, sizeof(buf), "OK %s\r\n", name);
     }
+    uart_send(inst, buf);
+}
+
+/* --------------------------------------------------------------------------
+ * EXTernal:ENAble <0|1> / EXTernal:ENAble? / EXTernal:INPut?
+ *
+ * Added 2026-09-16, per direct request. See state_machine.h's own
+ * external-enable section (SM_SetExternalEnableRequired() and friends) for
+ * the full design -- this is just the wire-command wrapper around
+ * that. Own top-level `EXTernal:` namespace (not nested under `PID:`
+ * or any other existing prefix) -- system-wide config, not specific to
+ * any one subsystem, same reasoning as `ARM`/`DISARM` above being bare;
+ * two ':'-levels here (rather than one compound word) purely so
+ * "ENAble"/"INPut" each get their own independent short-form
+ * abbreviation -- see cmd_parser.c's own comment on this command's
+ * table entry for why. */
+void cmd_ext_enable(uart_instance_t *inst, char *args)
+{
+    char *tok;
+    long  val;
+
+    tok = (args != NULL) ? strtok(args, " \r\n") : NULL;
+    if (tok == NULL)
+    {
+        SendErr(inst, 12, "EXTernal:ENAble needs one argument: 0|1");
+        return;
+    }
+    val = atol(tok);
+
+    SM_SetExternalEnableRequired((val != 0L) ? 1U : 0U);
+    uart_send(inst, "OK\r\n");
+}
+
+void cmd_ext_enable_query(uart_instance_t *inst, char *args)
+{
+    char buf[16];
+    (void)args;
+
+    snprintf(buf, sizeof(buf), "OK %u\r\n", (unsigned)SM_GetExternalEnableRequired());
+    uart_send(inst, buf);
+}
+
+/* Raw PF15 logic level, independent of whether the interlock is even
+   turned on -- lets an operator confirm real wiring/signal presence
+   before relying on it, same diagnostic role PFMIN:DEBUG:RAW?/REG?
+   played for the PFM_Input fiber-patching investigation
+   (docs/changelog.txt, 2026-09-15). */
+void cmd_ext_enable_input_query(uart_instance_t *inst, char *args)
+{
+    char buf[16];
+    (void)args;
+
+    snprintf(buf, sizeof(buf), "OK %u\r\n", (unsigned)SM_GetExternalEnableInputRaw());
     uart_send(inst, buf);
 }
 
@@ -1643,8 +1704,18 @@ void cmd_pid_profile_current_query(uart_instance_t *inst, char *args)
    per direct instruction, this only ever starts outputs from ARMED
    (ARM first, see cmd_arm()). SM_Fire() calls PID_ProfileStart()
    internally and only actually transitions to FIRING if that
-   succeeds -- two distinct failure reasons, reported distinctly here
-   rather than collapsing both into one generic error. */
+   succeeds -- THREE distinct failure reasons as of 2026-09-16 (state
+   mismatch, external-enable interlock not satisfied, profile timing
+   never set), each reported distinctly here rather than collapsing
+   them into one generic error. The external-enable check is done HERE
+   (SM_ExternalEnableOk(), state_machine.h) rather than just relying on
+   SM_Fire()'s own internal redundant re-check of the same thing,
+   specifically so this can report a precise message instead of the
+   generic "stays ARMED" SM_Fire() itself returns -- see that
+   function's own comment (state_machine.c) for why it still re-checks
+   anyway (a narrow race window between this check and the SM_Fire()
+   call, and defense against any future caller that reaches SM_Fire()
+   directly). */
 void cmd_pid_profile_start(uart_instance_t *inst, char *args)
 {
     (void)args;
@@ -1652,6 +1723,12 @@ void cmd_pid_profile_start(uart_instance_t *inst, char *args)
     if (SM_GetState() != SM_STATE_ARMED)
     {
         SendErr(inst, 13, "Must ARM first -- see the ARM command");
+        return;
+    }
+
+    if (SM_ExternalEnableOk() == 0U)
+    {
+        SendErr(inst, 15, "External enable interlock not satisfied -- PF15 reads LOW");
         return;
     }
 

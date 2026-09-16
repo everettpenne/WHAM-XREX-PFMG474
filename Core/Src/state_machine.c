@@ -10,9 +10,23 @@
 #include "hrtim.h"
 #include "gate_driver.h"
 #include "pfm.h"
+#include "main.h"
 
 static SM_State_t     g_state         = SM_STATE_IDLE;
 static SM_FaultType_t g_faultType     = SM_FAULT_NONE;
+
+/* External-enable interlock (PF15, "Fiber_Enable") -- see this file's
+   own header comment for the full design. OFF by default -- existing
+   shots/tests are unaffected unless explicitly turned on. */
+static uint8_t g_externalEnableRequired = 0U;
+
+/* GPIO_PULLDOWN in main.c's MX_GPIO_Init() means an unconnected/
+   floating PF15 reads LOW here -- the deliberate fail-safe default,
+   see this file's header comment. */
+static uint8_t ExternalEnableInputIsHigh(void)
+{
+    return (HAL_GPIO_ReadPin(GPIOF, GPIO_PIN_15) == GPIO_PIN_SET) ? 1U : 0U;
+}
 
 /* Meaningful only when g_faultType == SM_FAULT_OVERCURRENT -- see
    SM_GetFaultChannel()'s own doc comment (state_machine.h). 0xFF is the
@@ -104,10 +118,19 @@ static void HandleOvercurrentFault(uint8_t channel)
    exclusive states, so nothing further needed for that one
    specifically; profile timing actually configured; at least one
    channel enabled; gains sane; whatever else turns out to matter) are
-   explicitly NOT implemented yet -- populate later. */
+   explicitly NOT implemented yet -- populate later.
+
+   ONE real condition now populated, 2026-09-16: the external-enable
+   interlock (SM_ExternalEnableOk(), see this file's header comment) --
+   still an opt-in, OFF-by-default check, but no longer purely a stub
+   for this specific case. */
 static uint8_t ArmConditionsMet(void)
 {
-    return 1U;   /* TODO (2026-09-13): populate real conditions. */
+    if (SM_ExternalEnableOk() == 0U)
+    {
+        return 0U;
+    }
+    return 1U;   /* TODO (2026-09-13): populate the rest. */
 }
 
 /* Shared by SM_PollFaults() AND SM_ReportOcpFault() -- the one place a
@@ -170,6 +193,10 @@ static void EnterFault(SM_FaultType_t type, uint8_t channel)
             HandleOvercurrentFault(channel);
             break;
         case SM_FAULT_GENERAL:
+        case SM_FAULT_EXTERNAL_ENABLE:   /* identical response to GENERAL,
+                                             see state_machine.h's own
+                                             external-enable section for why --
+                                             only the reported TYPE differs */
         case SM_FAULT_NONE:
         default:
             HandleGeneralFault();
@@ -227,6 +254,21 @@ uint8_t SM_Fire(void)
     if (g_state != SM_STATE_ARMED)
     {
         return 0U;
+    }
+
+    /* Redundant last-line-of-defense re-check, 2026-09-16 -- the
+       command layer (cmd_pid_profile_start(), commands.c) already
+       checks SM_ExternalEnableOk() itself first, for a precise error
+       message; this catches PF15 dropping in the narrow window between
+       that check and this call, or any future caller that reaches
+       SM_Fire() directly without going through that command handler.
+       Returns the same generic 0 as the PID_ProfileStart() failure
+       below -- the command layer's own upfront check is what's
+       responsible for distinguishing the two reasons for an operator,
+       not this function. */
+    if (SM_ExternalEnableOk() == 0U)
+    {
+        return 0U;   /* stays ARMED */
     }
 
     if (PID_ProfileStart() == 0U)
@@ -306,6 +348,20 @@ void SM_PollFaults(void)
     if ((HRTIM1_FaultIsTripped() != 0U) || (GateDriver_FaultIsLatched() != 0U))
     {
         EnterFault(SM_FAULT_GENERAL, 0xFFU);   /* channel N/A for a system-wide fault */
+    }
+    /* External-enable interlock (PF15), added 2026-09-16 -- deliberately
+       gated on SM_STATE_FIRING specifically, not IDLE/ARMED too. See
+       state_machine.h's own external-enable section for the full reasoning
+       (this is the ONLY continuous-monitoring gate point for this
+       interlock; ARM/PID:PROFile:STARt cover IDLE/ARMED via their own
+       one-shot checks instead). g_state re-read fresh here (not cached
+       from above) so this naturally doesn't double-enter if the
+       GENERAL check above already transitioned to FAULT this same
+       call. */
+    else if ((g_externalEnableRequired != 0U) && (g_state == SM_STATE_FIRING) &&
+             (ExternalEnableInputIsHigh() == 0U))
+    {
+        EnterFault(SM_FAULT_EXTERNAL_ENABLE, 0xFFU);   /* channel N/A, system-wide */
     }
 
     __enable_irq();
@@ -420,9 +476,43 @@ uint8_t SM_ClearFault(void)
     {
         return 0U;   /* still faulted -- stays in SM_STATE_FAULT */
     }
+    /* External-enable interlock, added 2026-09-16 -- same "only clear if
+       the condition is actually gone" philosophy as the two checks just
+       above. Only actually gates anything when the interlock is turned
+       on -- SM_ExternalEnableOk() itself already returns 1 unconditionally
+       when g_externalEnableRequired is 0, so this is a no-op re-check
+       (never blocks clearing) whenever the feature isn't in use. */
+    if (SM_ExternalEnableOk() == 0U)
+    {
+        return 0U;   /* still faulted -- stays in SM_STATE_FAULT */
+    }
 
     g_state        = SM_STATE_IDLE;
     g_faultType    = SM_FAULT_NONE;
     g_faultChannel = 0xFFU;
     return 1U;
+}
+
+void SM_SetExternalEnableRequired(uint8_t required)
+{
+    g_externalEnableRequired = (required != 0U) ? 1U : 0U;
+}
+
+uint8_t SM_GetExternalEnableRequired(void)
+{
+    return g_externalEnableRequired;
+}
+
+uint8_t SM_ExternalEnableOk(void)
+{
+    if (g_externalEnableRequired == 0U)
+    {
+        return 1U;   /* interlock not in use -- always "ok" */
+    }
+    return ExternalEnableInputIsHigh();
+}
+
+uint8_t SM_GetExternalEnableInputRaw(void)
+{
+    return ExternalEnableInputIsHigh();
 }

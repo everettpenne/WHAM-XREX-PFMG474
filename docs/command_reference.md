@@ -289,13 +289,16 @@ REVISIT" comments).
 - **`IDLE`** — the normal state: boot, after a shot completes, or
   after `FAULT:CLEAR`. Every channel's HRTIM output is disabled.
 - **`ARMED`** — entered via `ARM` (only from `IDLE`), gated by a
-  readiness check that is currently a **STUB** (always allows arming
-  today — no real interlock conditions exist yet). Outputs are still
-  disabled here, identically to `IDLE` — nothing electrical changes on
-  entry; `ARMED` exists purely as a separately-confirmable "ready to
-  fire" step before `PID:PROFile:STARt` is allowed to do anything.
-  Left via `PID:PROFile:STARt` (→ `FIRING`), `DISARM` (→ `IDLE`, stand
-  down without firing), or `PID:STOP` (→ `IDLE`, abort).
+  readiness check that is still mostly a **STUB** (profile timing
+  configured, at least one channel enabled, gains sane, etc. are not
+  checked yet) — with ONE real condition now populated, 2026-09-16: the
+  external-enable interlock (see `EXTernal:ENAble` below), if turned
+  on. Outputs are still disabled here, identically to `IDLE` — nothing
+  electrical changes on entry; `ARMED` exists purely as a
+  separately-confirmable "ready to fire" step before
+  `PID:PROFile:STARt` is allowed to do anything. Left via
+  `PID:PROFile:STARt` (→ `FIRING`), `DISARM` (→ `IDLE`, stand down
+  without firing), or `PID:STOP` (→ `IDLE`, abort).
 - **`FIRING`** — entered only from `ARMED`, via `PID:PROFile:STARt`
   (unchanged command, now gated: `ERR 13` if not currently `ARMED`).
   Every currently-enabled channel (`PID:CHANnel:ENAble` — a separate,
@@ -338,12 +341,21 @@ REVISIT" comments).
     channel was the only one enabled, falls through to the same
     "nothing to ramp, stop immediately" handling `GENERAL` already has
     — the faulted channel is still disabled either way.
+  - **`EXTERNAL_ENABLE`** (`SM_FAULT_EXTERNAL_ENABLE`) — added
+    2026-09-16, per direct request. System-wide, like `GENERAL` — reuses
+    its exact ramp-down response (`HandleGeneralFault()` is called
+    directly), reported as its own distinct type purely so an operator
+    can tell "the external-enable interlock dropped" apart from "a real
+    HRTIM/gate-driver fault." Only enters this while `FIRING` — see
+    `EXTernal:ENAble` below for the full interlock design (also gates
+    `ARM` and `PID:PROFile:STARt`, separately from this continuous
+    FIRING-only check).
 
   Both of this project's existing system-wide fault sources (`PC10`/
   `HRTIM1_FLT6`, `GateDriverStatus_01..12`) still route to `GENERAL`
-  unconditionally — nothing about `OVERCURRENT` changes that. Left only
-  via `FAULT:CLEAR`, always back to `IDLE` — never directly to
-  `ARMED`/`FIRING`.
+  unconditionally — nothing about `OVERCURRENT`/`EXTERNAL_ENABLE`
+  changes that. Left only via `FAULT:CLEAR`, always back to `IDLE` —
+  never directly to `ARMED`/`FIRING`.
 
 ```
 > STATE?
@@ -375,7 +387,8 @@ REVISIT" comments).
 - **`DISARM`** — `OK`, `ARMED` → `IDLE`. No-op (still `OK`, not an
   error) if not currently `ARMED`.
 - **`STATE?`** — `OK <IDLE|ARMED|FIRING>`, or `OK FAULT GENERAL` /
-  `OK FAULT OVERCURRENT <ch>` (1-based) while faulted.
+  `OK FAULT OVERCURRENT <ch>` (1-based) / `OK FAULT EXTERNAL_ENABLE`
+  while faulted.
 - New error code **13**: an invalid state-machine transition for the
   current state (e.g. `PID:PROFile:STARt` sent while not `ARMED`;
   `ARM` sent while not `IDLE`).
@@ -388,6 +401,91 @@ by this state machine at all — it can start real output regardless of
 wired up as the "fire" trigger this round; `PID:START` bypassing the
 whole state machine is a known, real inconsistency worth resolving
 later, not an oversight to silently work around.
+
+### `EXTernal:ENAble` / `EXTernal:ENAble?` / `EXTernal:INPut?`
+
+Added 2026-09-16, per direct request: an external operator/facility
+permissive interlock on **PF15** (`Fiber_Enable`, `docs/pin_mapping_v4.csv`
+— confirmed `GPI` there; PC14, first proposed for this, was rejected —
+it's documented `GPO` in that same file, `STM_Enable_Pin`, meaning the
+STM32 drives that one outward, the opposite direction needed here).
+
+**Opt-in, OFF by default** — existing shots/tests are completely
+unaffected unless explicitly turned on. RAM-only config (like
+`PID:PROFILE:CURRENT`/`PID:LOOPMODE`/etc.) — resets to OFF on every
+reboot, not persisted.
+
+When ON:
+1. **`ARM`** refuses (folded into its existing generic `ERR 13`) unless
+   PF15 currently reads HIGH.
+2. **`PID:PROFile:STARt`** ALSO re-checks PF15 immediately before firing
+   — closes the real gap where PF15 could drop in the window between a
+   successful `ARM` and the eventual `START` (`ARM` alone does not
+   guarantee this at the moment of firing). `ERR 15` if refused.
+3. While **`FIRING`**, checked continuously (same ~1kHz cadence General
+   Fault's own two hardware sources get) — if PF15 drops, enters
+   `SM_STATE_FAULT` with `EXTERNAL_ENABLE` (see the `FAULT` state's own
+   entry above for the identical-to-`GENERAL` ramp-down response).
+   Deliberately **not** actively monitored while merely `IDLE`/`ARMED`
+   (nothing outputting yet to protect) — losing PF15 there just means
+   the next `PID:PROFile:STARt` attempt fails its own re-check (item 2)
+   instead of entering `FAULT`. Not decided either way whether `ARMED`
+   should also actively fault on loss — not asked for, flagged rather
+   than silently added.
+4. **`FAULT:CLEAR`** re-validates PF15 is back HIGH before actually
+   clearing an `EXTERNAL_ENABLE` fault — same "only clear if the
+   condition is actually gone" treatment `PC10`/`GateDriverStatus`
+   already get.
+
+PF15 is configured `GPIO_PULLDOWN` (`main.c`'s `MX_GPIO_Init()`) —
+**not** this project's usual `GPIO_NOPULL` for actively-driven inputs
+(`GateDriverStatus`, `PFM_Input`, `QUADSPI`). Deliberate: an
+unconnected/floating PF15 must read LOW (no permission), never an
+undefined level that could accidentally read HIGH and silently permit
+firing — the opposite safety direction from `GateDriverStatus`, where
+floating-reads-as-fault is already the safe outcome.
+
+```
+> EXTernal:ENAble 1
+< OK
+> EXTernal:ENAble?
+< OK 1
+> EXTernal:INPut?
+< OK 0
+> ARM
+< ERR 13 Can't ARM -- not currently IDLE, or arm conditions not met
+  ... (PF15 goes HIGH) ...
+> ARM
+< OK
+> PID:PROFILE:START
+< OK
+  ... (PF15 drops while FIRING) ...
+> STATE?
+< OK FAULT EXTERNAL_ENABLE
+> FAULT:CLEAR
+< ERR ...   (still LOW -- refused)
+  ... (PF15 restored HIGH) ...
+> FAULT:CLEAR
+< OK
+```
+
+- **`EXTernal:ENAble <0|1>`** — `OK`, turns the interlock on/off.
+  `ERR 12` if the argument is missing.
+- **`EXTernal:ENAble?`** — `OK <0|1>`, current mode.
+- **`EXTernal:INPut?`** — `OK <0|1>`, PF15's raw logic level right now,
+  independent of whether the interlock is even turned on — lets an
+  operator confirm real wiring/signal presence before relying on it,
+  the same diagnostic role `PFMIN:DEBUG:RAW?`/`PFMIN:DEBUG:REG?` played
+  for the `PFM_Input` fiber-patching investigation below.
+- New error code **15**: `PID:PROFile:STARt` refused because the
+  interlock is on and PF15 currently reads LOW.
+
+**NOT YET VERIFIED ON REAL HARDWARE** as of this writing — build-clean
+only (zero warnings), the board was unavailable this session. In
+particular: the `GPIO_PULLDOWN` fail-safe default, the actual PF15
+signal once real external hardware drives it, and the FIRING-time fault
+response have not been exercised on the bench yet — see
+`docs/changelog.txt`'s matching entry.
 
 ### `OCP:TEST:FAULT`
 
