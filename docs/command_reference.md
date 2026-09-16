@@ -528,14 +528,41 @@ remaining HIGH.
 - New error code **16**: `EXTernal:TRIGger` refused because
   `EXTernal:ENAble` must be turned on first.
 
-**NOT YET VERIFIED ON REAL HARDWARE** as of this writing — build-clean
-only (zero warnings), the board was unavailable this session. In
-particular, for BOTH `EXTernal:ENAble` and `EXTernal:TRIGger`: the
-`GPIO_PULLDOWN` fail-safe default, the actual PF15 signal once real
-external hardware drives it, the FIRING-time fault response, and (new
-for `EXTernal:TRIGger`) a real rising edge actually firing a shot from
-`ARMED` have not been exercised on the bench yet — see
-`docs/changelog.txt`'s matching entries.
+**CONFIRMED ON REAL HARDWARE, 2026-09-16** — see `docs/changelog.txt`'s
+matching verification entry for the full writeup and exact numbers:
+`ARM` gating, `PID:PROFile:STARt`'s own re-check (`ERR 15`), a real
+FIRING-time PF15 drop entering `FAULT EXTERNAL_ENABLE` with a clean
+ramp-down (16400 Hz → floor over ~1.0s), `FAULT:CLEAR` correctly
+refusing while still LOW and succeeding once restored, and a genuine
+rising edge (not an already-HIGH baseline) firing a shot from `ARMED`
+via `EXTernal:TRIGger` — all driven through `DIAGnostic:GPOut12`
+(below) looped to PF15, entirely from the serial console.
+
+### `DIAGnostic:GPOut12` / `DIAGnostic:GPOut12?`
+
+Added 2026-09-16, per direct request: a generic, software-driven
+diagnostic output on **PD1** (`GPOut_12` in the V4 column,
+`docs/pin_mapping_v4.csv` — confirmed `GPO` there; PF13 was proposed
+first and corrected — it's documented `GPInput_12`, an input, in the
+same CSV, a different pin from the one actually named `GPOut_12`).
+Built specifically to test `EXTernal:ENAble`/`EXTernal:TRIGger` above
+without needing a hand-operated bench jumper: loop this pin to PF15
+and drive it entirely from the serial console with precise, repeatable
+timing. Not tied to that use case in the pin config itself — a plain
+level output, reusable for any future diagnostic that needs one.
+
+```
+> DIAGnostic:GPOut12 1
+< OK
+> DIAGnostic:GPOut12?
+< OK 1
+```
+
+- **`DIAGnostic:GPOut12 <0|1>`** — `OK`, drives PD1 HIGH/LOW. `ERR 12`
+  if the argument is missing.
+- **`DIAGnostic:GPOut12?`** — `OK <0|1>`, the pin's current level
+  (read back via `HAL_GPIO_ReadPin()`, reflecting the real driven
+  state).
 
 ### `OCP:TEST:FAULT`
 

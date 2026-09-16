@@ -585,27 +585,32 @@ decision (see `docs/command_reference.md`'s `FIRE` entry).
   changelog file's matching entry before touching that clamp or the OCP
   derate math again. **Also added 2026-09-15**: `GENERAL:TEST:FAULT`
   (`SM_ReportGeneralFault()`), the General-Fault counterpart to
-  `OCP:TEST:FAULT`. **Added 2026-09-16, NOT YET VERIFIED ON REAL
-  HARDWARE (board unavailable that session)**: a third fault type,
-  `SM_FAULT_EXTERNAL_ENABLE` (PF15, "Fiber_Enable" -- PC14 was
-  considered first and rejected, it's documented as an OUTPUT in
-  `docs/pin_mapping_v4.csv`, the wrong direction), gating `ARM`/
-  `PID:PROFile:STARt` and faulting if lost while `FIRING`. New
-  `EXTernal:ENAble`/`EXTernal:ENAble?`/`EXTernal:INPut?` commands.
-  **Also added 2026-09-16, same session, same NOT-YET-VERIFIED status**:
-  external trigger -- a rising edge on that SAME PF15 pin, while ARMED,
-  now calls `SM_Fire()` directly (same function `PID:PROFile:STARt`
-  itself calls). Structurally depends on `EXTernal:ENAble` being on
-  first (new `EXTernal:TRIGger`/`EXTernal:TRIGger?`, ERR 16). There is
-  NO separate "open-loop start call" anywhere in this codebase --
-  open-/closed-loop has always been the per-channel `PID:LOOPMODE` flag,
-  not a different start mechanism; `PID:LOOPMODE`'s `ch` argument now
-  also accepts `0` for "every channel at once" (matching `PID:LOG`'s own
-  existing convention), added in service of this feature but usable
-  standalone. See `docs/changelog.txt`'s 2026-09-16 entries (two, this
-  one and the external-enable one just below it) before assuming any of
-  this is hardware-confirmed -- rebuild/reflash/verify on real hardware
-  is the next real step whenever the board is back.
+  `OCP:TEST:FAULT`. **Added 2026-09-16, CONFIRMED ON REAL HARDWARE same
+  day**: a third fault type, `SM_FAULT_EXTERNAL_ENABLE` (PF15,
+  "Fiber_Enable" -- PC14 was considered first and rejected, it's
+  documented as an OUTPUT in `docs/pin_mapping_v4.csv`, the wrong
+  direction), gating `ARM`/`PID:PROFile:STARt` and faulting if lost
+  while `FIRING`. New `EXTernal:ENAble`/`EXTernal:ENAble?`/
+  `EXTernal:INPut?` commands. **Also added 2026-09-16, same session,
+  also confirmed**: external trigger -- a rising edge on that SAME PF15
+  pin, while ARMED, now calls `SM_Fire()` directly (same function
+  `PID:PROFile:STARt` itself calls). Structurally depends on
+  `EXTernal:ENAble` being on first (new `EXTernal:TRIGger`/
+  `EXTernal:TRIGger?`, ERR 16). There is NO separate "open-loop start
+  call" anywhere in this codebase -- open-/closed-loop has always been
+  the per-channel `PID:LOOPMODE` flag, not a different start mechanism;
+  `PID:LOOPMODE`'s `ch` argument now also accepts `0` for "every channel
+  at once" (matching `PID:LOG`'s own existing convention), added in
+  service of this feature but usable standalone. Real-hardware
+  verification (ARM gating, the `PID:PROFile:STARt` re-check/`ERR 15`,
+  a real FIRING-time fault + ramp-down, `FAULT:CLEAR` re-validation, and
+  a genuine rising edge firing a shot from `ARMED`) was done via a new
+  diagnostic output, `DIAGnostic:GPOut12` (PD1 -- PF13 was proposed
+  first and corrected, it's documented as an INPUT, `GPInput_12`, in the
+  same CSV; PD1 is the real `GPOut_12`), looped to PF15 and driven
+  entirely from the serial console. See `docs/changelog.txt`'s
+  2026-09-16 verification entry (the most recent of that day's three)
+  for the full writeup and exact numbers.
   plus CubeMX-generated `stm32g4xx_hal_msp.c`/`stm32g4xx_it.c`/
   `system_stm32g4xx.c`/`syscalls.c`/`sysmem.c`.
 - `python/` -- host-side tooling (see above).

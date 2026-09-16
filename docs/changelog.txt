@@ -1,6 +1,111 @@
 WHAM-XREX-PFMG474 Firmware Changelog
 =====================================
 
+2026-09-16  —  DIAGnostic:GPOut12 added (PD1); external-enable AND
+               external-trigger CONFIRMED on real hardware, exact
+               numbers below -- both previous same-day entries closed
+-----------------------------------------------------------------------
+  Change:  Board reconnected this same day, after being unavailable for
+        the two entries directly below. Before any real-hardware
+        verification could happen, needed a way to drive PF15 (Fiber_
+        Enable) with precise, repeatable timing -- a hand-operated bench
+        jumper/switch works but can't hit exact moments (e.g. "exactly
+        mid-flat-top") the way this project's other verification work
+        already relies on. Direct request: configure a diagnostic
+        output the operator could physically loop to PF15, so the whole
+        interlock/trigger sequence could be driven from the serial
+        console instead.
+
+        Same pin-mapping-mismatch pattern caught again, same day: user
+        first said "GPOut_12 (PF13)" -- checked docs/pin_mapping_v4.csv
+        before writing any code and found PF13 is actually documented
+        "GPInput_12" (an INPUT) there; the pin genuinely named
+        "GPOut_12" in the V4 column is PD1 (confirmed GPO). Flagged
+        directly, same as the earlier PC14-vs-PF15 correction this same
+        day; user confirmed PD1 was the intended pin.
+
+        New DIAGnostic:GPOut12 <0|1> / DIAGnostic:GPOut12? (commands.c/
+        .h, cmd_parser.c) -- a plain HAL_GPIO_WritePin()/ReadPin() pair,
+        not a new module (not enough behavior to justify one, matching
+        gate_driver.c's own "GPIO config in main.c, logic wherever it's
+        used" precedent). GPIO config: main.c's MX_GPIO_Init(), push-
+        pull output, driven LOW before the pin is even enabled so it
+        never glitches HIGH on boot. Generic -- nothing PF15-specific
+        baked into the pin config itself, just today's reason for
+        wanting it.
+
+        REAL-HARDWARE VERIFICATION, once PD1 was looped to PF15 by the
+        operator (confirmed working immediately -- EXTernal:INPut?
+        tracked DIAGnostic:GPOut12 exactly, both directions):
+
+        1. ARM gating (external-enable): with EXTernal:ENAble 1 and
+           PF15 LOW, ARM correctly refused (ERR 13). Drove PF15 HIGH --
+           ARM succeeded, STATE? -> ARMED.
+        2. PID:PROFile:STARt's own re-check (closing the ARM-to-START
+           gap): ARMED with PF15 HIGH, dropped PF15 LOW, PID:PROFile:
+           STARt correctly refused with the new ERR 15 and stayed
+           ARMED (not silently falling through to the generic ERR 12).
+           Restored PF15 HIGH, retried -- succeeded, STATE? -> FIRING.
+        3. FIRING-time fault + ramp-down: real 3-channel shot (600A/
+           1000A/1400A, channels 1/2/3, open loop -- PID:LOOPMODE 0 0,
+           the SAME test exercising the new ch=0-means-all convenience
+           on real hardware for the first time), confirmed real output
+           (16400/24000/... Hz matching setpoint) mid-flat-top, then
+           dropped PF15 -- STATE? immediately reported "FAULT
+           EXTERNAL_ENABLE" (not GENERAL -- confirms the distinct fault-
+           type reporting works). Channel 1's output measured smoothly
+           descending 16400 -> 6333 (at +0.51s post-drop) -> 5000/floor,
+           running=0 (at +0.98s post-drop) -- matches
+           FAULT_RAMP_DOWN_TIME_S=1.0s almost exactly, confirming
+           HandleGeneralFault()'s ramp-down mechanism is genuinely being
+           reused end to end for this new fault source, on real
+           hardware, not just by code inspection.
+        4. FAULT:CLEAR re-validation: attempted while PF15 was still
+           LOW -- correctly refused (STATE? stayed FAULT EXTERNAL_
+           ENABLE). Restored PF15 HIGH, retried -- succeeded, STATE? ->
+           IDLE, FAULT? -> 0.
+        5. External trigger, edge- not level-triggered: EXTernal:
+           TRIGger 1 with PF15 already HIGH, ARM succeeded (baseline
+           captured HIGH at arm time) -- confirmed NO spurious auto-fire
+           over 0.5s with the signal just sitting HIGH (the exact
+           "already-HIGH-at-arm-time must not look like an edge"
+           behavior this feature's design depended on). Dropped PF15 to
+           LOW while still ARMED -- STATE? correctly stayed ARMED, no
+           fault (confirms the fault check really is FIRING-only, not
+           also active while merely ARMED, matching direct instruction).
+           Raised PF15 back to HIGH -- a genuine LOW-to-HIGH transition
+           -- and STATE? immediately showed FIRING, real output
+           confirmed at the correct setpoint (16400 Hz), with zero
+           manual PID:PROFile:STARt ever sent for this shot.
+
+        One real methodology snag hit and diagnosed correctly along the
+        way, not a firmware bug: an early attempt to test the FIRING-
+        time fault split the "fire" and "drop PF15 mid-shot" steps
+        across two SEPARATE python/serial invocations -- the real
+        wall-clock gap between those two separate tool calls (tool
+        round-trip + reasoning time, not anything under firmware's
+        control) exceeded the shot's own 5-second duration, so the
+        shot had already completed normally before the second script
+        even ran (STATE? IDLE, FAULT? 0 -- no fault, nothing wrong).
+        Recognized immediately from the FAULT?=0 clean state (a real
+        fault would have stayed latched), not assumed a bug -- redone
+        as a single continuous script with explicit, controlled
+        time.sleep() calls, exactly the same "one continuous script,
+        no precisely-timed step split across tool calls" lesson this
+        project has hit and recorded before (docs/changelog.txt,
+        2026-09-15 General Fault entry).
+
+        Both previous same-day entries below (external-enable interlock,
+        external trigger) are now CONFIRMED, not just build-verified --
+        their own "NOT YET VERIFIED ON REAL HARDWARE" status is closed
+        by this entry.
+
+  Verify: clean arm-none-eabi-gcc --clean build, zero warnings. Real
+        hardware, as detailed above -- this entry IS the verification.
+
+  Files:  Core/Src/main.c, Core/Inc/commands.h, Core/Src/commands.c,
+        Core/Src/cmd_parser.c, docs/command_reference.md
+
 2026-09-16  —  External trigger added (rising edge on PF15 fires a shot
                while ARMED); PID:LOOPMODE now accepts ch=0 for "every
                channel" -- NOT YET VERIFIED ON REAL HARDWARE, board

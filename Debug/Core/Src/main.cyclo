@@ -3,5 +3,5 @@
 ../Core/Src/main.c:292:13:MX_HRTIM1_Init	1
 ../Core/Src/main.c:308:13:MX_USART2_UART_Init	5
 ../Core/Src/main.c:386:13:MX_GPIO_Init	1
-../Core/Src/main.c:489:13:FixSysTickPriority	1
-../Core/Src/main.c:499:6:Error_Handler	1
+../Core/Src/main.c:562:13:FixSysTickPriority	1
+../Core/Src/main.c:572:6:Error_Handler	1

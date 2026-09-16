@@ -22,6 +22,7 @@
 #include "pid.h"
 #include "state_machine.h"
 #include "git_version.h"
+#include "main.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -608,6 +609,54 @@ void cmd_ext_trigger_query(uart_instance_t *inst, char *args)
     (void)args;
 
     snprintf(buf, sizeof(buf), "OK %u\r\n", (unsigned)SM_GetExternalTriggerRequired());
+    uart_send(inst, buf);
+}
+
+/* --------------------------------------------------------------------------
+ * DIAGnostic:GPOut12 <0|1> / DIAGnostic:GPOut12?
+ *
+ * Added 2026-09-16, per direct request: a generic, software-driven
+ * diagnostic output on PD1 ("GPOut_12" in the V4 column,
+ * docs/pin_mapping_v4.csv -- confirmed GPO there; PF13 was proposed
+ * first and corrected -- it's actually "GPInput_12", an input, in that
+ * same CSV). GPIO config lives in main.c's MX_GPIO_Init(), matching
+ * this project's established precedent (gate_driver.c's GateDriverStatus
+ * pins, PF15 above) of plain GPIO config in main.c and the read/write
+ * logic in the module that actually uses it -- there's no dedicated
+ * module for this one, it's a two-line direct HAL_GPIO_WritePin()/
+ * ReadPin() pair, not enough behavior to justify one.
+ *
+ * Immediate use: physically loop this pin to PF15 (Fiber_Enable) so
+ * the external-enable/external-trigger feature above can be driven
+ * entirely from the serial console -- precise, repeatable timing on
+ * exactly when PF15 goes HIGH/LOW, instead of a hand-operated bench
+ * jumper/switch. Nothing about this command is PF15-specific, though
+ * -- it's a plain level output, reusable for any future diagnostic
+ * that needs one. */
+void cmd_diag_gpout12(uart_instance_t *inst, char *args)
+{
+    char *tok;
+    long  val;
+
+    tok = (args != NULL) ? strtok(args, " \r\n") : NULL;
+    if (tok == NULL)
+    {
+        SendErr(inst, 12, "DIAGnostic:GPOut12 needs one argument: 0|1");
+        return;
+    }
+    val = atol(tok);
+
+    HAL_GPIO_WritePin(GPIOD, GPIO_PIN_1, (val != 0L) ? GPIO_PIN_SET : GPIO_PIN_RESET);
+    uart_send(inst, "OK\r\n");
+}
+
+void cmd_diag_gpout12_query(uart_instance_t *inst, char *args)
+{
+    char buf[16];
+    (void)args;
+
+    snprintf(buf, sizeof(buf), "OK %u\r\n",
+             (unsigned)(HAL_GPIO_ReadPin(GPIOD, GPIO_PIN_1) == GPIO_PIN_SET ? 1U : 0U));
     uart_send(inst, buf);
 }
 

@@ -126,6 +126,11 @@ static const command_t command_table[] = {
     { "EXTernal:TRIGger",    cmd_ext_trigger       },
     { "EXTernal:TRIGger?",   cmd_ext_trigger_query },
 
+    /* Generic diagnostic output (PD1, "GPOut_12") -- see commands.h's
+       own comment on cmd_diag_gpout12(). Added 2026-09-16. */
+    { "DIAGnostic:GPOut12",  cmd_diag_gpout12       },
+    { "DIAGnostic:GPOut12?", cmd_diag_gpout12_query },
+
     /* TEMPORARY debug/verification command -- software OCP fault
        injection, see commands.c's own header comment on
        cmd_ocp_test_fault(). */

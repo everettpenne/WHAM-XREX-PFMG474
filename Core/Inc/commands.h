@@ -171,6 +171,17 @@ void cmd_ext_trigger(uart_instance_t *inst, char *args);       /* EXTernal:TRIGg
 void cmd_ext_trigger_query(uart_instance_t *inst, char *args); /* EXTernal:TRIGger? -- OK
                                                                     <0|1> */
 
+/* Generic diagnostic output on PD1 ("GPOut_12" in pin_mapping_v4.csv's
+ * V4 column), added 2026-09-16 -- see cmd_diag_gpout12()'s own doc
+ * comment (commands.c) for the full reasoning. Not gated behind a
+ * TEMPORARY-removal marker like the OCP/GENERAL test-fault commands --
+ * this is a generic, reusable diagnostic pin, not scaffolding tied to
+ * one investigation. */
+void cmd_diag_gpout12(uart_instance_t *inst, char *args);       /* DIAGnostic:GPOut12 <0|1>
+                                                                     -- OK */
+void cmd_diag_gpout12_query(uart_instance_t *inst, char *args); /* DIAGnostic:GPOut12? --
+                                                                     OK <0|1> */
+
 /* TEMPORARY debug/verification command, added 2026-09-15 -- software
  * fault injection for SM_ReportOcpFault() (state_machine.h), since no
  * real per-channel OCP pin is wired up anywhere yet (mapping still TBD

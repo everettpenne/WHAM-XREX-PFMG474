@@ -492,6 +492,48 @@ static void MX_GPIO_Init(void)
       HAL_GPIO_Init(GPIOF, &extEnableInit);
   }
 
+  /* PD1 ("GPOut_12" in the V4 column, docs/pin_mapping_v4.csv --
+     confirmed GPO there), added 2026-09-16 as a generic, software-
+     driven diagnostic output. Direct request; PF13 was proposed first
+     and corrected -- PF13 is actually documented "GPInput_12" (an
+     INPUT) in the same CSV, a different pin from the one actually
+     named "GPOut_12" (PD1), same class of name/pin mismatch as the
+     earlier PC14-vs-PF15 correction. Immediate use: driven by
+     DIAGnostic:GPOut12 (commands.c) and physically looped to PF15
+     (Fiber_Enable) by the operator, letting the external-enable/
+     external-trigger feature above be exercised entirely from the
+     serial console -- precise, repeatable control over PF15's level
+     at exactly the right moments -- rather than needing a hand-
+     operated bench jumper/switch. Not tied to that use case in the
+     pin config itself, just today's reason for wanting it: a generic
+     level output, nothing PF15-specific baked in here.
+
+     Initial state LOW (Pull left at default/NOPULL -- irrelevant for
+     a push-pull output, the pin is actively driven the instant this
+     runs) -- starts deasserted so a fresh boot never presents an
+     accidental HIGH to whatever it's connected to. */
+  {
+      GPIO_InitTypeDef diagOutInit = {0};
+
+      __HAL_RCC_GPIOD_CLK_ENABLE();
+
+      HAL_GPIO_WritePin(GPIOD, GPIO_PIN_1, GPIO_PIN_RESET);   /* set level
+                                                                   BEFORE
+                                                                   enabling
+                                                                   the output,
+                                                                   so it never
+                                                                   glitches
+                                                                   HIGH first */
+      diagOutInit.Pin   = GPIO_PIN_1;
+      diagOutInit.Mode  = GPIO_MODE_OUTPUT_PP;
+      diagOutInit.Pull  = GPIO_NOPULL;
+      diagOutInit.Speed = GPIO_SPEED_FREQ_LOW;   /* a diagnostic level
+                                                      output, not a fast
+                                                      signal -- no reason
+                                                      for a faster slew */
+      HAL_GPIO_Init(GPIOD, &diagOutInit);
+  }
+
   /* USER CODE END MX_GPIO_Init_2 */
 }
 
