@@ -1,6 +1,6 @@
 Core/Src/state_machine.o: ../Core/Src/state_machine.c \
  ../Core/Inc/state_machine.h ../Core/Inc/pid.h ../Core/Inc/ctrlr_config.h \
- ../Core/Inc/hrtim.h ../Core/Inc/main.h \
+ ../Core/Inc/build_target.h ../Core/Inc/hrtim.h ../Core/Inc/main.h \
  ../Drivers/STM32G4xx_HAL_Driver/Inc/stm32g4xx_hal.h \
  ../Core/Inc/stm32g4xx_hal_conf.h \
  ../Drivers/STM32G4xx_HAL_Driver/Inc/stm32g4xx_hal_rcc.h \
@@ -37,6 +37,7 @@ Core/Src/state_machine.o: ../Core/Src/state_machine.c \
 ../Core/Inc/state_machine.h:
 ../Core/Inc/pid.h:
 ../Core/Inc/ctrlr_config.h:
+../Core/Inc/build_target.h:
 ../Core/Inc/hrtim.h:
 ../Core/Inc/main.h:
 ../Drivers/STM32G4xx_HAL_Driver/Inc/stm32g4xx_hal.h:

@@ -1,7 +1,8 @@
 Core/Src/xrex_io.o: ../Core/Src/xrex_io.c ../Core/Inc/xrex_io.h \
- ../Core/Inc/ctrlr_config.h ../Core/Inc/gate_driver.h \
- ../Core/Inc/state_machine.h ../Core/Inc/pid.h ../Core/Inc/ctrlr_config.h \
- ../Core/Inc/main.h ../Drivers/STM32G4xx_HAL_Driver/Inc/stm32g4xx_hal.h \
+ ../Core/Inc/ctrlr_config.h ../Core/Inc/build_target.h \
+ ../Core/Inc/gate_driver.h ../Core/Inc/state_machine.h ../Core/Inc/pid.h \
+ ../Core/Inc/ctrlr_config.h ../Core/Inc/main.h \
+ ../Drivers/STM32G4xx_HAL_Driver/Inc/stm32g4xx_hal.h \
  ../Core/Inc/stm32g4xx_hal_conf.h \
  ../Drivers/STM32G4xx_HAL_Driver/Inc/stm32g4xx_hal_rcc.h \
  ../Drivers/STM32G4xx_HAL_Driver/Inc/stm32g4xx_hal_def.h \
@@ -34,6 +35,7 @@ Core/Src/xrex_io.o: ../Core/Src/xrex_io.c ../Core/Inc/xrex_io.h \
  ../Drivers/STM32G4xx_HAL_Driver/Inc/stm32g4xx_hal_uart_ex.h
 ../Core/Inc/xrex_io.h:
 ../Core/Inc/ctrlr_config.h:
+../Core/Inc/build_target.h:
 ../Core/Inc/gate_driver.h:
 ../Core/Inc/state_machine.h:
 ../Core/Inc/pid.h:

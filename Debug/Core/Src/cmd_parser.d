@@ -32,9 +32,9 @@ Core/Src/cmd_parser.o: ../Core/Src/cmd_parser.c ../Core/Inc/cmd_parser.h \
  ../Drivers/STM32G4xx_HAL_Driver/Inc/stm32g4xx_hal_uart.h \
  ../Drivers/STM32G4xx_HAL_Driver/Inc/stm32g4xx_hal_uart_ex.h \
  ../Core/Inc/commands.h ../Core/Inc/boot_jump.h \
- ../Core/Inc/ctrlr_config.h ../Core/Inc/qspi_test.h \
- ../Core/Inc/pfm_input.h ../Core/Inc/uart.h ../Core/Inc/boot_jump.h \
- ../Core/Inc/qspi_test.h ../Core/Inc/pfm_input.h
+ ../Core/Inc/ctrlr_config.h ../Core/Inc/build_target.h \
+ ../Core/Inc/qspi_test.h ../Core/Inc/pfm_input.h ../Core/Inc/uart.h \
+ ../Core/Inc/boot_jump.h ../Core/Inc/qspi_test.h ../Core/Inc/pfm_input.h
 ../Core/Inc/cmd_parser.h:
 ../Core/Inc/uart.h:
 ../Core/Inc/main.h:
@@ -72,6 +72,7 @@ Core/Src/cmd_parser.o: ../Core/Src/cmd_parser.c ../Core/Inc/cmd_parser.h \
 ../Core/Inc/commands.h:
 ../Core/Inc/boot_jump.h:
 ../Core/Inc/ctrlr_config.h:
+../Core/Inc/build_target.h:
 ../Core/Inc/qspi_test.h:
 ../Core/Inc/pfm_input.h:
 ../Core/Inc/uart.h:

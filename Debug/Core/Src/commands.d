@@ -32,9 +32,10 @@ Core/Src/commands.o: ../Core/Src/commands.c ../Core/Inc/commands.h \
  ../Drivers/STM32G4xx_HAL_Driver/Inc/stm32g4xx_hal_uart.h \
  ../Drivers/STM32G4xx_HAL_Driver/Inc/stm32g4xx_hal_uart_ex.h \
  ../Core/Inc/boot_jump.h ../Core/Inc/ctrlr_config.h \
- ../Core/Inc/qspi_test.h ../Core/Inc/pfm_input.h ../Core/Inc/uart.h \
- ../Core/Inc/ctrlr_config.h ../Core/Inc/boot_jump.h ../Core/Inc/pfm.h \
- ../Core/Inc/hrtim.h ../Core/Inc/gate_driver.h ../Core/Inc/qspi_test.h \
+ ../Core/Inc/build_target.h ../Core/Inc/qspi_test.h \
+ ../Core/Inc/pfm_input.h ../Core/Inc/uart.h ../Core/Inc/ctrlr_config.h \
+ ../Core/Inc/boot_jump.h ../Core/Inc/pfm.h ../Core/Inc/hrtim.h \
+ ../Core/Inc/gate_driver.h ../Core/Inc/qspi_test.h \
  ../Core/Inc/pfm_input.h ../Core/Inc/pid.h ../Core/Inc/state_machine.h \
  ../Core/Inc/git_version.h ../Core/Inc/main.h ../Core/Inc/xrex_io.h
 ../Core/Inc/commands.h:
@@ -73,6 +74,7 @@ Core/Src/commands.o: ../Core/Src/commands.c ../Core/Inc/commands.h \
 ../Drivers/STM32G4xx_HAL_Driver/Inc/stm32g4xx_hal_uart_ex.h:
 ../Core/Inc/boot_jump.h:
 ../Core/Inc/ctrlr_config.h:
+../Core/Inc/build_target.h:
 ../Core/Inc/qspi_test.h:
 ../Core/Inc/pfm_input.h:
 ../Core/Inc/uart.h:

@@ -1,5 +1,6 @@
 Core/Src/pid.o: ../Core/Src/pid.c ../Core/Inc/pid.h \
- ../Core/Inc/ctrlr_config.h ../Core/Inc/hrtim.h ../Core/Inc/main.h \
+ ../Core/Inc/ctrlr_config.h ../Core/Inc/build_target.h \
+ ../Core/Inc/hrtim.h ../Core/Inc/main.h \
  ../Drivers/STM32G4xx_HAL_Driver/Inc/stm32g4xx_hal.h \
  ../Core/Inc/stm32g4xx_hal_conf.h \
  ../Drivers/STM32G4xx_HAL_Driver/Inc/stm32g4xx_hal_rcc.h \
@@ -35,6 +36,7 @@ Core/Src/pid.o: ../Core/Src/pid.c ../Core/Inc/pid.h \
  ../Core/Inc/xrex_io.h
 ../Core/Inc/pid.h:
 ../Core/Inc/ctrlr_config.h:
+../Core/Inc/build_target.h:
 ../Core/Inc/hrtim.h:
 ../Core/Inc/main.h:
 ../Drivers/STM32G4xx_HAL_Driver/Inc/stm32g4xx_hal.h:

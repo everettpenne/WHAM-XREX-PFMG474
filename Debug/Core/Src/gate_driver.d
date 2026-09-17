@@ -1,6 +1,7 @@
 Core/Src/gate_driver.o: ../Core/Src/gate_driver.c \
- ../Core/Inc/gate_driver.h ../Core/Inc/ctrlr_config.h ../Core/Inc/hrtim.h \
- ../Core/Inc/main.h ../Drivers/STM32G4xx_HAL_Driver/Inc/stm32g4xx_hal.h \
+ ../Core/Inc/gate_driver.h ../Core/Inc/ctrlr_config.h \
+ ../Core/Inc/build_target.h ../Core/Inc/hrtim.h ../Core/Inc/main.h \
+ ../Drivers/STM32G4xx_HAL_Driver/Inc/stm32g4xx_hal.h \
  ../Core/Inc/stm32g4xx_hal_conf.h \
  ../Drivers/STM32G4xx_HAL_Driver/Inc/stm32g4xx_hal_rcc.h \
  ../Drivers/STM32G4xx_HAL_Driver/Inc/stm32g4xx_hal_def.h \
@@ -35,6 +36,7 @@ Core/Src/gate_driver.o: ../Core/Src/gate_driver.c \
  ../Core/Inc/main.h ../Core/Inc/xrex_io.h
 ../Core/Inc/gate_driver.h:
 ../Core/Inc/ctrlr_config.h:
+../Core/Inc/build_target.h:
 ../Core/Inc/hrtim.h:
 ../Core/Inc/main.h:
 ../Drivers/STM32G4xx_HAL_Driver/Inc/stm32g4xx_hal.h:

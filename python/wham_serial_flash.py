@@ -32,9 +32,22 @@ Prerequisites:
 Typical use (from anywhere -- paths below default relative to this
 script's own location, in python/, not the current directory):
   python3 python/wham_serial_flash.py                 # auto-detect port, flash Debug/WHAM-XREX-PFMG474.bin
+  python3 python/wham_serial_flash.py --target simulator --port /dev/cu.usbserial-XXX
+                                                        # flash Debug/WHAM-XREX-PFMG474-SIM.bin instead
   python3 python/wham_serial_flash.py --bin firmware/WHAM-XREX-PFMG474.bin
   python3 python/wham_serial_flash.py --port /dev/cu.usbserial-130
   python3 python/wham_serial_flash.py --no-boot        # board already in bootloader (BOOT0)
+
+--target only changes which DEFAULT .bin path is picked (matching
+wham_build.py's own controller-vs-simulator output naming, added
+2026-09-17 for the Transrex-simulator work); --bin still overrides it
+explicitly either way. IMPORTANT: this script never knows which
+physical port belongs to which board -- with two boards connected,
+--port must be given explicitly (auto-detect only works when exactly
+one usbserial device is present at all); always double-check --port
+matches the board you actually intend to flash, especially for
+--target controller, where flashing the wrong board could overwrite
+the controller's own known-good firmware.
 """
 
 import argparse
@@ -58,6 +71,7 @@ PROJECT_DIR = os.path.dirname(SCRIPT_DIR)  # this script lives in python/
 # Where CubeIDE drops the build artifact. Point --bin elsewhere (e.g. a local
 # 'firmware/' folder you copy releases into) if you prefer.
 DEFAULT_BIN = os.path.join(PROJECT_DIR, "Debug", "WHAM-XREX-PFMG474.bin")
+DEFAULT_SIM_BIN = os.path.join(PROJECT_DIR, "Debug", "WHAM-XREX-PFMG474-SIM.bin")
 
 FLASH_BASE_ADDR = "0x08000000"   # application origin (matches the linker script)
 APP_BAUD_DEFAULT = 115200        # firmware command protocol: 115200 8N1
@@ -119,9 +133,13 @@ def run_stm32flash(stm32flash, port, bin_path, flash_baud, go):
 
 def main():
     ap = argparse.ArgumentParser(description="Serial reflash for WHAM-XREX-PFMG474")
+    ap.add_argument("--target", choices=["controller", "simulator"], default="controller",
+                    help="selects the default --bin path only (controller: "
+                         f"{DEFAULT_BIN}, simulator: {DEFAULT_SIM_BIN}) -- "
+                         "an explicit --bin always overrides this")
     ap.add_argument("--port", help="serial device (auto-detected if omitted)")
-    ap.add_argument("--bin", default=DEFAULT_BIN,
-                    help=f"firmware .bin to flash (default: {DEFAULT_BIN})")
+    ap.add_argument("--bin", default=None,
+                    help="firmware .bin to flash (default: picked from --target)")
     ap.add_argument("--app-baud", type=int, default=APP_BAUD_DEFAULT,
                     help=f"application command baud (default: {APP_BAUD_DEFAULT})")
     ap.add_argument("--flash-baud", type=int, default=FLASH_BAUD_DEFAULT,
@@ -133,6 +151,9 @@ def main():
     ap.add_argument("--stm32flash", default=shutil.which("stm32flash"),
                     help="path to stm32flash (default: found on PATH)")
     args = ap.parse_args()
+
+    if args.bin is None:
+        args.bin = DEFAULT_SIM_BIN if args.target == "simulator" else DEFAULT_BIN
 
     if not args.stm32flash:
         sys.exit("error: stm32flash not found on PATH. macOS: brew install stm32flash")
@@ -146,8 +167,9 @@ def main():
 
     size = os.path.getsize(args.bin)
     print(f"=== WHAM-XREX-PFMG474 serial reflash ===")
-    print(f"    port : {port}")
-    print(f"    bin  : {args.bin} ({size} bytes)")
+    print(f"    target : {args.target.upper()}")
+    print(f"    port   : {port}")
+    print(f"    bin    : {args.bin} ({size} bytes)")
     print()
 
     if not args.no_boot:
