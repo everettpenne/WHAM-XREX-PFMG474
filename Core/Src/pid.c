@@ -757,6 +757,10 @@ void PID_Update(void)
        cadence to actually catch anything while FIRING. */
     SM_PollFaults();
     XrexIo_PollOcpFaults();
+    XrexIo_PollEnableOutputFaults();   /* added 2026-09-17 -- same real-
+                                           tick cadence, but itself only
+                                           acts while ARMED/FIRING
+                                           (xrex_io.h) */
     if (SM_GetState() == SM_STATE_FAULT)
     {
         if (g_faultRampActive != 0U)

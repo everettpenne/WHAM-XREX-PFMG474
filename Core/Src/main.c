@@ -177,6 +177,12 @@ int main(void)
   SM_Init();
   SM_PollFaults();
   XrexIo_PollOcpFaults();
+  XrexIo_PollEnableOutputFaults();   /* no-op here -- SM_Init() just set
+                                         IDLE, and this check only ever
+                                         does anything while ARMED/FIRING
+                                         (see xrex_io.h) -- called anyway
+                                         for the same "same cadence as
+                                         everything else" consistency */
 
   uart_init(&uart2, &huart2);
 
@@ -208,6 +214,10 @@ int main(void)
        call site to work at all. */
     SM_PollFaults();
     XrexIo_PollOcpFaults();
+    XrexIo_PollEnableOutputFaults();   /* added 2026-09-17 -- same
+                                           "regardless of state" call site
+                                           reasoning, but itself only acts
+                                           while ARMED/FIRING (xrex_io.h) */
     /* Polls for a completed serial command line and dispatches it. */
     uart_process(&uart2);
   }
@@ -471,80 +481,99 @@ static void MX_GPIO_Init(void)
       HAL_NVIC_EnableIRQ(EXTI15_10_IRQn);
   }
 
-  /* PF15 (Fiber_Enable, docs/pin_mapping_v4.csv -- confirmed GPI there),
-     added 2026-09-16 for the external-enable interlock
-     (state_machine.c's own external-enable section has the full design).
-     Plain polled input, no EXTI -- state_machine.c's SM_PollFaults()
-     already checks this at the same cadence (main loop + every real
-     PID_Update() tick, ~1kHz while FIRING) General Fault's own two
-     hardware sources get; an interrupt-driven path wasn't judged
-     necessary for this signal and wasn't built -- if tighter latency
-     ever matters, that's a real decision to make explicitly, not
-     something this comment claims was already covered.
+  /* PF13 (docs/pin_mapping_v4.csv -- documented "GPInput_12", confirmed
+     GPI, unused elsewhere) -- the external-enable interlock, MOVED here
+     2026-09-17 from PF15 (Fiber_Enable) per direct instruction: enable
+     and trigger are now two independent physical signals, not one
+     shared wire. state_machine.c's own external-enable section has the
+     full design (ARM/PID:PROFile:STARt gating, FIRING-only continuous
+     monitoring, SM_FAULT_EXTERNAL_ENABLE on loss). Plain polled input,
+     no EXTI -- same reasoning as before the move: state_machine.c's
+     SM_PollFaults() already checks this at the same cadence (main loop
+     + every real PID_Update() tick, ~1kHz while FIRING) General Fault's
+     own two hardware sources get.
 
      GPIO_PULLDOWN, NOT this project's usual GPIO_NOPULL for actively-
      driven inputs (GateDriverStatus above, PFM_Input, QUADSPI) --
-     deliberate: an unconnected/floating PF15 must read LOW (no
+     deliberate, carried over unchanged from PF15's own original
+     reasoning: an unconnected/floating PF13 must read LOW (no
      permission granted), never an undefined level that could
-     accidentally read HIGH and silently permit firing. GateDriverStatus's
-     NOPULL is fine on its own pins because floating-reads-as-fault is
-     already the safe direction there; the same reasoning would be
-     UNSAFE for this one, where floating-reads-as-enabled would be the
-     dangerous direction instead. */
+     accidentally read HIGH and silently permit firing. */
   {
       GPIO_InitTypeDef extEnableInit = {0};
 
       __HAL_RCC_GPIOF_CLK_ENABLE();
 
-      extEnableInit.Pin  = GPIO_PIN_15;
+      extEnableInit.Pin  = GPIO_PIN_13;
       extEnableInit.Mode = GPIO_MODE_INPUT;
       extEnableInit.Pull = GPIO_PULLDOWN;
       HAL_GPIO_Init(GPIOF, &extEnableInit);
   }
 
-  /* PG10 -- a fiber-optic emergency-stop input, added 2026-09-17 for
-     the emergency-stop feature (state_machine.c's own emergency-stop
-     section has the full design). docs/pin_mapping_v4.csv labels this
-     net "NRST" -- confirmed directly with the user this is a stale/
-     incorrect label, NOT this MCU's own reset function (that's a
-     separate, dedicated silicon pin, not part of any GPIO port). A
-     100nF cap to ground already exists on this net (per the user) --
-     fine/beneficial mild filtering for a deliberately slow-changing
-     safety signal, not a concern the way it would be for a fast-
-     switching PFM_Input capture pin.
+  /* PF15 (Fiber_Enable, docs/pin_mapping_v4.csv -- confirmed GPI there)
+     -- external TRIGGER only, as of 2026-09-17 (previously this pin
+     also carried the external-enable role removed above; a rising
+     edge here while ARMED fires a shot -- state_machine.c's own
+     external-trigger section has the full design). Plain polled input,
+     no EXTI -- same reasoning as PF13 above, and as this pin's own
+     prior enable role: state_machine.c's SM_PollFaults() polls this at
+     the same ~1kHz-while-FIRING cadence.
 
-     PB8 (this board's BOOT0 net) was considered FIRST for this purpose
-     and REJECTED -- a live FLASH_OPTR register read
-     (DIAGnostic:OPTBytes?, commands.c) confirmed nSWBOOT0=1 on this
-     chip, meaning PB8 is genuinely sampled for boot-mode selection on
-     EVERY reset, not just first power-on; an active-LOW E-stop's own
-     idle (non-emergency) HIGH state is exactly the "boot into the ROM
-     bootloader instead of the application" condition here, which would
-     silently break normal boot on any ordinary reset during non-
-     emergency operation. PG10, an ordinary GPIO pin with no boot-time
-     role at all, has none of that risk.
-
-     Plain polled input, no EXTI -- same reasoning as PF15 just above:
-     state_machine.c's SM_PollFaults() already checks this at the same
-     cadence (main loop + every real PID_Update() tick) General Fault's
-     own two hardware sources get.
-
-     GPIO_PULLDOWN, matching PF15's own fail-safe reasoning (even
-     though the SAFE direction happens to be the same polarity by
-     coincidence here, not because the reasoning is identical): an
-     unconnected/floating PG10 must read LOW -- E-stop ASSERTED, the
-     safe default for a stop function (a broken/disconnected E-stop
-     wire should read as "stop," never as "all clear"). */
+     GPIO_PULLDOWN carried over unchanged -- an unconnected/floating
+     PF15 reading LOW means no spurious rising edge is ever seen from a
+     disconnected trigger wire (edge detection needs an actual LOW-to-
+     HIGH transition; a pin parked at a stable floating LOW produces
+     none). Unlike PF13 above, there's no "wrong direction" concern
+     here either way -- a floating trigger pin that never fires is the
+     safe failure mode regardless of which level it floats to, but
+     PULLDOWN keeps it deterministic and consistent with every other
+     pin in this file. */
   {
-      GPIO_InitTypeDef eStopInit = {0};
+      GPIO_InitTypeDef extTriggerInit = {0};
 
-      __HAL_RCC_GPIOG_CLK_ENABLE();
+      __HAL_RCC_GPIOF_CLK_ENABLE();
 
-      eStopInit.Pin  = GPIO_PIN_10;
-      eStopInit.Mode = GPIO_MODE_INPUT;
-      eStopInit.Pull = GPIO_PULLDOWN;
-      HAL_GPIO_Init(GPIOG, &eStopInit);
+      extTriggerInit.Pin  = GPIO_PIN_15;
+      extTriggerInit.Mode = GPIO_MODE_INPUT;
+      extTriggerInit.Pull = GPIO_PULLDOWN;
+      HAL_GPIO_Init(GPIOF, &extTriggerInit);
   }
+
+  /* *** PG10 GPIO CONFIG REMOVED 2026-09-17 ***
+     Originally added the same day for the emergency-stop feature
+     (state_machine.c's own emergency-stop section), based on the
+     user's own direct confirmation at the time that pin_mapping_v4.csv's
+     "NRST" label for this net was stale/incorrect and PG10 was a plain
+     fiber-optic GPIO input, unrelated to the MCU's real reset function.
+
+     THAT CONFIRMATION WAS WRONG, corrected the same day via the actual
+     schematic: PG10 IS electrically tied to this MCU's real, dedicated
+     NRST pin -- both land on the same net, which also runs to the
+     ST-Link/Molex debug connector. Discovered by direct real-hardware
+     evidence, not inspection: driving a new fiber transmitter (PD0,
+     DIAGnostic:GPOut11) into an inverting receiver wired to "PG10"
+     caused a genuine MCU reset every time it went HIGH -- confirmed via
+     RCC->CSR (a new temporary DIAGnostic:RSTCause? command,
+     commands.c): PINRSTF set, BORRSTF clear, ruling out a power-rail-
+     droop theory and directly proving a real NRST-pin assertion, not
+     mere GPIO-level signal corruption.
+
+     This means configuring this pin as a GPIO peripheral input AT ALL
+     (regardless of EMERGency:ENAble's state) was unsound the entire
+     time -- GPIO_PULLDOWN was a weak pull-down actively fighting NRST's
+     own internal pull-up on the literal reset/debug net on every boot,
+     independent of whether the emergency-stop feature was ever enabled.
+     Removed entirely, per direct instruction ("shelve E-stop entirely
+     again... pull the GPIO_PULLDOWN config off PG10 specifically") --
+     this pin is not a usable GPIO on this board and must not be
+     reconfigured as one again. state_machine.c's emergency-stop
+     software (SM_FAULT_EMERGENCY_STOP and friends) is left in place,
+     dormant -- EMERGency:ENAble defaults off and, when off, never reads
+     any pin at all, so nothing there is electrically live -- but a
+     genuinely free pin from the schematic is needed before this feature
+     can be re-pointed at real hardware again. See
+     [[pending-hardware-calibration]] (session memory) for the full
+     writeup. */
 
   /* XR1_OCP/XR2_OCP/XR3_OCP/XR4_OCP (PF4/PF8/PF12/PF5,
      docs/pin_mapping_v4.csv's new "XREX Pin Name" column), added
@@ -569,7 +598,7 @@ static void MX_GPIO_Init(void)
      GPIO_PULLDOWN, NOT this project's usual GPIO_NOPULL for the
      EXISTING GateDriverStatus pins (which ARE the same class of
      gate-driver-IC-sourced signal) -- deliberate, matching the fail-
-     safe reasoning already applied to PF15/PG10 above: with
+     safe reasoning already applied to PF13/PF15/PG10 above: with
      XR_OCP_FLT_POLARITY (ctrlr_config.h) defaulting NORMALLY_HIGH, an
      unconnected/floating OCP pin must read LOW -- fault asserted, the
      safe default -- rather than an undefined level that could
@@ -585,21 +614,118 @@ static void MX_GPIO_Init(void)
       HAL_GPIO_Init(GPIOF, &ocpInit);
   }
 
+  /* XR1-4_ENA_OUT (PG0-PG3) + XR1-4_CONTACT_OUT (PG4-PG7,
+     docs/pin_mapping_v4.csv's new "XREX Pin Name" column), added
+     2026-09-17, per direct request: real per-channel fiber outputs
+     this firmware itself drives, set via
+     XREX:CHANnel:ENAOut/CONTactOut (commands.c), owned (pin table,
+     GPIO read/write) by xrex_io.c -- see xrex_io.h and
+     state_machine.h's own SM_FAULT_ENABLE_OUTPUT/enable-output
+     sections for the full design (ARM refuses unless every currently-
+     enabled channel's own pair is HIGH, and this is continuously
+     re-checked once ARMED).
+
+     Push-pull OUTPUTS (not inputs, unlike every other XR-pin block in
+     this function) -- driven LOW BEFORE HAL_GPIO_Init() enables them,
+     matching this project's established "never glitch HIGH on boot"
+     convention for every other software-driven output
+     (DIAGnostic:GPOut11/GPOut12 above) -- a fresh boot must never
+     present an accidental "outputting" state to whatever real hardware
+     these are wired to. GPIO_NOPULL (irrelevant for a push-pull
+     output, same as every other output block in this file). */
+  {
+      GPIO_InitTypeDef enaContactInit = {0};
+
+      __HAL_RCC_GPIOG_CLK_ENABLE();
+
+      HAL_GPIO_WritePin(GPIOG,
+                         GPIO_PIN_0 | GPIO_PIN_1 | GPIO_PIN_2 | GPIO_PIN_3 |
+                         GPIO_PIN_4 | GPIO_PIN_5 | GPIO_PIN_6 | GPIO_PIN_7,
+                         GPIO_PIN_RESET);   /* set level BEFORE enabling the
+                                                output, so it never glitches
+                                                HIGH first */
+
+      enaContactInit.Pin   = GPIO_PIN_0 | GPIO_PIN_1 | GPIO_PIN_2 | GPIO_PIN_3 |
+                              GPIO_PIN_4 | GPIO_PIN_5 | GPIO_PIN_6 | GPIO_PIN_7;
+      enaContactInit.Mode  = GPIO_MODE_OUTPUT_PP;
+      enaContactInit.Pull  = GPIO_NOPULL;
+      enaContactInit.Speed = GPIO_SPEED_FREQ_LOW;   /* level outputs, not
+                                                         fast signals -- no
+                                                         reason for a
+                                                         faster slew */
+      HAL_GPIO_Init(GPIOG, &enaContactInit);
+  }
+
+  /* PC13 ("GPOut_Enable_Pin" in the V4 column, docs/pin_mapping_v4.csv --
+     confirmed GPO there, unused elsewhere), added 2026-09-17 per direct
+     request. Push-pull output, driven HIGH BEFORE HAL_GPIO_Init()
+     enables it -- per direct instruction ("By default, keep it HIGH"),
+     the OPPOSITE default of every other software-driven output in this
+     file (DIAGnostic:GPOut11/12, ENA_OUT/CONTACT_OUT above, all
+     deliberately LOW by default) -- a fresh boot must present this
+     pin's real intended default (HIGH), not an incidental LOW that
+     happens to match everything else here. GPIO_NOPULL (irrelevant for
+     a push-pull output, same as every other output block in this
+     file). Driven by GPOut:ENAble (commands.c). */
+  {
+      GPIO_InitTypeDef gpOutEnableInit = {0};
+
+      __HAL_RCC_GPIOC_CLK_ENABLE();
+
+      HAL_GPIO_WritePin(GPIOC, GPIO_PIN_13, GPIO_PIN_SET);   /* set level
+                                                                  BEFORE
+                                                                  enabling
+                                                                  the output,
+                                                                  so it's
+                                                                  never
+                                                                  briefly
+                                                                  LOW first */
+      gpOutEnableInit.Pin   = GPIO_PIN_13;
+      gpOutEnableInit.Mode  = GPIO_MODE_OUTPUT_PP;
+      gpOutEnableInit.Pull  = GPIO_NOPULL;
+      gpOutEnableInit.Speed = GPIO_SPEED_FREQ_LOW;
+      HAL_GPIO_Init(GPIOC, &gpOutEnableInit);
+  }
+
+  /* PC15 ("PWM_Alt_Enable" in the V4 column, docs/pin_mapping_v4.csv --
+     confirmed GPO there, unused elsewhere), added 2026-09-17 per direct
+     request -- same reasoning as PC13 just above (default HIGH,
+     driven before enable, GPIO_NOPULL). Driven by PWMAlt:ENAble
+     (commands.c). */
+  {
+      GPIO_InitTypeDef pwmAltEnableInit = {0};
+
+      __HAL_RCC_GPIOC_CLK_ENABLE();
+
+      HAL_GPIO_WritePin(GPIOC, GPIO_PIN_15, GPIO_PIN_SET);   /* set level
+                                                                  BEFORE
+                                                                  enabling
+                                                                  the output */
+      pwmAltEnableInit.Pin   = GPIO_PIN_15;
+      pwmAltEnableInit.Mode  = GPIO_MODE_OUTPUT_PP;
+      pwmAltEnableInit.Pull  = GPIO_NOPULL;
+      pwmAltEnableInit.Speed = GPIO_SPEED_FREQ_LOW;
+      HAL_GPIO_Init(GPIOC, &pwmAltEnableInit);
+  }
+
   /* PD1 ("GPOut_12" in the V4 column, docs/pin_mapping_v4.csv --
      confirmed GPO there), added 2026-09-16 as a generic, software-
      driven diagnostic output. Direct request; PF13 was proposed first
      and corrected -- PF13 is actually documented "GPInput_12" (an
      INPUT) in the same CSV, a different pin from the one actually
      named "GPOut_12" (PD1), same class of name/pin mismatch as the
-     earlier PC14-vs-PF15 correction. Immediate use: driven by
-     DIAGnostic:GPOut12 (commands.c) and physically looped to PF15
+     earlier PC14-vs-PF15 correction. Immediate use, 2026-09-16: driven
+     by DIAGnostic:GPOut12 (commands.c) and physically looped to PF15
      (Fiber_Enable) by the operator, letting the external-enable/
      external-trigger feature above be exercised entirely from the
      serial console -- precise, repeatable control over PF15's level
      at exactly the right moments -- rather than needing a hand-
-     operated bench jumper/switch. Not tied to that use case in the
-     pin config itself, just today's reason for wanting it: a generic
-     level output, nothing PF15-specific baked in here.
+     operated bench jumper/switch. (2026-09-17 UPDATE: PF15 now backs
+     external-TRIGGER only -- enable moved to its own pin, PF13, not
+     looped to this diagnostic output -- so this loop now exercises
+     trigger specifically.) Not tied to that use case in the pin config
+     itself, just today's reason for wanting it: a generic level output,
+     nothing PF15-specific baked in here.
 
      Initial state LOW (Pull left at default/NOPULL -- irrelevant for
      a push-pull output, the pin is actively driven the instant this
@@ -625,6 +751,44 @@ static void MX_GPIO_Init(void)
                                                       signal -- no reason
                                                       for a faster slew */
       HAL_GPIO_Init(GPIOD, &diagOutInit);
+  }
+
+  /* PD0 ("GPOut_11" in the V4 column, docs/pin_mapping_v4.csv --
+     confirmed GPO there, same row-pattern as PD1/"GPOut_12" just
+     above), added 2026-09-17 -- a SECOND, independent diagnostic
+     output. Direct correction: PD1 above was initially reused for
+     testing the PG10 emergency-stop feature too (a second fiber looped
+     from the same PD1 pin), but PD1 is already the pin dedicated to
+     driving PF15 (external-trigger as of later the same day --
+     external-enable at the time this was written) -- the user caught
+     this mix-up and asked for a genuinely separate pin for PG10 testing
+     instead, to
+     remove any ambiguity about which diagnostic signal is driving
+     which real input. Otherwise identical in every respect to PD1's
+     own diagnostic-output config just above -- generic, software-
+     driven level output, nothing PG10-specific baked in here, driven
+     by DIAGnostic:GPOut11 (commands.c). Same initial-state-LOW-before-
+     enable reasoning as PD1 -- never glitches HIGH on boot. */
+  {
+      GPIO_InitTypeDef diagOutInit2 = {0};
+
+      __HAL_RCC_GPIOD_CLK_ENABLE();
+
+      HAL_GPIO_WritePin(GPIOD, GPIO_PIN_0, GPIO_PIN_RESET);   /* set level
+                                                                   BEFORE
+                                                                   enabling
+                                                                   the output,
+                                                                   so it never
+                                                                   glitches
+                                                                   HIGH first */
+      diagOutInit2.Pin   = GPIO_PIN_0;
+      diagOutInit2.Mode  = GPIO_MODE_OUTPUT_PP;
+      diagOutInit2.Pull  = GPIO_NOPULL;
+      diagOutInit2.Speed = GPIO_SPEED_FREQ_LOW;   /* a diagnostic level
+                                                      output, not a fast
+                                                      signal -- no reason
+                                                      for a faster slew */
+      HAL_GPIO_Init(GPIOD, &diagOutInit2);
   }
 
   /* USER CODE END MX_GPIO_Init_2 */

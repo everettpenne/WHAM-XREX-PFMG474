@@ -100,14 +100,28 @@ extern "C" {
  *     handled by the existing PID:CHANnel:ENAble mechanism, pid.c;
  *     nothing new needed here.)
  *
- * *** NOTE TO REVISIT *** -- XRn_ENA_OUT (PG0/PG1/PG2/PG3) and
- * XRn_CONTACT_OUT (PG4/PG5/PG6/PG7) are real outputs docs/pin_mapping_v4.csv's
- * new column also names, explicitly DEFERRED per direct instruction
- * ("Once we figure all this out, we will configure the outputs that I
- * suggested. Make a note of those and remind me later.") -- NOT
- * configured anywhere in this codebase yet, not even as plain GPIO
- * outputs. Remind the user about these before considering this feature
- * area complete.
+ *   XRn_ENA_OUT, XRn_CONTACT_OUT -- IMPLEMENTED 2026-09-17 (previously
+ *     deferred -- see this file's own git history for the original
+ *     "NOTE TO REVISIT" this replaces). Eight real outputs this
+ *     firmware itself drives (PG0-PG3, PG4-PG7 -- GPO per
+ *     docs/pin_mapping_v4.csv), one ENA_OUT + one CONTACT_OUT per
+ *     Transrex channel, set via `XREX:CHANnel:ENAOut`/`CONTactOut`
+ *     (commands.c). Direct instruction: `ARM` must refuse unless every
+ *     currently-enabled channel's own ENA_OUT+CONTACT_OUT are BOTH
+ *     already HIGH, and this must stay true continuously once ARMED
+ *     (not just at the ARM instant) -- see state_machine.h's own
+ *     SM_FAULT_ENABLE_OUTPUT/enable-output sections for the full fault-
+ *     type design (reuses HandleOvercurrentFault()'s exact per-channel
+ *     disable+derate+ramp response). Per-channel GATED, same
+ *     philosophy as every other XR-signal above -- only currently-
+ *     enabled channels are checked, in either direction (ARM gate or
+ *     continuous poll). Unlike Water/Temp/Enerpro/OCP, these are
+ *     OUTPUTS this firmware commands, not hardware-driven INPUTS it
+ *     reads -- "checking" them is a readback of this firmware's own
+ *     last-written GPIO state (HAL_GPIO_ReadPin() on a push-pull
+ *     output correctly reflects ODR), not an interpretation of
+ *     external signal polarity -- no XR_*_POLARITY-style config needed
+ *     here, "HIGH" unambiguously means "commanded on."
  * -------------------------------------------------------------------------- */
 
 /* Called from gate_driver.c's GateDriver_CheckFault() with the raw
@@ -141,6 +155,50 @@ void XrexIo_PollOcpFaults(void);
  * is out of range, 1 otherwise. */
 uint8_t XrexIo_GetChannelStatus(uint8_t channel, uint8_t *water, uint8_t *tmp,
                                  uint8_t *enerpro, uint8_t *ocp);
+
+/* Sets XRn_ENA_OUT for `channel` (0-based) HIGH (`on` != 0) or LOW.
+ * Backs `XREX:CHANnel:ENAOut <ch> <0|1>` (commands.c). Out-of-range
+ * `channel` is a silent no-op, matching this file's other setters.
+ * Takes effect immediately -- does not itself check or touch ARM/FAULT
+ * state; XrexIo_EnableOutputsReadyToArm()/XrexIo_PollEnableOutputFaults()
+ * below are what react to the result. */
+void XrexIo_SetEnableOutput(uint8_t channel, uint8_t on);
+
+/* Raw current level of XRn_ENA_OUT for `channel` (1 = HIGH/commanded
+ * on, 0 = LOW). Backs `XREX:CHANnel:ENAOut? <ch>` (commands.c). Returns
+ * 0 for an out-of-range `channel` (same "can't tell, so say no" as
+ * every other boolean query in this file). */
+uint8_t XrexIo_GetEnableOutput(uint8_t channel);
+
+/* Sets XRn_CONTACT_OUT for `channel` (0-based) HIGH (`on` != 0) or LOW.
+ * Backs `XREX:CHANnel:CONTactOut <ch> <0|1>` (commands.c). Same
+ * conventions as XrexIo_SetEnableOutput() above. */
+void XrexIo_SetContactorOutput(uint8_t channel, uint8_t on);
+
+/* Raw current level of XRn_CONTACT_OUT for `channel`. Backs
+ * `XREX:CHANnel:CONTactOut? <ch>` (commands.c). Same conventions as
+ * XrexIo_GetEnableOutput() above. */
+uint8_t XrexIo_GetContactorOutput(uint8_t channel);
+
+/* 1 if EVERY currently-enabled channel (PID_GetChannelEnable()) has
+ * both its ENA_OUT and CONTACT_OUT currently HIGH; 0 if any enabled
+ * channel is missing either one. A channel with no participating
+ * output at all (disabled) is simply skipped -- not checked, not a
+ * reason to refuse. Pure check, no side effects -- called from
+ * ArmConditionsMet() (state_machine.c); see state_machine.h's own
+ * enable-output section for the full design. */
+uint8_t XrexIo_EnableOutputsReadyToArm(void);
+
+/* Continuous version of the check above -- called from the SAME tick
+ * cadence XrexIo_PollOcpFaults() already gets (main.c's boot + main
+ * loop, pid.c's PID_Update()). Does nothing at all (not even a per-
+ * channel loop) unless SM_GetState() is currently SM_STATE_ARMED or
+ * SM_STATE_FIRING -- per direct instruction, this precondition is only
+ * meaningful once actually armed, unlike Water/Temp/Enerpro/OCP's
+ * always-on checking. Calls SM_ReportEnableOutputFault(channel)
+ * (state_machine.h) for the first currently-enabled channel found with
+ * either output no longer HIGH. */
+void XrexIo_PollEnableOutputFaults(void);
 
 #ifdef __cplusplus
 }

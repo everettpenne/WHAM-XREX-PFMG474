@@ -324,6 +324,26 @@
 #define FAULT_RAMP_DOWN_TIME_S  (1.0f)
 
 /* --------------------------------------------------------------------------
+ * Generic fault-pin polarity constants (compile-time)
+ *
+ * Added 2026-09-17 (as XREX_POLARITY_*, scoped to the section just below);
+ * RENAMED same day, later, to this generic FAULT_POLARITY_* form once a
+ * second, unrelated consumer showed up (EMERGENCY_STOP_POLARITY, further
+ * down this file) -- this is a plain "which raw level means healthy"
+ * concept with nothing XREX-specific about it, so a generic name is the
+ * honest one now that it's shared. Pure rename, no value/behavior change;
+ * xrex_io.c's BitIsFault() and every XR_*_POLARITY setting below were
+ * updated to match.
+ *
+ * FAULT_POLARITY_NORMALLY_HIGH -- pins read HIGH in good operation; a LOW
+ *                                  reading (a falling edge from healthy)
+ *                                  is a fault.
+ * FAULT_POLARITY_NORMALLY_LOW  -- pins read LOW in good operation; a HIGH
+ *                                  reading is a fault. */
+#define FAULT_POLARITY_NORMALLY_HIGH   (0U)
+#define FAULT_POLARITY_NORMALLY_LOW    (1U)
+
+/* --------------------------------------------------------------------------
  * XREX per-channel fault-pin polarity (compile-time)
  *
  * Added 2026-09-17, per direct request -- REPLACES the old
@@ -336,12 +356,6 @@
  * detection wired up anywhere before now. xrex_io.c owns the actual
  * per-channel-gated fault-evaluation logic (see that file's own header
  * comment); these four settings are its only per-category config.
- *
- * XREX_POLARITY_NORMALLY_HIGH -- pins read HIGH in good operation; a
- *                                 LOW reading (a falling edge from
- *                                 healthy) is a fault.
- * XREX_POLARITY_NORMALLY_LOW  -- pins read LOW in good operation; a
- *                                 HIGH reading is a fault.
  *
  * All four default to NORMALLY_HIGH, per direct confirmation --
  * *** DELIBERATELY THE OPPOSITE of the OLD GDS_FAULT_POLARITY value
@@ -370,13 +384,47 @@
  * remains a raw, polarity-agnostic HIGH/LOW readback either way -- see
  * gate_driver.h's own comment; XREX:CHANnel:STATus? (commands.c, new)
  * is the XR-labeled equivalent for these specific signals. */
-#define XREX_POLARITY_NORMALLY_HIGH   (0U)
-#define XREX_POLARITY_NORMALLY_LOW    (1U)
+#define XR_WATER_FLT_POLARITY     FAULT_POLARITY_NORMALLY_HIGH
+#define XR_TMP_FLT_POLARITY       FAULT_POLARITY_NORMALLY_HIGH
+#define XR_ENERPRO_FLT_POLARITY   FAULT_POLARITY_NORMALLY_HIGH
+#define XR_OCP_FLT_POLARITY       FAULT_POLARITY_NORMALLY_HIGH
 
-#define XR_WATER_FLT_POLARITY     XREX_POLARITY_NORMALLY_HIGH
-#define XR_TMP_FLT_POLARITY       XREX_POLARITY_NORMALLY_HIGH
-#define XR_ENERPRO_FLT_POLARITY   XREX_POLARITY_NORMALLY_HIGH
-#define XR_OCP_FLT_POLARITY       XREX_POLARITY_NORMALLY_HIGH
+/* --------------------------------------------------------------------------
+ * Emergency-stop (PG10) input polarity (compile-time)
+ *
+ * Added 2026-09-17; INVERTED same day, later, per direct instruction: a
+ * hardware inverter was added between the fiber-optic receiver and PG10
+ * itself, so the logic level this pin now presents is the OPPOSITE of
+ * what it was when this feature was first built (see state_machine.h's
+ * emergency-stop section for that original, now-superseded design).
+ *
+ * NORMALLY_LOW: with the inverter in place, "no input" -- an idle,
+ * non-tripped E-stop loop, and also PG10's own GPIO_PULLDOWN default
+ * when genuinely floating (main.c) -- now reads LOW, and that is
+ * defined as the GOOD/OK state, per direct instruction ("When PG10 has
+ * no input, we take that as 'good' and no E-stop is registered"). A
+ * HIGH reading is the fault (E-stop asserted).
+ *
+ * *** SAFETY NOTE, flagged directly rather than silently implemented:
+ * this REVERSES the original fail-safe assumption this feature was
+ * built under *** -- previously, an unconnected/floating PG10 (e.g. a
+ * broken fiber, or the inverter unpowered/unpopulated) read as FAULT
+ * (asserted), so a lost signal path defaulted to "stop." Under this
+ * new polarity, that same floating/no-signal condition reads as GOOD --
+ * a broken wire or an unpowered inverter would NOT be caught as a
+ * fault by this pin alone. This is a deliberate, explicit hardware/
+ * firmware co-decision (the inverter was added specifically to produce
+ * this behavior), not an oversight -- recorded here so it's never
+ * mistaken for one. GPIO_PULLDOWN (main.c) itself did NOT need to
+ * change to support this -- floating still reads LOW at the pin either
+ * way; only the MEANING assigned to that level, here, flipped.
+ *
+ * The PD1 diagnostic loopback (DIAGnostic:GPOut12, commands.c) used to
+ * test this feature is wired DIRECTLY to PG10 (bypassing the real
+ * inverter on the fiber path) -- so driving PD1 LOW during a test now
+ * simulates "OK," and driving it HIGH now simulates "asserted," the
+ * exact opposite of this feature's original test convention. */
+#define EMERGENCY_STOP_POLARITY   FAULT_POLARITY_NORMALLY_LOW
 
 /* --------------------------------------------------------------------------
  * PFM carrier frequency ceiling (compile-time, hard limit)

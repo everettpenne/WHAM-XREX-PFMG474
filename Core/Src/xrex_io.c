@@ -41,12 +41,12 @@ static const uint16_t kOcpPin[HRTIM_NUM_CHANNELS] =
 };
 
 /* Shared polarity-interpretation helper -- `bit` is a raw HIGH(1)/LOW(0)
-   level, `polarity` is one of ctrlr_config.h's XREX_POLARITY_NORMALLY_*
+   level, `polarity` is one of ctrlr_config.h's FAULT_POLARITY_NORMALLY_*
    constants. Returns 1 if this level represents a fault under that
    polarity. */
 static uint8_t BitIsFault(uint8_t bit, uint32_t polarity)
 {
-    return (polarity == XREX_POLARITY_NORMALLY_HIGH) ? (bit == 0U) : (bit != 0U);
+    return (polarity == FAULT_POLARITY_NORMALLY_HIGH) ? (bit == 0U) : (bit != 0U);
 }
 
 uint8_t XrexIo_EvaluateGateDriverFault(uint16_t raw12)
@@ -106,4 +106,109 @@ uint8_t XrexIo_GetChannelStatus(uint8_t channel, uint8_t *water, uint8_t *tmp,
     if (ocp != NULL)     { *ocp = (HAL_GPIO_ReadPin(GPIOF, kOcpPin[channel]) == GPIO_PIN_SET) ? 1U : 0U; }
 
     return 1U;
+}
+
+/* XRn_ENA_OUT/XRn_CONTACT_OUT (PG0-PG3/PG4-PG7) -- a REGULAR pattern
+   (base + channel_index), same as the Water/Temp/Enerpro bit bases
+   above, unlike XRn_OCP's irregular table -- verified programmatically
+   against docs/pin_mapping_v4.csv's "XREX Pin Name" column, 2026-09-17:
+     XR1_ENA_OUT=PG0(bit0)     XR2=PG1(bit1)  XR3=PG2(bit2)  XR4=PG3(bit3)
+     XR1_CONTACT_OUT=PG4(bit4) XR2=PG5(bit5)  XR3=PG6(bit6)  XR4=PG7(bit7)
+   `1U << (base + ch)` produces exactly the same numeric value as the
+   HAL's own GPIO_PIN_n constants for n = 0..7 (they're plain bit-shift
+   literals), so this doubles as the pin's own GPIO_PIN_x mask -- no
+   separate lookup table needed, matching the Water/Temp/Enerpro
+   approach over the OCP one. */
+#define XR_ENA_OUT_PIN_BASE       (0U)
+#define XR_CONTACT_OUT_PIN_BASE   (4U)
+
+void XrexIo_SetEnableOutput(uint8_t channel, uint8_t on)
+{
+    if (channel >= HRTIM_NUM_CHANNELS)
+    {
+        return;
+    }
+    HAL_GPIO_WritePin(GPIOG, (uint16_t)(1U << (XR_ENA_OUT_PIN_BASE + channel)),
+                       (on != 0U) ? GPIO_PIN_SET : GPIO_PIN_RESET);
+}
+
+uint8_t XrexIo_GetEnableOutput(uint8_t channel)
+{
+    if (channel >= HRTIM_NUM_CHANNELS)
+    {
+        return 0U;
+    }
+    return (HAL_GPIO_ReadPin(GPIOG, (uint16_t)(1U << (XR_ENA_OUT_PIN_BASE + channel))) == GPIO_PIN_SET) ? 1U : 0U;
+}
+
+void XrexIo_SetContactorOutput(uint8_t channel, uint8_t on)
+{
+    if (channel >= HRTIM_NUM_CHANNELS)
+    {
+        return;
+    }
+    HAL_GPIO_WritePin(GPIOG, (uint16_t)(1U << (XR_CONTACT_OUT_PIN_BASE + channel)),
+                       (on != 0U) ? GPIO_PIN_SET : GPIO_PIN_RESET);
+}
+
+uint8_t XrexIo_GetContactorOutput(uint8_t channel)
+{
+    if (channel >= HRTIM_NUM_CHANNELS)
+    {
+        return 0U;
+    }
+    return (HAL_GPIO_ReadPin(GPIOG, (uint16_t)(1U << (XR_CONTACT_OUT_PIN_BASE + channel))) == GPIO_PIN_SET) ? 1U : 0U;
+}
+
+/* Shared by XrexIo_EnableOutputsReadyToArm()/XrexIo_PollEnableOutputFaults()
+   below -- 1 if `channel`'s own ENA_OUT AND CONTACT_OUT are BOTH
+   currently HIGH, 0 otherwise. Treated as one combined per-channel
+   condition throughout this feature, not two independently-faultable
+   ones -- see state_machine.h's own enable-output section for why. */
+static uint8_t EnableOutputsOk(uint8_t channel)
+{
+    return (uint8_t)((XrexIo_GetEnableOutput(channel) != 0U) &&
+                      (XrexIo_GetContactorOutput(channel) != 0U));
+}
+
+uint8_t XrexIo_EnableOutputsReadyToArm(void)
+{
+    for (uint8_t ch = 0U; ch < HRTIM_NUM_CHANNELS; ch++)
+    {
+        if (PID_GetChannelEnable(ch) == 0U)
+        {
+            continue;   /* gated -- see this file's own header comment */
+        }
+        if (EnableOutputsOk(ch) == 0U)
+        {
+            return 0U;
+        }
+    }
+    return 1U;
+}
+
+void XrexIo_PollEnableOutputFaults(void)
+{
+    /* Per direct instruction, this precondition is only meaningful once
+       actually armed -- unlike Water/Temp/Enerpro/OCP's always-on
+       checking, nothing here runs at all while IDLE (or FAULT, though
+       SM_ReportEnableOutputFault() itself also short-circuits that
+       case defensively). */
+    SM_State_t state = SM_GetState();
+    if ((state != SM_STATE_ARMED) && (state != SM_STATE_FIRING))
+    {
+        return;
+    }
+
+    for (uint8_t ch = 0U; ch < HRTIM_NUM_CHANNELS; ch++)
+    {
+        if (PID_GetChannelEnable(ch) == 0U)
+        {
+            continue;   /* gated -- see this file's own header comment */
+        }
+        if (EnableOutputsOk(ch) == 0U)
+        {
+            SM_ReportEnableOutputFault(ch);
+        }
+    }
 }

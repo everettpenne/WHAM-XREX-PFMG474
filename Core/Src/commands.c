@@ -516,6 +516,19 @@ void cmd_state_query(uart_instance_t *inst, char *args)
                state_machine.h's own emergency-stop section). */
             snprintf(buf, sizeof(buf), "OK %s EMERGENCY_STOP\r\n", name);
         }
+        else if (SM_GetFaultType() == SM_FAULT_ENABLE_OUTPUT)
+        {
+            /* Added 2026-09-17 -- PER-CHANNEL, like OVERCURRENT (whose
+               exact response it reuses) -- distinct from GENERAL/
+               EXTERNAL_ENABLE purely for operator diagnostics. Do not
+               confuse with EXTERNAL_ENABLE: that's a single, system-wide
+               INPUT interlock (PF13); this is a per-channel check of
+               this firmware's OWN commanded ENA_OUT/CONTACT_OUT output
+               state -- see state_machine.h's own SM_FAULT_ENABLE_OUTPUT
+               header comment. */
+            snprintf(buf, sizeof(buf), "OK %s ENABLE_OUTPUT %u\r\n",
+                      name, (unsigned)(SM_GetFaultChannel() + 1U));
+        }
         else
         {
             snprintf(buf, sizeof(buf), "OK %s GENERAL\r\n", name);
@@ -531,13 +544,16 @@ void cmd_state_query(uart_instance_t *inst, char *args)
 /* --------------------------------------------------------------------------
  * EXTernal:ENAble <0|1> / EXTernal:ENAble? / EXTernal:INPut?
  *
- * Added 2026-09-16, per direct request. See state_machine.h's own
- * external-enable section (SM_SetExternalEnableRequired() and friends) for
- * the full design -- this is just the wire-command wrapper around
- * that. Own top-level `EXTernal:` namespace (not nested under `PID:`
- * or any other existing prefix) -- system-wide config, not specific to
- * any one subsystem, same reasoning as `ARM`/`DISARM` above being bare;
- * two ':'-levels here (rather than one compound word) purely so
+ * Added 2026-09-16, per direct request. Backing pin MOVED 2026-09-17
+ * from PF15 to PF13, per direct instruction: enable and trigger are now
+ * independent physical signals on separate pins, not one shared wire --
+ * see EXTernal:TRIGger below and state_machine.h's own external-enable
+ * section (SM_SetExternalEnableRequired() and friends) for the full
+ * design. This is just the wire-command wrapper around that. Own
+ * top-level `EXTernal:` namespace (not nested under `PID:` or any other
+ * existing prefix) -- system-wide config, not specific to any one
+ * subsystem, same reasoning as `ARM`/`DISARM` above being bare; two
+ * ':'-levels here (rather than one compound word) purely so
  * "ENAble"/"INPut" each get their own independent short-form
  * abbreviation -- see cmd_parser.c's own comment on this command's
  * table entry for why. */
@@ -567,11 +583,12 @@ void cmd_ext_enable_query(uart_instance_t *inst, char *args)
     uart_send(inst, buf);
 }
 
-/* Raw PF15 logic level, independent of whether the interlock is even
+/* Raw PF13 logic level, independent of whether the interlock is even
    turned on -- lets an operator confirm real wiring/signal presence
    before relying on it, same diagnostic role PFMIN:DEBUG:RAW?/REG?
    played for the PFM_Input fiber-patching investigation
-   (docs/changelog.txt, 2026-09-15). */
+   (docs/changelog.txt, 2026-09-15). MOVED 2026-09-17 from PF15 to
+   PF13, same change as cmd_ext_enable() above. */
 void cmd_ext_enable_input_query(uart_instance_t *inst, char *args)
 {
     char buf[16];
@@ -582,15 +599,20 @@ void cmd_ext_enable_input_query(uart_instance_t *inst, char *args)
 }
 
 /* --------------------------------------------------------------------------
- * EXTernal:TRIGger <0|1> / EXTernal:TRIGger?
+ * EXTernal:TRIGger <0|1> / EXTernal:TRIGger? / EXTernal:TRIGger:INPut?
  *
- * Added 2026-09-16, per direct follow-up request. See state_machine.h's
- * own external-trigger design comment (SM_SetExternalTriggerRequired()
- * and friends) for the full design -- this is just the wire-command
- * wrapper. Reuses PF15, the SAME pin EXTernal:ENAble above already
- * uses -- structurally depends on that interlock being on first (see
- * SM_SetExternalTriggerRequired()'s own comment for why); ERR 16
- * (new) is what that refusal looks like on the wire. */
+ * Added 2026-09-16, per direct follow-up request. RESTRUCTURED
+ * 2026-09-17: this pin (PF15, "Fiber_Enable") now backs TRIGGER ONLY --
+ * the external-enable interlock moved to its own pin (PF13, above).
+ * See state_machine.h's own external-trigger design comment
+ * (SM_SetExternalTriggerRequired() and friends) for the full design --
+ * this is just the wire-command wrapper. No longer structurally
+ * coupled to EXTernal:ENAble (that dependency existed only because both
+ * features read the same wire, back when this was PF15-for-both) --
+ * SM_SetExternalTriggerRequired() always succeeds now, so the ERR 16
+ * refusal path below is gone. ERR 16 itself is retired, not reassigned
+ * -- this project's convention is error codes are never renumbered or
+ * reused once assigned (see docs/command_reference.md). */
 void cmd_ext_trigger(uart_instance_t *inst, char *args)
 {
     char *tok;
@@ -604,11 +626,7 @@ void cmd_ext_trigger(uart_instance_t *inst, char *args)
     }
     val = atol(tok);
 
-    if (SM_SetExternalTriggerRequired((val != 0L) ? 1U : 0U) == 0U)
-    {
-        SendErr(inst, 16, "EXTernal:ENAble must be on before EXTernal:TRIGger can be turned on");
-        return;
-    }
+    (void)SM_SetExternalTriggerRequired((val != 0L) ? 1U : 0U);
     uart_send(inst, "OK\r\n");
 }
 
@@ -621,13 +639,28 @@ void cmd_ext_trigger_query(uart_instance_t *inst, char *args)
     uart_send(inst, buf);
 }
 
+/* Raw PF15 logic level, independent of whether the trigger feature is
+   even turned on -- added 2026-09-17 alongside the PF13/PF15 split;
+   previously EXTernal:INPut? covered this same pin (it backed both
+   enable and trigger, being the same wire) -- now that they're
+   separate, this is trigger's own dedicated diagnostic, matching
+   cmd_ext_enable_input_query()'s role for PF13. */
+void cmd_ext_trigger_input_query(uart_instance_t *inst, char *args)
+{
+    char buf[16];
+    (void)args;
+
+    snprintf(buf, sizeof(buf), "OK %u\r\n", (unsigned)SM_GetExternalTriggerInputRaw());
+    uart_send(inst, buf);
+}
+
 /* --------------------------------------------------------------------------
  * EMERGency:ENAble <0|1> / EMERGency:ENAble? / EMERGency:INPut?
  *
  * Added 2026-09-17, per direct request. See state_machine.h's own
  * emergency-stop design comment (SM_SetEmergencyStopRequired() and
  * friends) for the full design -- this is just the wire-command
- * wrapper. PG10, NOT the same pin as EXTernal:ENAble above (PF15) --
+ * wrapper. PG10, NOT the same pin as EXTernal:ENAble above (PF13) --
  * a completely separate fiber-optic input. Own top-level `EMERGency:`
  * namespace, same reasoning as `EXTernal:` -- system-wide config, not
  * nested under `PID:` or any other existing prefix. */
@@ -660,7 +693,7 @@ void cmd_emerg_enable_query(uart_instance_t *inst, char *args)
 /* Raw PG10 logic level, independent of whether the feature is even
    turned on -- lets an operator confirm real wiring/signal presence
    before relying on it, same diagnostic role EXTernal:INPut? plays for
-   PF15. */
+   PF13. */
 void cmd_emerg_input_query(uart_instance_t *inst, char *args)
 {
     char buf[16];
@@ -684,12 +717,16 @@ void cmd_emerg_input_query(uart_instance_t *inst, char *args)
  * module for this one, it's a two-line direct HAL_GPIO_WritePin()/
  * ReadPin() pair, not enough behavior to justify one.
  *
- * Immediate use: physically loop this pin to PF15 (Fiber_Enable) so
- * the external-enable/external-trigger feature above can be driven
- * entirely from the serial console -- precise, repeatable timing on
- * exactly when PF15 goes HIGH/LOW, instead of a hand-operated bench
- * jumper/switch. Nothing about this command is PF15-specific, though
- * -- it's a plain level output, reusable for any future diagnostic
+ * Immediate use, 2026-09-16: physically loop this pin to PF15
+ * (Fiber_Enable) so the external-enable/external-trigger feature above
+ * could be driven entirely from the serial console -- precise,
+ * repeatable timing on exactly when PF15 goes HIGH/LOW, instead of a
+ * hand-operated bench jumper/switch. (2026-09-17 UPDATE: PF15 now
+ * backs external-TRIGGER only -- enable moved to its own pin, PF13 --
+ * so this same loop now drives trigger specifically; nothing about
+ * this command itself changed.) Nothing about this command is PF15-
+ * specific, though -- it's a plain level output, reusable for any future
+ * diagnostic
  * that needs one. */
 void cmd_diag_gpout12(uart_instance_t *inst, char *args)
 {
@@ -715,6 +752,48 @@ void cmd_diag_gpout12_query(uart_instance_t *inst, char *args)
 
     snprintf(buf, sizeof(buf), "OK %u\r\n",
              (unsigned)(HAL_GPIO_ReadPin(GPIOD, GPIO_PIN_1) == GPIO_PIN_SET ? 1U : 0U));
+    uart_send(inst, buf);
+}
+
+/* --------------------------------------------------------------------------
+ * DIAGnostic:GPOut11 <0|1> / DIAGnostic:GPOut11?
+ *
+ * Added 2026-09-17 -- a SECOND, independent diagnostic output, on PD0
+ * ("GPOut_11" in the V4 column, docs/pin_mapping_v4.csv). Direct
+ * correction: PD1/DIAGnostic:GPOut12 above was initially reused for
+ * testing the PG10 emergency-stop feature too, but PD1 is already the
+ * pin dedicated to driving PF15 (external-trigger as of later the same
+ * day -- external-enable at the time this was written) -- the user
+ * caught this and asked for a genuinely separate pin for PG10 testing,
+ * to remove any ambiguity about which diagnostic signal drives which real
+ * input. Otherwise an exact mirror of cmd_diag_gpout12()/
+ * cmd_diag_gpout12_query() above -- see that pair's own doc comment
+ * for the shared reasoning (generic level output, GPIO config in
+ * main.c, no dedicated module). */
+void cmd_diag_gpout11(uart_instance_t *inst, char *args)
+{
+    char *tok;
+    long  val;
+
+    tok = (args != NULL) ? strtok(args, " \r\n") : NULL;
+    if (tok == NULL)
+    {
+        SendErr(inst, 12, "DIAGnostic:GPOut11 needs one argument: 0|1");
+        return;
+    }
+    val = atol(tok);
+
+    HAL_GPIO_WritePin(GPIOD, GPIO_PIN_0, (val != 0L) ? GPIO_PIN_SET : GPIO_PIN_RESET);
+    uart_send(inst, "OK\r\n");
+}
+
+void cmd_diag_gpout11_query(uart_instance_t *inst, char *args)
+{
+    char buf[16];
+    (void)args;
+
+    snprintf(buf, sizeof(buf), "OK %u\r\n",
+             (unsigned)(HAL_GPIO_ReadPin(GPIOD, GPIO_PIN_0) == GPIO_PIN_SET ? 1U : 0U));
     uart_send(inst, buf);
 }
 
@@ -761,6 +840,69 @@ void cmd_diag_optbytes_query(uart_instance_t *inst, char *args)
              (unsigned)((optr & FLASH_OPTR_nSWBOOT0) != 0U),
              (unsigned)((optr & FLASH_OPTR_nBOOT1) != 0U));
     uart_send(inst, buf);
+}
+
+/* --------------------------------------------------------------------------
+ * DIAGnostic:RSTCause? / DIAGnostic:RSTCause:CLEar
+ *
+ * TEMPORARY diagnostic, added 2026-09-17 -- direct request: while
+ * testing the new PD0->fiber TX->fiber->inverting RX->PG10 loop for the
+ * emergency-stop feature, DIAGnostic:GPOut11 1 (PD0 HIGH) consistently
+ * returned a single garbled 0x00 byte instead of "OK\r\n", and the pin
+ * never actually reached HIGH on a follow-up query -- while the
+ * unrelated DIAGnostic:GPOut12 (PD1, no fiber transmitter behind it)
+ * kept working perfectly the whole time. User asked whether this could
+ * be (a) some PG10-specific NRST-adjacent silicon behavior, or (b)
+ * power-rail droop from the fiber TRANSMITTER's own LED current
+ * actually resetting the MCU -- rather than guess, this reads the
+ * REAL RCC->CSR reset-cause flags (stm32g474xx.h's own bit
+ * definitions -- RCC_CSR_BORRSTF/PINRSTF/SFTRSTF/IWDGRSTF/WWDGRSTF/
+ * LPWRRSTF/OBLRSTF, not guessed), which is the one thing that can
+ * actually distinguish "a real reset happened, and here's why" from
+ * "no reset at all, something else garbled the UART byte." Nothing
+ * else in this codebase clears these flags (confirmed by grep before
+ * adding this), so whatever the reset cause was persists until
+ * explicitly cleared here -- no special early-boot capture needed.
+ *
+ * On pure silicon-fact grounds (separately answered, not guessed): NRST
+ * is ALWAYS a dedicated, non-GPIO pin on every STM32 (confirmed via
+ * this project's own device header -- RCC_CSR_PINRSTF is the ONLY flag
+ * tied to that pin, and no flag here is tied to any GPIO port at all),
+ * so PG10 cannot itself BE or trigger the chip's own NRST function at
+ * the silicon level. If PINRSTF is what shows up after reproducing the
+ * glitch, that would mean something is asserting the REAL NRST net
+ * (a board-level path, not a PG10-is-secretly-NRST one); if BORRSTF
+ * shows up instead, that directly confirms the power-rail-droop
+ * hypothesis. Remove once the GPOut11/PG10 diagnostic investigation is
+ * settled. */
+void cmd_diag_rstcause_query(uart_instance_t *inst, char *args)
+{
+    char buf[160];
+    int  len = 0;
+    (void)args;
+
+    uint32_t csr = RCC->CSR;
+
+    len += snprintf(&buf[len], sizeof(buf) - (size_t)len, "OK CSR=%08lX", (unsigned long)csr);
+    len += snprintf(&buf[len], sizeof(buf) - (size_t)len, " BOR=%u",   (unsigned)((csr & RCC_CSR_BORRSTF)   != 0U));
+    len += snprintf(&buf[len], sizeof(buf) - (size_t)len, " PIN=%u",   (unsigned)((csr & RCC_CSR_PINRSTF)   != 0U));
+    len += snprintf(&buf[len], sizeof(buf) - (size_t)len, " SFT=%u",   (unsigned)((csr & RCC_CSR_SFTRSTF)   != 0U));
+    len += snprintf(&buf[len], sizeof(buf) - (size_t)len, " IWDG=%u",  (unsigned)((csr & RCC_CSR_IWDGRSTF)  != 0U));
+    len += snprintf(&buf[len], sizeof(buf) - (size_t)len, " WWDG=%u",  (unsigned)((csr & RCC_CSR_WWDGRSTF)  != 0U));
+    len += snprintf(&buf[len], sizeof(buf) - (size_t)len, " LPWR=%u",  (unsigned)((csr & RCC_CSR_LPWRRSTF)  != 0U));
+    len += snprintf(&buf[len], sizeof(buf) - (size_t)len, " OBL=%u",   (unsigned)((csr & RCC_CSR_OBLRSTF)   != 0U));
+    snprintf(&buf[len], sizeof(buf) - (size_t)len, "\r\n");
+
+    uart_send(inst, buf);
+}
+
+void cmd_diag_rstcause_clear(uart_instance_t *inst, char *args)
+{
+    (void)args;
+    RCC->CSR |= RCC_CSR_RMVF;   /* self-clearing bit -- resets every *RSTF
+                                    flag above to 0, per the reference
+                                    manual */
+    uart_send(inst, "OK\r\n");
 }
 
 /* --------------------------------------------------------------------------
@@ -919,6 +1061,213 @@ void cmd_xrex_channel_status(uart_instance_t *inst, char *args)
     snprintf(buf, sizeof(buf), "OK WATER=%s TMP=%s ENERPRO=%s OCP=%s\r\n",
              water ? "HIGH" : "LOW", tmp ? "HIGH" : "LOW",
              enerpro ? "HIGH" : "LOW", ocp ? "HIGH" : "LOW");
+    uart_send(inst, buf);
+}
+
+/* --------------------------------------------------------------------------
+ * XREX:CHANnel:ENAOut <ch> <0|1> / XREX:CHANnel:ENAOut? <ch>
+ * XREX:CHANnel:CONTactOut <ch> <0|1> / XREX:CHANnel:CONTactOut? <ch>
+ *
+ * Added 2026-09-17, per direct request: "Enable and contactor fiber
+ * outputs need to be set by a serial command, one for each supply."
+ * Real per-channel outputs (PG0-PG3/PG4-PG7, docs/pin_mapping_v4.csv's
+ * "XREX Pin Name" column) this firmware itself drives -- owned (pin
+ * table, GPIO read/write) by xrex_io.c, matching that module's
+ * established per-channel-XR-signal charter. See state_machine.h's own
+ * SM_FAULT_ENABLE_OUTPUT/enable-output sections for what reads these:
+ * `ARM` refuses unless every currently-enabled channel's own
+ * ENA_OUT+CONTACT_OUT are BOTH already HIGH ("The controller cannot be
+ * armed unless these are outputting prior to the arm signal"), and this
+ * is continuously re-checked once ARMED -- asked directly and
+ * confirmed, not assumed.
+ *
+ * 1-based channel argument, matching this project's universal wire
+ * convention -- reuses ERR 11 (invalid channel)/ERR 12 (missing/invalid
+ * argument), same as every other numbered-channel command; no new
+ * error codes needed for this whole feature. Takes effect immediately;
+ * an operator may set/clear either output at any time, including
+ * mid-shot -- the continuous poll (XrexIo_PollEnableOutputFaults(),
+ * xrex_io.c) is what reacts if that turns out to matter for a
+ * currently-enabled channel. */
+void cmd_xrex_ena_out(uart_instance_t *inst, char *args)
+{
+    char *tok;
+    long  chArg;
+    long  val;
+
+    tok = (args != NULL) ? strtok(args, " \r\n") : NULL;
+    if (tok == NULL)
+    {
+        SendErr(inst, 12, "XREX:CHANnel:ENAOut needs two arguments: channel, 0|1");
+        return;
+    }
+    chArg = atol(tok);
+    if ((chArg < 1L) || (chArg > (long)HRTIM_NUM_CHANNELS))
+    {
+        SendErr(inst, 11, "Invalid PID channel");
+        return;
+    }
+
+    tok = strtok(NULL, " \r\n");
+    if (tok == NULL)
+    {
+        SendErr(inst, 12, "XREX:CHANnel:ENAOut needs two arguments: channel, 0|1");
+        return;
+    }
+    val = atol(tok);
+
+    XrexIo_SetEnableOutput((uint8_t)(chArg - 1L), (val != 0L) ? 1U : 0U);
+    uart_send(inst, "OK\r\n");
+}
+
+void cmd_xrex_ena_out_query(uart_instance_t *inst, char *args)
+{
+    char *tok;
+    long  chArg;
+    char  buf[16];
+
+    tok = (args != NULL) ? strtok(args, " \r\n") : NULL;
+    if (tok == NULL)
+    {
+        SendErr(inst, 12, "XREX:CHANnel:ENAOut? needs one argument: channel");
+        return;
+    }
+    chArg = atol(tok);
+    if ((chArg < 1L) || (chArg > (long)HRTIM_NUM_CHANNELS))
+    {
+        SendErr(inst, 11, "Invalid PID channel");
+        return;
+    }
+
+    snprintf(buf, sizeof(buf), "OK %u\r\n", (unsigned)XrexIo_GetEnableOutput((uint8_t)(chArg - 1L)));
+    uart_send(inst, buf);
+}
+
+void cmd_xrex_contact_out(uart_instance_t *inst, char *args)
+{
+    char *tok;
+    long  chArg;
+    long  val;
+
+    tok = (args != NULL) ? strtok(args, " \r\n") : NULL;
+    if (tok == NULL)
+    {
+        SendErr(inst, 12, "XREX:CHANnel:CONTactOut needs two arguments: channel, 0|1");
+        return;
+    }
+    chArg = atol(tok);
+    if ((chArg < 1L) || (chArg > (long)HRTIM_NUM_CHANNELS))
+    {
+        SendErr(inst, 11, "Invalid PID channel");
+        return;
+    }
+
+    tok = strtok(NULL, " \r\n");
+    if (tok == NULL)
+    {
+        SendErr(inst, 12, "XREX:CHANnel:CONTactOut needs two arguments: channel, 0|1");
+        return;
+    }
+    val = atol(tok);
+
+    XrexIo_SetContactorOutput((uint8_t)(chArg - 1L), (val != 0L) ? 1U : 0U);
+    uart_send(inst, "OK\r\n");
+}
+
+void cmd_xrex_contact_out_query(uart_instance_t *inst, char *args)
+{
+    char *tok;
+    long  chArg;
+    char  buf[16];
+
+    tok = (args != NULL) ? strtok(args, " \r\n") : NULL;
+    if (tok == NULL)
+    {
+        SendErr(inst, 12, "XREX:CHANnel:CONTactOut? needs one argument: channel");
+        return;
+    }
+    chArg = atol(tok);
+    if ((chArg < 1L) || (chArg > (long)HRTIM_NUM_CHANNELS))
+    {
+        SendErr(inst, 11, "Invalid PID channel");
+        return;
+    }
+
+    snprintf(buf, sizeof(buf), "OK %u\r\n", (unsigned)XrexIo_GetContactorOutput((uint8_t)(chArg - 1L)));
+    uart_send(inst, buf);
+}
+
+/* --------------------------------------------------------------------------
+ * GPOut:ENAble <0|1> / GPOut:ENAble?
+ *
+ * Added 2026-09-17, per direct request: PC13 ("GPOut_Enable_Pin" in
+ * the V4 column, docs/pin_mapping_v4.csv -- confirmed GPO there),
+ * default HIGH at boot (main.c's MX_GPIO_Init()), with a serial command
+ * to set it either level. A plain, direct HAL_GPIO_WritePin()/
+ * ReadPin() pair -- no dedicated module, matching the same "not enough
+ * behavior to justify one" precedent DIAGnostic:GPOut11/GPOut12 already
+ * established -- own top-level `GPOut:` namespace (not nested under
+ * `DIAGnostic:`) since this is a real, specifically-named board signal
+ * from the schematic, not a generic scratch diagnostic pin. */
+void cmd_gpout_enable(uart_instance_t *inst, char *args)
+{
+    char *tok;
+    long  val;
+
+    tok = (args != NULL) ? strtok(args, " \r\n") : NULL;
+    if (tok == NULL)
+    {
+        SendErr(inst, 12, "GPOut:ENAble needs one argument: 0|1");
+        return;
+    }
+    val = atol(tok);
+
+    HAL_GPIO_WritePin(GPIOC, GPIO_PIN_13, (val != 0L) ? GPIO_PIN_SET : GPIO_PIN_RESET);
+    uart_send(inst, "OK\r\n");
+}
+
+void cmd_gpout_enable_query(uart_instance_t *inst, char *args)
+{
+    char buf[16];
+    (void)args;
+
+    snprintf(buf, sizeof(buf), "OK %u\r\n",
+             (unsigned)(HAL_GPIO_ReadPin(GPIOC, GPIO_PIN_13) == GPIO_PIN_SET ? 1U : 0U));
+    uart_send(inst, buf);
+}
+
+/* --------------------------------------------------------------------------
+ * PWMAlt:ENAble <0|1> / PWMAlt:ENAble?
+ *
+ * Added 2026-09-17, per direct request: PC15 ("PWM_Alt_Enable" in the
+ * V4 column, docs/pin_mapping_v4.csv -- confirmed GPO there), default
+ * HIGH at boot, with a serial command to set it either level -- exact
+ * mirror of GPOut:ENAble above in every respect, see that pair's own
+ * doc comment for the shared reasoning. */
+void cmd_pwmalt_enable(uart_instance_t *inst, char *args)
+{
+    char *tok;
+    long  val;
+
+    tok = (args != NULL) ? strtok(args, " \r\n") : NULL;
+    if (tok == NULL)
+    {
+        SendErr(inst, 12, "PWMAlt:ENAble needs one argument: 0|1");
+        return;
+    }
+    val = atol(tok);
+
+    HAL_GPIO_WritePin(GPIOC, GPIO_PIN_15, (val != 0L) ? GPIO_PIN_SET : GPIO_PIN_RESET);
+    uart_send(inst, "OK\r\n");
+}
+
+void cmd_pwmalt_enable_query(uart_instance_t *inst, char *args)
+{
+    char buf[16];
+    (void)args;
+
+    snprintf(buf, sizeof(buf), "OK %u\r\n",
+             (unsigned)(HAL_GPIO_ReadPin(GPIOC, GPIO_PIN_15) == GPIO_PIN_SET ? 1U : 0U));
     uart_send(inst, buf);
 }
 
@@ -1982,7 +2331,7 @@ void cmd_pid_profile_start(uart_instance_t *inst, char *args)
 
     if (SM_ExternalEnableOk() == 0U)
     {
-        SendErr(inst, 15, "External enable interlock not satisfied -- PF15 reads LOW");
+        SendErr(inst, 15, "External enable interlock not satisfied -- PF13 reads LOW");
         return;
     }
 

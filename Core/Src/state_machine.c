@@ -11,19 +11,30 @@
 #include "gate_driver.h"
 #include "pfm.h"
 #include "main.h"
+#include "xrex_io.h"
 
 static SM_State_t     g_state         = SM_STATE_IDLE;
 static SM_FaultType_t g_faultType     = SM_FAULT_NONE;
 
-/* External-enable interlock (PF15, "Fiber_Enable") -- see this file's
-   own header comment for the full design. OFF by default -- existing
-   shots/tests are unaffected unless explicitly turned on. */
+/* External-enable interlock -- PF13, MOVED here 2026-09-17 from PF15
+   (Fiber_Enable), per direct instruction: enable and trigger are now
+   two independent physical signals on separate pins, not one shared
+   wire. See this file's own header comment for the full design. OFF by
+   default -- existing shots/tests are unaffected unless explicitly
+   turned on. */
 static uint8_t g_externalEnableRequired = 0U;
 
 /* External trigger (rising edge on PF15 fires a shot while ARMED) --
    see this file's own header comment for the full design. OFF by
-   default; also forced off whenever g_externalEnableRequired goes to 0
-   (SM_SetExternalEnableRequired(), below). */
+   default. UNCOUPLED from g_externalEnableRequired 2026-09-17, the
+   same day enable moved to PF13 -- previously turning enable off also
+   forced this off (SM_SetExternalEnableRequired()'s old comment), a
+   rule that existed only because both features read the SAME physical
+   wire; now that they're on separate pins, per direct instruction, the
+   two config flags are fully independent. The real safety guarantee is
+   unaffected either way: SM_Fire() itself (below) still unconditionally
+   re-checks SM_ExternalEnableOk() before ever actually firing,
+   regardless of how or when trigger was turned on. */
 static uint8_t g_externalTriggerRequired = 0U;
 
 /* Baseline PF15 level for edge detection, meaningful only while
@@ -32,13 +43,32 @@ static uint8_t g_externalTriggerRequired = 0U;
    current by SM_PollFaults() on every call while still ARMED. See the
    external-trigger design comment (state_machine.h) for why a fresh
    capture at arm-time (not a stale value from a previous cycle)
-   matters. */
-static uint8_t g_lastExternalEnableLevelWhileArmed = 0U;
+   matters. RENAMED (not just re-read) 2026-09-17 from
+   g_lastExternalEnableLevelWhileArmed -- this was always tracking
+   whichever physical pin trigger's edge detection reads, which just
+   happened to be the same pin the enable interlock also used before
+   today; now that enable and trigger are genuinely different pins,
+   the old name would actively mislead (it would sound like it tracks
+   PF13, the new enable pin, when it has always meant -- and still
+   means -- the trigger pin specifically). */
+static uint8_t g_lastExternalTriggerLevelWhileArmed = 0U;
 
 /* GPIO_PULLDOWN in main.c's MX_GPIO_Init() means an unconnected/
-   floating PF15 reads LOW here -- the deliberate fail-safe default,
-   see this file's header comment. */
+   floating PF13 reads LOW here -- the deliberate fail-safe default,
+   see this file's header comment. MOVED from PF15 2026-09-17, same
+   change as the static above. */
 static uint8_t ExternalEnableInputIsHigh(void)
+{
+    return (HAL_GPIO_ReadPin(GPIOF, GPIO_PIN_13) == GPIO_PIN_SET) ? 1U : 0U;
+}
+
+/* PF15 (Fiber_Enable) -- trigger-only as of 2026-09-17 (previously this
+   pin backed BOTH ExternalEnableInputIsHigh() above and this function,
+   since enable and trigger were the same wire). GPIO_PULLDOWN in
+   main.c means an unconnected/floating PF15 reads LOW -- no spurious
+   rising edge from a disconnected trigger wire (see main.c's own
+   comment on this pin for the fuller reasoning). */
+static uint8_t ExternalTriggerInputIsHigh(void)
 {
     return (HAL_GPIO_ReadPin(GPIOF, GPIO_PIN_15) == GPIO_PIN_SET) ? 1U : 0U;
 }
@@ -48,13 +78,37 @@ static uint8_t ExternalEnableInputIsHigh(void)
    "acts as though it does not exist" when off, per direct instruction. */
 static uint8_t g_emergencyStopRequired = 0U;
 
-/* GPIO_PULLDOWN in main.c's MX_GPIO_Init() means an unconnected/
-   floating PG10 reads LOW here -- i.e. E-stop ASSERTED by default,
-   the deliberate fail-safe choice for a stop function (see this file's
-   header comment). */
+/* Pure raw read -- 1 if PG10 is electrically HIGH right now, 0 if LOW.
+   Deliberately polarity-agnostic (matches ExternalEnableInputIsHigh()'s
+   own convention just above, and SM_GetEmergencyStopInputRaw()'s own
+   doc comment in state_machine.h) -- what this LEVEL actually means
+   ("asserted" vs "OK") is EMERGENCY_STOP_POLARITY's job
+   (ctrlr_config.h), applied by EmergencyStopAsserted() below, not this
+   function. GPIO_PULLDOWN in main.c's MX_GPIO_Init() means an
+   unconnected/floating PG10 reads LOW here. */
 static uint8_t EmergencyStopInputIsHigh(void)
 {
     return (HAL_GPIO_ReadPin(GPIOG, GPIO_PIN_10) == GPIO_PIN_SET) ? 1U : 0U;
+}
+
+/* Applies EMERGENCY_STOP_POLARITY (ctrlr_config.h) to the raw PG10
+   level -- 1 if this represents the E-stop being ASSERTED right now,
+   0 if OK. INVERTED 2026-09-17, later the same day it was first added:
+   a hardware inverter was placed between the fiber-optic receiver and
+   PG10, so EMERGENCY_STOP_POLARITY now defaults NORMALLY_LOW ("no
+   input" -- including a genuinely floating pin -- reads as OK, a HIGH
+   reading is the fault), the OPPOSITE of this feature's original
+   NORMALLY_HIGH assumption. See ctrlr_config.h's own extensive comment
+   on EMERGENCY_STOP_POLARITY for the full reasoning and the safety
+   trade-off this reversal carries. Same one-line shape as xrex_io.c's
+   own BitIsFault() helper -- not shared/reused across modules (this
+   file has no xrex_io.h dependency), matching this file's own existing
+   per-concern-local-helper style (ExternalEnableInputIsHigh(),
+   EmergencyStopInputIsHigh(), just above). */
+static uint8_t EmergencyStopAsserted(void)
+{
+    uint8_t bit = EmergencyStopInputIsHigh();
+    return (EMERGENCY_STOP_POLARITY == FAULT_POLARITY_NORMALLY_HIGH) ? (bit == 0U) : (bit != 0U);
 }
 
 /* Meaningful only when g_faultType == SM_FAULT_OVERCURRENT -- see
@@ -174,6 +228,16 @@ static uint8_t ArmConditionsMet(void)
     {
         return 0U;
     }
+    /* Enable/contactor output precondition, added 2026-09-17 -- per
+       direct instruction, every currently-enabled channel's own
+       ENA_OUT/CONTACT_OUT must both be commanded ON before ARM
+       succeeds. Pure check, no side effects, gated per-channel inside
+       XrexIo_EnableOutputsReadyToArm() itself -- see state_machine.h's
+       own enable-output section for the full design. */
+    if (XrexIo_EnableOutputsReadyToArm() == 0U)
+    {
+        return 0U;
+    }
     return 1U;   /* TODO (2026-09-13): populate the rest. */
 }
 
@@ -234,6 +298,18 @@ static void EnterFault(SM_FaultType_t type, uint8_t channel)
     switch (type)
     {
         case SM_FAULT_OVERCURRENT:
+        case SM_FAULT_ENABLE_OUTPUT:   /* identical response to OVERCURRENT
+                                            (immediate hard-disable of THIS
+                                            channel, survivors derated 1/N
+                                            and ramped) -- see
+                                            state_machine.h's own
+                                            SM_FAULT_ENABLE_OUTPUT header
+                                            comment for why; only the
+                                            reported TYPE differs, same
+                                            "distinct type, shared
+                                            response" pattern
+                                            SM_FAULT_EXTERNAL_ENABLE uses
+                                            for HandleGeneralFault() below */
             HandleOvercurrentFault(channel);
             break;
         case SM_FAULT_EMERGENCY_STOP:   /* deliberately its OWN handler, NOT
@@ -296,8 +372,11 @@ uint8_t SM_Arm(void)
        turned on later while already ARMED) -- see the external-trigger
        design comment (state_machine.h) for why arm-time capture
        matters: a signal already HIGH at the moment of arming must NOT
-       look like a rising edge on the next poll. */
-    g_lastExternalEnableLevelWhileArmed = ExternalEnableInputIsHigh();
+       look like a rising edge on the next poll. Reads PF15 via
+       ExternalTriggerInputIsHigh() -- MOVED 2026-09-17 off
+       ExternalEnableInputIsHigh() (now PF13) now that trigger and
+       enable are separate pins. */
+    g_lastExternalTriggerLevelWhileArmed = ExternalTriggerInputIsHigh();
 
     return 1U;
 }
@@ -320,9 +399,11 @@ uint8_t SM_Fire(void)
     /* Redundant last-line-of-defense re-check, 2026-09-16 -- the
        command layer (cmd_pid_profile_start(), commands.c) already
        checks SM_ExternalEnableOk() itself first, for a precise error
-       message; this catches PF15 dropping in the narrow window between
-       that check and this call, or any future caller that reaches
-       SM_Fire() directly without going through that command handler.
+       message; this catches PF13 (the enable pin, MOVED here 2026-09-17
+       from PF15) dropping in the narrow window between that check and
+       this call, or any future caller that reaches SM_Fire() directly
+       without going through that command handler -- including the
+       external-trigger feature's own direct SM_Fire() call, below.
        Returns the same generic 0 as the PID_ProfileStart() failure
        below -- the command layer's own upfront check is what's
        responsible for distinguishing the two reasons for an operator,
@@ -417,45 +498,54 @@ void SM_PollFaults(void)
        Per direct instruction ("acts as though it does not exist" when
        off), the PG10 read itself is gated behind
        g_emergencyStopRequired first -- genuinely zero work, not just a
-       zero-effect check, when the feature is off. */
-    else if ((g_emergencyStopRequired != 0U) && (EmergencyStopInputIsHigh() == 0U))
+       zero-effect check, when the feature is off. Uses
+       EmergencyStopAsserted() (EMERGENCY_STOP_POLARITY-aware), not a
+       raw HIGH/LOW comparison -- see that helper's own comment for the
+       2026-09-17 inverter-driven polarity reversal. */
+    else if ((g_emergencyStopRequired != 0U) && (EmergencyStopAsserted() != 0U))
     {
         EnterFault(SM_FAULT_EMERGENCY_STOP, 0xFFU);   /* channel N/A, system-wide */
     }
-    /* External-enable interlock (PF15), added 2026-09-16 -- deliberately
-       gated on SM_STATE_FIRING specifically, not IDLE/ARMED too. See
-       state_machine.h's own external-enable section for the full reasoning
-       (this is the ONLY continuous-monitoring gate point for this
-       interlock; ARM/PID:PROFile:STARt cover IDLE/ARMED via their own
-       one-shot checks instead). g_state re-read fresh here (not cached
-       from above) so this naturally doesn't double-enter if the
-       GENERAL check above already transitioned to FAULT this same
-       call. */
+    /* External-enable interlock (PF13, MOVED 2026-09-17 from PF15),
+       added 2026-09-16 -- deliberately gated on SM_STATE_FIRING
+       specifically, not IDLE/ARMED too. See state_machine.h's own
+       external-enable section for the full reasoning (this is the ONLY
+       continuous-monitoring gate point for this interlock; ARM/
+       PID:PROFile:STARt cover IDLE/ARMED via their own one-shot checks
+       instead). g_state re-read fresh here (not cached from above) so
+       this naturally doesn't double-enter if the GENERAL check above
+       already transitioned to FAULT this same call. */
     else if ((g_externalEnableRequired != 0U) && (g_state == SM_STATE_FIRING) &&
              (ExternalEnableInputIsHigh() == 0U))
     {
         EnterFault(SM_FAULT_EXTERNAL_ENABLE, 0xFFU);   /* channel N/A, system-wide */
     }
 
-    /* External trigger, added 2026-09-16 -- see state_machine.h's own
-       design comment for the full reasoning. Independent of the fault
-       checks above (mutually exclusive in practice: this only ever
-       looks at SM_STATE_ARMED, which neither fault branch above can
-       leave g_state in). SM_Fire()'s own return value is deliberately
-       ignored here -- if it fails (e.g. profile timing never set), the
-       state simply stays ARMED with the baseline now recording HIGH,
-       so this genuinely is edge-triggered (needs a fresh falling-then-
-       rising transition to try again), not level-triggered (which
-       would otherwise retry every single poll for as long as PF15
-       stayed HIGH). */
+    /* External trigger (PF15), added 2026-09-16 -- see state_machine.h's
+       own design comment for the full reasoning. Independent of the
+       fault checks above (mutually exclusive in practice: this only
+       ever looks at SM_STATE_ARMED, which neither fault branch above
+       can leave g_state in). SM_Fire()'s own return value is
+       deliberately ignored here -- if it fails (e.g. profile timing
+       never set, or the enable interlock -- now PF13 -- isn't
+       currently satisfied; SM_Fire() itself still unconditionally
+       re-checks SM_ExternalEnableOk() regardless of how trigger got
+       turned on, see this file's own SM_Fire() comment), the state
+       simply stays ARMED with the baseline now recording HIGH, so this
+       genuinely is edge-triggered (needs a fresh falling-then-rising
+       transition to try again), not level-triggered (which would
+       otherwise retry every single poll for as long as PF15 stayed
+       HIGH). Reads ExternalTriggerInputIsHigh() (PF15) -- MOVED
+       2026-09-17 off ExternalEnableInputIsHigh() (now PF13), same day
+       enable and trigger split onto separate pins. */
     if ((g_externalTriggerRequired != 0U) && (g_state == SM_STATE_ARMED))
     {
-        uint8_t level = ExternalEnableInputIsHigh();
-        if ((g_lastExternalEnableLevelWhileArmed == 0U) && (level != 0U))
+        uint8_t level = ExternalTriggerInputIsHigh();
+        if ((g_lastExternalTriggerLevelWhileArmed == 0U) && (level != 0U))
         {
             (void)SM_Fire();
         }
-        g_lastExternalEnableLevelWhileArmed = level;
+        g_lastExternalTriggerLevelWhileArmed = level;
     }
 
     __enable_irq();
@@ -492,6 +582,37 @@ void SM_ReportOcpFault(uint8_t channel)
     }
 
     EnterFault(SM_FAULT_OVERCURRENT, channel);
+    __enable_irq();
+}
+
+void SM_ReportEnableOutputFault(uint8_t channel)
+{
+    if (channel >= HRTIM_NUM_CHANNELS)
+    {
+        return;   /* defensive -- a real, correctly-wired caller never
+                      produces this */
+    }
+
+    /* Same critical-section reasoning as SM_ReportOcpFault() just above --
+       this is called from XrexIo_PollEnableOutputFaults() (xrex_io.c) at
+       the same tick cadence OCP polling gets, so it needs the same
+       protection against the same main-loop/PID_Update()-tick race. */
+    __disable_irq();
+
+    if (g_state == SM_STATE_FAULT)
+    {
+        /* Already faulted (any type) -- same reasoning as
+           SM_ReportOcpFault() above: a channel with its own
+           ENA_OUT/CONTACT_OUT no longer both HIGH must never be left
+           connected just because some other channel's (or this same
+           channel's own, via a different fault type) condition got here
+           first. */
+        (void)PID_SetChannelEnable(channel, 0U);
+        __enable_irq();
+        return;
+    }
+
+    EnterFault(SM_FAULT_ENABLE_OUTPUT, channel);
     __enable_irq();
 }
 
@@ -599,14 +720,12 @@ uint8_t SM_ClearFault(void)
 
 void SM_SetExternalEnableRequired(uint8_t required)
 {
+    /* UNCOUPLED from g_externalTriggerRequired 2026-09-17, same day
+       enable (PF13) and trigger (PF15) split onto separate pins -- see
+       g_externalTriggerRequired's own comment above for why the old
+       "turning this off forces trigger off too" rule no longer applies
+       now that they're independent physical signals. */
     g_externalEnableRequired = (required != 0U) ? 1U : 0U;
-    if (g_externalEnableRequired == 0U)
-    {
-        /* Trigger depends structurally on this interlock -- see this
-           function's own doc comment (state_machine.h). Added
-           2026-09-16. */
-        g_externalTriggerRequired = 0U;
-    }
 }
 
 uint8_t SM_GetExternalEnableRequired(void)
@@ -630,12 +749,12 @@ uint8_t SM_GetExternalEnableInputRaw(void)
 
 uint8_t SM_SetExternalTriggerRequired(uint8_t required)
 {
-    if ((required != 0U) && (g_externalEnableRequired == 0U))
-    {
-        return 0U;   /* refused -- external-enable must be on first,
-                         see this function's own doc comment
-                         (state_machine.h) */
-    }
+    /* No longer gated on g_externalEnableRequired -- UNCOUPLED
+       2026-09-17, per direct instruction, now that enable (PF13) and
+       trigger (PF15) are separate pins. Always succeeds now; kept a
+       uint8_t return (rather than void) purely so the command layer
+       (cmd_ext_trigger(), commands.c) doesn't need its own signature
+       change for what's now an unconditional operation. */
     g_externalTriggerRequired = (required != 0U) ? 1U : 0U;
     return 1U;
 }
@@ -643,6 +762,11 @@ uint8_t SM_SetExternalTriggerRequired(uint8_t required)
 uint8_t SM_GetExternalTriggerRequired(void)
 {
     return g_externalTriggerRequired;
+}
+
+uint8_t SM_GetExternalTriggerInputRaw(void)
+{
+    return ExternalTriggerInputIsHigh();
 }
 
 void SM_SetEmergencyStopRequired(uint8_t required)
@@ -661,7 +785,7 @@ uint8_t SM_EmergencyStopOk(void)
     {
         return 1U;   /* feature not in use -- always "ok", and never reads PG10 */
     }
-    return EmergencyStopInputIsHigh();
+    return (EmergencyStopAsserted() == 0U) ? 1U : 0U;
 }
 
 uint8_t SM_GetEmergencyStopInputRaw(void)

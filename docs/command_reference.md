@@ -30,8 +30,8 @@ Ported from the sibling PFM-STM32G474 project, per project decision:
 | 12 | Invalid `PID:*` argument count/value -- see the specific command's own usage (also reused by `OCP:TEST:FAULT`, `PFMIN:DEBUG:RAW?`/`PFMIN:DEBUG:REG?`, `XREX:CHANnel:STATus?`) |
 | 13 | Invalid state-machine transition for the current state (`ARM`/`DISARM`/`PID:PROFile:STARt`, see that section) |
 | 14 | Invalid `PID:CHANnel:NICKname` -- name must be 1-`PID_CHANNEL_NICKNAME_MAX_LEN` chars, no spaces, and not the reserved value `-` |
-| 15 | `PID:PROFile:STARt` refused -- `EXTernal:ENAble` is on and the external-enable pin (`PF15`) does not currently read `HIGH` (see `EXTernal:ENAble`) |
-| 16 | `EXTernal:TRIGger 1` refused -- `EXTernal:ENAble` must already be on first (see `EXTernal:TRIGger`; the reverse direction, `EXTernal:ENAble 0` while trigger is on, is not an error -- it silently force-disables trigger too) |
+| 15 | `PID:PROFile:STARt` refused -- `EXTernal:ENAble` is on and the external-enable pin (`PF13` as of 2026-09-17, was `PF15`) does not currently read `HIGH` (see `EXTernal:ENAble`) |
+| 16 | **RETIRED 2026-09-17** -- previously `EXTernal:TRIGger 1` refused unless `EXTernal:ENAble` was already on, back when enable and trigger shared one pin (`PF15`). No longer generated: enable moved to `PF13`, trigger stayed on `PF15`, and the two are no longer coupled (see `EXTernal:TRIGger`). Kept here, not reassigned, per this table's own "never renumbered or reused" convention |
 
 Codes are never renumbered or reused once assigned, matching the
 sibling project's convention.
@@ -393,12 +393,17 @@ REVISIT" comments).
 ```
 
 - **`ARM`** — `OK`, `IDLE` → `ARMED`. `ERR 13` if not currently `IDLE`,
-  or if the (currently stub) readiness check refuses.
+  or if `ArmConditionsMet()` refuses -- as of 2026-09-17 this is a real
+  check, not a stub: the external-enable interlock (`EXTernal:ENAble`,
+  PF13) must be satisfied, and every currently-enabled channel's own
+  `XRn_ENA_OUT`/`XRn_CONTACT_OUT` must both be HIGH (see
+  `XREX:CHANnel:ENAOut`/`CONTactOut` below).
 - **`DISARM`** — `OK`, `ARMED` → `IDLE`. No-op (still `OK`, not an
   error) if not currently `ARMED`.
-- **`STATE?`** — `OK <IDLE|ARMED|FIRING>`, or `OK FAULT GENERAL` /
-  `OK FAULT OVERCURRENT <ch>` (1-based) / `OK FAULT EXTERNAL_ENABLE`
-  while faulted.
+- **`STATE?`** — `OK <IDLE|ARMED|FIRING>`, or while faulted:
+  `OK FAULT GENERAL` / `OK FAULT OVERCURRENT <ch>` (1-based) /
+  `OK FAULT EXTERNAL_ENABLE` / `OK FAULT EMERGENCY_STOP` /
+  `OK FAULT ENABLE_OUTPUT <ch>` (1-based).
 - New error code **13**: an invalid state-machine transition for the
   current state (e.g. `PID:PROFile:STARt` sent while not `ARMED`;
   `ARM` sent while not `IDLE`).
@@ -415,10 +420,16 @@ later, not an oversight to silently work around.
 ### `EXTernal:ENAble` / `EXTernal:ENAble?` / `EXTernal:INPut?`
 
 Added 2026-09-16, per direct request: an external operator/facility
-permissive interlock on **PF15** (`Fiber_Enable`, `docs/pin_mapping_v4.csv`
-— confirmed `GPI` there; PC14, first proposed for this, was rejected —
-it's documented `GPO` in that same file, `STM_Enable_Pin`, meaning the
-STM32 drives that one outward, the opposite direction needed here).
+permissive interlock. **MOVED 2026-09-17 from PF15 to PF13**
+(`docs/pin_mapping_v4.csv` — documented `GPInput_12`, confirmed `GPI`,
+unused elsewhere), per direct instruction: enable and trigger are now
+independent physical signals on separate pins, not one shared wire —
+PF15 keeps *only* the trigger role from here on (see
+`EXTernal:TRIGger` below). Every behavior/gating rule below is
+otherwise unchanged from the original design; only the pin moved.
+(PC14, first proposed for this feature back on 2026-09-16, was
+rejected — it's documented `GPO`, `STM_Enable_Pin`, meaning the STM32
+drives that one outward, the opposite direction needed here.)
 
 **Opt-in, OFF by default** — existing shots/tests are completely
 unaffected unless explicitly turned on. RAM-only config (like
@@ -427,30 +438,32 @@ reboot, not persisted.
 
 When ON:
 1. **`ARM`** refuses (folded into its existing generic `ERR 13`) unless
-   PF15 currently reads HIGH.
-2. **`PID:PROFile:STARt`** ALSO re-checks PF15 immediately before firing
-   — closes the real gap where PF15 could drop in the window between a
+   PF13 currently reads HIGH.
+2. **`PID:PROFile:STARt`** ALSO re-checks PF13 immediately before firing
+   — closes the real gap where PF13 could drop in the window between a
    successful `ARM` and the eventual `START` (`ARM` alone does not
-   guarantee this at the moment of firing). `ERR 15` if refused.
+   guarantee this at the moment of firing). `ERR 15` if refused. This
+   re-check also runs when a shot is started via `EXTernal:TRIGger`'s
+   rising edge (below), since both paths call the same `SM_Fire()`.
 3. While **`FIRING`**, checked continuously (same ~1kHz cadence General
-   Fault's own two hardware sources get) — if PF15 drops, enters
+   Fault's own two hardware sources get) — if PF13 drops, enters
    `SM_STATE_FAULT` with `EXTERNAL_ENABLE` (see the `FAULT` state's own
    entry above for the identical-to-`GENERAL` ramp-down response).
    Deliberately **not** actively monitored while merely `IDLE`/`ARMED`
-   (nothing outputting yet to protect) — losing PF15 there just means
+   (nothing outputting yet to protect) — losing PF13 there just means
    the next `PID:PROFile:STARt` attempt fails its own re-check (item 2)
    instead of entering `FAULT`. Not decided either way whether `ARMED`
    should also actively fault on loss — not asked for, flagged rather
    than silently added.
-4. **`FAULT:CLEAR`** re-validates PF15 is back HIGH before actually
+4. **`FAULT:CLEAR`** re-validates PF13 is back HIGH before actually
    clearing an `EXTERNAL_ENABLE` fault — same "only clear if the
    condition is actually gone" treatment `PC10`/`GateDriverStatus`
    already get.
 
-PF15 is configured `GPIO_PULLDOWN` (`main.c`'s `MX_GPIO_Init()`) —
+PF13 is configured `GPIO_PULLDOWN` (`main.c`'s `MX_GPIO_Init()`) —
 **not** this project's usual `GPIO_NOPULL` for actively-driven inputs
 (`GateDriverStatus`, `PFM_Input`, `QUADSPI`). Deliberate: an
-unconnected/floating PF15 must read LOW (no permission), never an
+unconnected/floating PF13 must read LOW (no permission), never an
 undefined level that could accidentally read HIGH and silently permit
 firing — the opposite safety direction from `GateDriverStatus`, where
 floating-reads-as-fault is already the safe outcome.
@@ -464,17 +477,17 @@ floating-reads-as-fault is already the safe outcome.
 < OK 0
 > ARM
 < ERR 13 Can't ARM -- not currently IDLE, or arm conditions not met
-  ... (PF15 goes HIGH) ...
+  ... (PF13 goes HIGH) ...
 > ARM
 < OK
 > PID:PROFILE:START
 < OK
-  ... (PF15 drops while FIRING) ...
+  ... (PF13 drops while FIRING) ...
 > STATE?
 < OK FAULT EXTERNAL_ENABLE
 > FAULT:CLEAR
 < ERR ...   (still LOW -- refused)
-  ... (PF15 restored HIGH) ...
+  ... (PF13 restored HIGH) ...
 > FAULT:CLEAR
 < OK
 ```
@@ -482,30 +495,35 @@ floating-reads-as-fault is already the safe outcome.
 - **`EXTernal:ENAble <0|1>`** — `OK`, turns the interlock on/off.
   `ERR 12` if the argument is missing.
 - **`EXTernal:ENAble?`** — `OK <0|1>`, current mode.
-- **`EXTernal:INPut?`** — `OK <0|1>`, PF15's raw logic level right now,
+- **`EXTernal:INPut?`** — `OK <0|1>`, PF13's raw logic level right now,
   independent of whether the interlock is even turned on — lets an
   operator confirm real wiring/signal presence before relying on it,
   the same diagnostic role `PFMIN:DEBUG:RAW?`/`PFMIN:DEBUG:REG?` played
   for the `PFM_Input` fiber-patching investigation below.
 - New error code **15**: `PID:PROFile:STARt` refused because the
-  interlock is on and PF15 currently reads LOW.
+  interlock is on and PF13 currently reads LOW.
 
-### `EXTernal:TRIGger` / `EXTernal:TRIGger?`
+### `EXTernal:TRIGger` / `EXTernal:TRIGger?` / `EXTernal:TRIGger:INPut?`
 
 Added 2026-09-16, per direct follow-up request: a **rising edge on
-PF15** (the SAME pin `EXTernal:ENAble` above uses — not a second
-signal) fires a shot while `ARMED`, exactly as if `PID:PROFile:STARt`
-had been sent manually. **Structurally depends on `EXTernal:ENAble`
-being on first** — `EXTernal:TRIGger 1` refuses (`ERR 16`) unless it
-is, and turning `EXTernal:ENAble` back off also forces this back off —
-the "lose the signal mid-shot → fault" protection this feature relies
-on to behave sanely IS that same interlock, not a separate mechanism.
+PF15** (`Fiber_Enable`) fires a shot while `ARMED` — and *only* from
+`ARMED` — exactly as if `PID:PROFile:STARt` had been sent manually.
+**RESTRUCTURED 2026-09-17**, per direct instruction: PF15 previously
+also carried the `EXTernal:ENAble` role (above); that role moved to
+its own separate pin (PF13), so PF15 now backs trigger exclusively.
+The old structural dependency — `EXTernal:TRIGger 1` refusing unless
+`EXTernal:ENAble` was already on — is **gone**: the two features are
+independently configurable now that they're separate physical signals.
+The real safety guarantee is unaffected either way — `SM_Fire()` (the
+same function both `PID:PROFile:STARt` and this trigger call)
+unconditionally re-checks the enable interlock (PF13) every time,
+regardless of how or when trigger was turned on.
 
 There is no separate "open-loop start call" to invoke here: open- vs.
 closed-loop has always been the **per-channel** `PID:LOOPMODE` flag,
 checked inside the same control loop both `PID:START` and
 `PID:PROFile:STARt` already share — not a different start mechanism.
-`PID:LOOPMODE 0 <0|1>` (above, also added this same day) is a plain
+`PID:LOOPMODE 0 <0|1>` (above, also added 2026-09-16) is a plain
 convenience for setting every channel's mode at once before an
 externally-triggered shot, not something this feature reads or
 branches on itself.
@@ -514,14 +532,12 @@ Edge-triggered, not level-triggered: a baseline PF15 level is captured
 fresh the instant `ARM` succeeds, so a signal already HIGH at the
 moment of arming does **not** look like a rising edge on the next
 check — only a genuine LOW→HIGH transition after arming fires. If the
-resulting `PID:PROFile:STARt` call itself fails for some other reason
-(e.g. profile timing never set), the state simply stays `ARMED` — a
-fresh falling-then-rising edge is needed to try again, not just PF15
-remaining HIGH.
+resulting `SM_Fire()` call itself fails for some other reason (e.g.
+profile timing never set, or the enable interlock isn't currently
+satisfied), the state simply stays `ARMED` — a fresh falling-then-
+rising edge is needed to try again, not just PF15 remaining HIGH.
 
 ```
-> EXTernal:ENAble 1
-< OK
 > EXTernal:TRIGger 1
 < OK
 > ARM
@@ -532,33 +548,56 @@ remaining HIGH.
 ```
 
 - **`EXTernal:TRIGger <0|1>`** — `OK`, turns the trigger feature
-  on/off. `ERR 12` if the argument is missing, `ERR 16` if turning it
-  on while `EXTernal:ENAble` is currently off.
+  on/off. `ERR 12` if the argument is missing. No longer coupled to
+  `EXTernal:ENAble` as of 2026-09-17 — always succeeds.
 - **`EXTernal:TRIGger?`** — `OK <0|1>`, current mode.
-- New error code **16**: `EXTernal:TRIGger` refused because
-  `EXTernal:ENAble` must be turned on first.
+- **`EXTernal:TRIGger:INPut?`** — `OK <0|1>`, PF15's raw logic level
+  right now, independent of whether the trigger feature is even turned
+  on. Added 2026-09-17 alongside the PF13/PF15 split — previously
+  `EXTernal:INPut?` covered this same pin (it backed both enable and
+  trigger, being the same wire); now that they're separate, this is
+  trigger's own dedicated diagnostic.
+- Error code **16** is **retired** (no longer generated) — previously
+  `EXTernal:TRIGger` refused because `EXTernal:ENAble` wasn't on first,
+  a rule that only existed because both features read the same wire.
+  Kept in the error-code table, not reassigned, per this project's
+  "never renumber/reuse" convention.
 
-**CONFIRMED ON REAL HARDWARE, 2026-09-16** — see `docs/changelog.txt`'s
-matching verification entry for the full writeup and exact numbers:
-`ARM` gating, `PID:PROFile:STARt`'s own re-check (`ERR 15`), a real
-FIRING-time PF15 drop entering `FAULT EXTERNAL_ENABLE` with a clean
-ramp-down (16400 Hz → floor over ~1.0s), `FAULT:CLEAR` correctly
-refusing while still LOW and succeeding once restored, and a genuine
-rising edge (not an already-HIGH baseline) firing a shot from `ARMED`
-via `EXTernal:TRIGger` — all driven through `DIAGnostic:GPOut12`
-(below) looped to PF15, entirely from the serial console.
+**CONFIRMED ON REAL HARDWARE, 2026-09-16** (original PF15-for-both
+design, full writeup and exact numbers in `docs/changelog.txt` — `ARM`
+gating, `PID:PROFile:STARt`'s own re-check, a real FIRING-time drop
+entering `FAULT EXTERNAL_ENABLE` with a clean ramp-down (16400 Hz →
+floor over ~1.0s), and `FAULT:CLEAR` correctly refusing then
+succeeding). **Re-confirmed 2026-09-17, post-split, for TRIGGER
+specifically**: edge-triggering (not spurious on an already-HIGH
+baseline, not re-firing while held HIGH), `ARMED`→`FIRING` on a genuine
+rising edge, and firing succeeding with the enable interlock
+(`EXTernal:ENAble`) never turned on at all — direct confirmation the
+decoupling works end-to-end, not just at the command-response level.
+**Not yet re-verified against PF13 specifically post-split**: the
+`ARM`/`PID:PROFile:STARt` gating, the FIRING-time fault entry, and
+`FAULT:CLEAR`'s re-validation — only `EXTernal:INPut?`'s raw-read
+default (floating, reads `0`) has been checked on PF13 so far, since
+nothing is wired to it on the bench yet. See
+`pending-hardware-calibration.md` for the itemized open-verification
+list.
 
 ### `DIAGnostic:GPOut12` / `DIAGnostic:GPOut12?`
 
 Added 2026-09-16, per direct request: a generic, software-driven
 diagnostic output on **PD1** (`GPOut_12` in the V4 column,
 `docs/pin_mapping_v4.csv` — confirmed `GPO` there; PF13 was proposed
-first and corrected — it's documented `GPInput_12`, an input, in the
-same CSV, a different pin from the one actually named `GPOut_12`).
+as this OUTPUT pin's own identity first and corrected — it's actually
+documented `GPInput_12`, an input, in the same CSV; PF13 later became
+a real pin in this project anyway, but as the external-enable INPUT,
+not this diagnostic output).
 Built specifically to test `EXTernal:ENAble`/`EXTernal:TRIGger` above
 without needing a hand-operated bench jumper: loop this pin to PF15
 and drive it entirely from the serial console with precise, repeatable
-timing. Not tied to that use case in the pin config itself — a plain
+timing. As of 2026-09-17's PF13/PF15 split, this loop exercises
+`EXTernal:TRIGger` specifically (PF15's current role) — `DIAGnostic:GPOut11`/PD0
+(below) is the equivalent pin for testing signals wired elsewhere.
+Not tied to that use case in the pin config itself — a plain
 level output, reusable for any future diagnostic that needs one.
 
 ```
@@ -573,6 +612,114 @@ level output, reusable for any future diagnostic that needs one.
 - **`DIAGnostic:GPOut12?`** — `OK <0|1>`, the pin's current level
   (read back via `HAL_GPIO_ReadPin()`, reflecting the real driven
   state).
+
+### `DIAGnostic:GPOut11` / `DIAGnostic:GPOut11?`
+
+Added 2026-09-17 — a **second, independent** diagnostic output on
+**PD0** (`GPOut_11` in the V4 column, `docs/pin_mapping_v4.csv` —
+confirmed `GPO`), an exact mirror of `DIAGnostic:GPOut12`/PD1 above in
+every respect (generic push-pull level output, GPIO config in
+`main.c`, initial state LOW before enable). Added after PD1 was found
+double-used for testing two different real inputs (PF15 and, at the
+time, PG10) — this gives each test loop its own genuinely separate
+diagnostic pin, removing any ambiguity about which diagnostic signal
+is driving which real input.
+
+```
+> DIAGnostic:GPOut11 1
+< OK
+> DIAGnostic:GPOut11?
+< OK 1
+```
+
+- **`DIAGnostic:GPOut11 <0|1>`** — `OK`, drives PD0 HIGH/LOW. `ERR 12`
+  if the argument is missing.
+- **`DIAGnostic:GPOut11?`** — `OK <0|1>`, the pin's current level.
+
+### `DIAGnostic:RSTCause?` / `DIAGnostic:RSTCause:CLEar`
+
+**TEMPORARY diagnostic**, added 2026-09-17 while investigating a
+garbled response from `DIAGnostic:GPOut11 1` during E-stop testing
+(the investigation that ultimately found PG10 wired to this MCU's real
+`NRST` net — see `docs/changelog.txt`'s 2026-09-17 entry). Reads/clears
+the real `RCC->CSR` reset-cause flags, which is what actually proved
+the glitch was a genuine hardware `NRST`-pin assertion (`PIN=1`) and
+not a brown-out (`BOR=0`) or firmware corruption. Not specific to that
+investigation — useful any time a mystery reset needs a real answer
+instead of a guess.
+
+```
+> DIAGnostic:RSTCause:CLEar
+< OK
+> DIAGnostic:RSTCause?
+< OK CSR=00000000 BOR=0 PIN=0 SFT=0 IWDG=0 WWDG=0 LPWR=0 OBL=0
+```
+
+- **`DIAGnostic:RSTCause?`** — `OK CSR=<hex> BOR=<0|1> PIN=<0|1>
+  SFT=<0|1> IWDG=<0|1> WWDG=<0|1> LPWR=<0|1> OBL=<0|1>` — the raw
+  register plus each individual reset-cause flag
+  (`RCC_CSR_BORRSTF`/`PINRSTF`/`SFTRSTF`/`IWDGRSTF`/`WWDGRSTF`/
+  `LPWRRSTF`/`OBLRSTF`, `stm32g474xx.h`'s own bit definitions).
+- **`DIAGnostic:RSTCause:CLEar`** — `OK`, clears every flag above via
+  `RCC_CSR_RMVF` — useful for isolating whether a *specific* action
+  (not just "since the last reboot") actually triggers a new reset.
+- **Remove once the underlying investigation this was built for is
+  fully settled** — kept for now since it's cheap and general-purpose
+  enough to be useful again.
+
+### `GPOut:ENAble` / `GPOut:ENAble?`
+
+Added 2026-09-17, per direct request: **PC13** (`GPOut_Enable_Pin` in
+`docs/pin_mapping_v4.csv`'s V4 column — confirmed `GPO` there, unused
+elsewhere), **default HIGH at boot** (`main.c`, driven HIGH before
+`HAL_GPIO_Init()` enables it — the opposite default of every other
+software-driven output in this project, all deliberately LOW by
+default; a fresh boot must present this pin's real intended default,
+not an incidental LOW that happens to match the others). Own top-level
+`GPOut:` namespace (not nested under `DIAGnostic:`) since this is a
+real, specifically-named board signal from the schematic, not a
+generic scratch diagnostic pin — plain `HAL_GPIO_WritePin()`/
+`ReadPin()` pair, no dedicated module, same "not enough behavior to
+justify one" precedent as `DIAGnostic:GPOut11`/`GPOut12`.
+
+```
+> GPOut:ENAble?
+< OK 1
+> GPOut:ENAble 0
+< OK
+> GPOut:ENAble?
+< OK 0
+```
+
+- **`GPOut:ENAble <0|1>`** — `OK`, drives PC13 HIGH/LOW. `ERR 12` if
+  the argument is missing.
+- **`GPOut:ENAble?`** — `OK <0|1>`, the pin's current driven level.
+
+**Verified on real hardware, 2026-09-17**: defaults `1` (HIGH) fresh
+off a reflash, toggles correctly both directions.
+
+### `PWMAlt:ENAble` / `PWMAlt:ENAble?`
+
+Added 2026-09-17, per direct request: **PC15** (`PWM_Alt_Enable` in
+`docs/pin_mapping_v4.csv`'s V4 column — confirmed `GPO` there, unused
+elsewhere) — exact mirror of `GPOut:ENAble` above in every respect
+(default HIGH at boot, own top-level namespace, no dedicated module).
+
+```
+> PWMAlt:ENAble?
+< OK 1
+> PWMAlt:ENAble 0
+< OK
+> PWMAlt:ENAble?
+< OK 0
+```
+
+- **`PWMAlt:ENAble <0|1>`** — `OK`, drives PC15 HIGH/LOW. `ERR 12` if
+  the argument is missing.
+- **`PWMAlt:ENAble?`** — `OK <0|1>`, the pin's current driven level.
+
+**Verified on real hardware, 2026-09-17**: defaults `1` (HIGH) fresh
+off a reflash, toggles correctly both directions.
 
 ### `OCP:TEST:FAULT`
 
@@ -795,7 +942,10 @@ categories, added per direct request against `pin_mapping_v4.csv`'s new
   the `PF4`/`PF8`/`PF12`/`PF5` → `XR1`-`XR4` pin mapping.
 - **Polarity — `ctrlr_config.h`'s `XR_WATER_FLT_POLARITY`/
   `XR_TMP_FLT_POLARITY`/`XR_ENERPRO_FLT_POLARITY`/`XR_OCP_FLT_POLARITY`**
-  (each independently `XREX_POLARITY_NORMALLY_HIGH` or `_NORMALLY_LOW`,
+  (each independently `FAULT_POLARITY_NORMALLY_HIGH` or `_NORMALLY_LOW`
+  -- renamed from the XREX-scoped `XREX_POLARITY_*` spelling later the
+  same day, once `EMERGENCY_STOP_POLARITY` became a second, unrelated
+  consumer of the same generic concept; pure rename, same values --
   all four default to `NORMALLY_HIGH`) — **replaces** the old single
   shared `GDS_FAULT_POLARITY = GDS_NORMALLY_LOW`, which had itself been
   set from a real hardware snapshot on 2026-09-08 (11/12 pins LOW, 1
@@ -815,11 +965,85 @@ categories, added per direct request against `pin_mapping_v4.csv`'s new
   XREX Pin Name entries) are pure relabels of the existing
   `PFM_Input_01..04` feedback channels and `HRTIM1_CH*` drive outputs —
   zero functional change, no new command or behavior.
-- **Deferred, not yet implemented**: `XRn_ENA_OUT` (`PG0`-`PG3`) and
-  `XRn_CONTACT_OUT` (`PG4`-`PG7`) — per-channel enable and contactor
-  *output* signals from `pin_mapping_v4.csv`'s same new column. Pin
-  identities are known; no GPIO config, command, or behavior exists for
-  them yet — explicitly deferred pending the next round of work.
+- **`XRn_ENA_OUT`/`XRn_CONTACT_OUT`** — see the dedicated
+  `XREX:CHANnel:ENAOut`/`CONTactOut` section just below. Implemented
+  2026-09-17 (previously deferred).
+
+### `XREX:CHANnel:ENAOut` / `XREX:CHANnel:ENAOut?` / `XREX:CHANnel:CONTactOut` / `XREX:CHANnel:CONTactOut?`
+
+Added 2026-09-17, per direct request: "Enable and contactor fiber
+outputs need to be set by a serial command, one for each supply."
+Real per-channel outputs (`PG0`-`PG3`/`PG4`-`PG7` — `XRn_ENA_OUT`/
+`XRn_CONTACT_OUT`, `docs/pin_mapping_v4.csv`'s "XREX Pin Name" column)
+this firmware itself drives, owned (pin table, GPIO read/write) by
+`xrex_io.c`. 1-based channel argument, `ERR 11`/`ERR 12` on the usual
+invalid-channel/missing-argument conditions — no new error codes for
+this feature.
+
+```
+> XREX:CHANnel:ENAOut 1 1
+< OK
+> XREX:CHANnel:ENAOut? 1
+< OK 1
+> XREX:CHANnel:CONTactOut 1 1
+< OK
+> XREX:CHANnel:CONTactOut? 1
+< OK 1
+```
+
+- **`XREX:CHANnel:ENAOut <ch> <0|1>`** / **`CONTactOut <ch> <0|1>`** —
+  `OK`, sets that channel's output HIGH/LOW. Takes effect immediately;
+  an operator may change either at any time, including mid-shot.
+- **`XREX:CHANnel:ENAOut? <ch>`** / **`CONTactOut? <ch>`** — `OK <0|1>`,
+  current driven level (read back via `HAL_GPIO_ReadPin()`, reflecting
+  the real driven state — same convention as `DIAGnostic:GPOut11`/
+  `GPOut12`).
+
+#### `ARM` precondition and `SM_FAULT_ENABLE_OUTPUT`
+
+Direct instruction: "The controller cannot be armed unless these are
+outputting prior to the arm signal, and similarly we cannot transition
+to the ARM state i[f] these are not output." Two confirmed design
+choices (asked directly, not assumed):
+
+- **Per-channel gated** — only currently-*enabled* channels
+  (`PID:CHANnel:ENAble?`) are checked, matching the exact same
+  per-channel-gating philosophy as Water/Temp/Enerpro/OCP above. A
+  channel's own `ENA_OUT`+`CONTACT_OUT` must both read `HIGH` to count
+  as "outputting" — treated as one combined condition, not two
+  independently-faultable ones.
+- **Continuously monitored once `ARMED`** (not just at the `ARM`
+  instant) — unlike `EXTernal:ENAble`'s `FIRING`-only carve-out, this
+  is checked in both `ARMED` and `FIRING` (never `IDLE` — nothing is
+  armed yet there). A drop enters `SM_STATE_FAULT` with a new
+  **`SM_FAULT_ENABLE_OUTPUT`** type, `STATE?` reporting
+  `OK FAULT ENABLE_OUTPUT <ch>` (1-based) — **per-channel**, like
+  `OVERCURRENT`, whose exact response it reuses directly
+  (`HandleOvercurrentFault()`): the affected channel is hard-disabled
+  immediately, survivors derated 1/N and ramped down exactly like a
+  real OCP fault. Reported as its own distinct type purely for
+  operator diagnostics — do not confuse with `EXTERNAL_ENABLE`, a
+  single system-wide *input* interlock (PF13); this is a per-channel
+  check of this firmware's own commanded *output* state.
+- `ARM` itself refuses (folded into the existing generic `ERR 13`) if
+  any currently-enabled channel's outputs aren't both `HIGH`.
+  `FAULT:CLEAR` needs no dedicated re-validation for this fault type
+  (matching `OVERCURRENT`'s own precedent) — the affected channel is
+  already hard-disabled by the time `FAULT:CLEAR` is considered, so
+  the real gate is `ArmConditionsMet()` at the *next* `ARM` attempt.
+
+**Verified on real hardware, 2026-09-17**: `ENAOut`/`CONTactOut` set
+and read back correctly and independently per channel; argument
+validation (`ERR 11`/`ERR 12`) correct; per-channel gating confirmed
+-- with zero channels enabled, `ARM` succeeded regardless of
+ENA_OUT/CONTACT_OUT state, confirming disabled channels are correctly
+skipped. **NOT yet verified**: the actual refusal path (an *enabled*
+channel with outputs not set blocking `ARM`) and the continuous
+fault-on-loss-while-`ARMED` path -- enabling any channel on this bench
+immediately trips the pre-existing OCP fault (nothing wired to those
+pins yet), so a real enabled channel can't currently be gotten far
+enough to test this gate specifically. See
+`pending-hardware-calibration.md` for the tracked gap.
 
 ### `QSPI:ID?`
 

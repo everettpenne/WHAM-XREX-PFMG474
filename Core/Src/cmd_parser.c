@@ -108,23 +108,27 @@ static const command_t command_table[] = {
     { "DISARM",              cmd_disarm       },
     { "STATE?",              cmd_state_query  },
 
-    /* External-enable interlock (PF15) -- see commands.h's own comment
-       on cmd_ext_enable(). Added 2026-09-16. Two-level namespace
-       (mandatory "EXT"/"ENA"/"INP", matching this project's existing
-       PID:CHANnel:ENAble-style abbreviation convention) rather than one
-       compound word -- a single "EXTEnable" token would only let
-       "EXTE" (an unrecognizable fragment) be typed as its short form,
-       since scpi_token_match() only recognizes a LEADING uppercase
-       run, not caps resuming mid-word. */
+    /* External-enable interlock (PF13, MOVED 2026-09-17 from PF15) --
+       see commands.h's own comment on cmd_ext_enable(). Added
+       2026-09-16. Two-level namespace (mandatory "EXT"/"ENA"/"INP",
+       matching this project's existing PID:CHANnel:ENAble-style
+       abbreviation convention) rather than one compound word -- a
+       single "EXTEnable" token would only let "EXTE" (an
+       unrecognizable fragment) be typed as its short form, since
+       scpi_token_match() only recognizes a LEADING uppercase run, not
+       caps resuming mid-word. */
     { "EXTernal:ENAble",     cmd_ext_enable        },
     { "EXTernal:ENAble?",    cmd_ext_enable_query  },
     { "EXTernal:INPut?",     cmd_ext_enable_input_query },
 
-    /* External trigger (rising edge on PF15 fires a shot while ARMED)
-       -- see commands.h's own comment on cmd_ext_trigger(). Added
-       2026-09-16. */
-    { "EXTernal:TRIGger",    cmd_ext_trigger       },
-    { "EXTernal:TRIGger?",   cmd_ext_trigger_query },
+    /* External trigger (rising edge on PF15 fires a shot while ARMED,
+       and ONLY from ARMED) -- see commands.h's own comment on
+       cmd_ext_trigger(). Added 2026-09-16; RESTRUCTURED 2026-09-17 --
+       PF15 now backs trigger only, no longer coupled to
+       EXTernal:ENAble (moved to PF13, above). */
+    { "EXTernal:TRIGger",       cmd_ext_trigger             },
+    { "EXTernal:TRIGger?",      cmd_ext_trigger_query       },
+    { "EXTernal:TRIGger:INPut?", cmd_ext_trigger_input_query },
 
     /* Emergency stop (PG10, fiber-optic input) -- see commands.h's own
        comment on cmd_emerg_enable(). Added 2026-09-17. */
@@ -137,10 +141,24 @@ static const command_t command_table[] = {
     { "DIAGnostic:GPOut12",  cmd_diag_gpout12       },
     { "DIAGnostic:GPOut12?", cmd_diag_gpout12_query },
 
+    /* Second, independent generic diagnostic output (PD0, "GPOut_11")
+       -- see commands.h's own comment on cmd_diag_gpout11(). Added
+       2026-09-17 after PD1 was found double-used for PF15 AND PG10
+       testing. */
+    { "DIAGnostic:GPOut11",  cmd_diag_gpout11       },
+    { "DIAGnostic:GPOut11?", cmd_diag_gpout11_query },
+
     /* TEMPORARY diagnostic -- reads FLASH_OPTR to check whether PB8
        (BOOT0) is free for GPIO reuse, see commands.c's own header
        comment on cmd_diag_optbytes_query(). */
     { "DIAGnostic:OPTBytes?", cmd_diag_optbytes_query },
+
+    /* TEMPORARY diagnostic -- reads/clears the real RCC->CSR reset-cause
+       flags to test whether DIAGnostic:GPOut11 1's garbled response is
+       a genuine MCU reset, see commands.c's own header comment on
+       cmd_diag_rstcause_query(). */
+    { "DIAGnostic:RSTCause?",      cmd_diag_rstcause_query },
+    { "DIAGnostic:RSTCause:CLEar", cmd_diag_rstcause_clear },
 
     /* TEMPORARY debug/verification command -- software OCP fault
        injection, see commands.c's own header comment on
@@ -160,6 +178,25 @@ static const command_t command_table[] = {
        -- see commands.c's own header comment on
        cmd_xrex_channel_status() and xrex_io.h for the full design. */
     { "XREX:CHANnel:STATus?", cmd_xrex_channel_status },
+
+    /* Per-Transrex-channel ENA_OUT/CONTACT_OUT fiber outputs -- see
+       commands.c's own header comment on cmd_xrex_ena_out() and
+       state_machine.h's SM_FAULT_ENABLE_OUTPUT/enable-output sections
+       for the full design. Added 2026-09-17. */
+    { "XREX:CHANnel:ENAOut",        cmd_xrex_ena_out          },
+    { "XREX:CHANnel:ENAOut?",       cmd_xrex_ena_out_query    },
+    { "XREX:CHANnel:CONTactOut",    cmd_xrex_contact_out      },
+    { "XREX:CHANnel:CONTactOut?",   cmd_xrex_contact_out_query },
+
+    /* PC13 ("GPOut_Enable_Pin"), default HIGH -- see commands.h's own
+       comment on cmd_gpout_enable(). Added 2026-09-17. */
+    { "GPOut:ENAble",   cmd_gpout_enable       },
+    { "GPOut:ENAble?",  cmd_gpout_enable_query },
+
+    /* PC15 ("PWM_Alt_Enable"), default HIGH -- see commands.h's own
+       comment on cmd_pwmalt_enable(). Added 2026-09-17. */
+    { "PWMAlt:ENAble",  cmd_pwmalt_enable       },
+    { "PWMAlt:ENAble?", cmd_pwmalt_enable_query },
 
     /* QUADSPI connectivity test (W25Q128JVS) -- excluded entirely when
        QSPI_TEST_FEATURE_ENABLED is 0, same removability pattern as

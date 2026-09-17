@@ -1,6 +1,274 @@
 WHAM-XREX-PFMG474 Firmware Changelog
 =====================================
 
+2026-09-17  —  PC13 (GPOut_Enable_Pin) and PC15 (PWM_Alt_Enable) added,
+               default HIGH, with serial toggle commands
+-----------------------------------------------------------------------
+  Change:  Direct request: "Assign PC13 as GPOut_Enable_Pin. By
+        default, keep it HIGH... a serial command to toggle it HIGH
+        and LOW. Similarly, PWM_Alt_Enable_Pin is PC15... default
+        output HIGH... a serial command to toggle it HIGH and LOW."
+        Both confirmed against docs/pin_mapping_v4.csv before touching
+        anything (documented GPO, unused elsewhere): PC13 =
+        "GPOut_Enable_Pin", PC15 = "PWM_Alt_Enable".
+
+        main.c: push-pull outputs, driven HIGH BEFORE HAL_GPIO_Init()
+        enables them -- the opposite default of every other software-
+        driven output added this session (DIAGnostic:GPOut11/12,
+        XRn_ENA_OUT/CONTACT_OUT, all deliberately LOW by default), per
+        this specific instruction. New GPOut:ENAble/GPOut:ENAble? (PC13)
+        and PWMAlt:ENAble/PWMAlt:ENAble? (PC15) commands (commands.c/.h,
+        cmd_parser.c) -- own top-level namespaces (not nested under
+        DIAGnostic:) since these are real, specifically-named board
+        signals from the schematic, not generic scratch diagnostic
+        pins; otherwise a plain HAL_GPIO_WritePin()/ReadPin() pair, no
+        dedicated module, matching DIAGnostic:GPOut11/12's own
+        precedent.
+
+  Verify: Rebuilt clean (zero warnings), reflashed, verified live over
+        serial: both pins read HIGH (1) immediately after a fresh
+        reflash, confirming the default; both toggle correctly in both
+        directions via their own commands. Board left in a clean IDLE
+        state afterward.
+
+2026-09-17  —  XRn_ENA_OUT/XRn_CONTACT_OUT (PG0-PG7) implemented --
+               ARM precondition + new per-channel SM_FAULT_ENABLE_OUTPUT
+-----------------------------------------------------------------------
+  Change:  Direct request, fulfilling the "remind me later" obligation
+        from earlier the same day: "Enable and contactor fiber outputs
+        need to be set by a serial command, one for each supply. The
+        controller cannot be armed unless these are outputting prior
+        to the arm signal, and similarly we cannot transition to the
+        ARM state i[f] these are not output."
+
+        Two scope questions asked directly before implementing (not
+        assumed): (1) should the ARM check apply to all 4 channels or
+        only currently-enabled ones -- chose per-channel gating,
+        matching the established Water/Temp/Enerpro/OCP convention;
+        (2) should losing these after ARM force a fault or just be a
+        one-time precondition -- chose continuous monitoring with a
+        real fault response, entering FAULT (not just refusing the
+        next FIRE) if lost while ARMED or FIRING.
+
+        New per-channel outputs XR1-4_ENA_OUT (PG0-PG3) and
+        XR1-4_CONTACT_OUT (PG4-PG7, docs/pin_mapping_v4.csv's "XREX Pin
+        Name" column, confirmed GPO, unused elsewhere) -- owned (pin
+        table, GPIO read/write) by xrex_io.c, matching that module's
+        established per-channel-XR-signal charter. New
+        XREX:CHANnel:ENAOut/CONTactOut set+query commands (reuses ERR
+        11/ERR 12, no new error codes).
+
+        New per-channel fault type SM_FAULT_ENABLE_OUTPUT
+        (state_machine.h/.c) -- reuses HandleOvercurrentFault(channel)
+        DIRECTLY for its response (immediate hard-disable of the
+        affected channel, survivors derated 1/N and ramped down exactly
+        like a real OCP fault), same "distinct type, shared response"
+        pattern SM_FAULT_EXTERNAL_ENABLE already established for
+        HandleGeneralFault(). Do NOT confuse the name with
+        SM_FAULT_EXTERNAL_ENABLE -- that's a single system-wide INPUT
+        interlock (PF13); this is a per-channel check of this
+        firmware's own commanded OUTPUT state. New
+        XrexIo_EnableOutputsReadyToArm() (pure check, folds into
+        ArmConditionsMet()/ERR 13) and XrexIo_PollEnableOutputFaults()
+        (continuous check, gated to ONLY run while ARMED/FIRING --
+        unlike Water/Temp/Enerpro/OCP's always-on checking -- called
+        from the same tick cadence XrexIo_PollOcpFaults() already gets).
+        No dedicated FAULT:CLEAR re-validation needed for this fault
+        type, matching SM_FAULT_OVERCURRENT's own precedent -- the
+        affected channel is already hard-disabled by the time
+        FAULT:CLEAR is considered, so the real gate is the next ARM
+        attempt's own ArmConditionsMet() check.
+
+  Verify: Rebuilt clean (zero warnings), reflashed, verified live over
+        serial:
+
+        1. XREX:CHANnel:ENAOut/CONTactOut set+query confirmed correct
+           and independent per channel (toggled channels 1 and 2
+           separately, each read back exactly what was written).
+           Argument validation (ERR 11 for channel 0/5, ERR 12 for a
+           missing value) confirmed.
+        2. Per-channel gating confirmed: with zero channels enabled,
+           ARM succeeded regardless of ENA_OUT/CONTACT_OUT state
+           (channel 1 ended up half-set, channel 2 set-but-mismatched)
+           -- directly confirms disabled channels are correctly
+           skipped, not blocking ARM.
+
+        NOT YET VERIFIED: the actual refusal path (an ENABLED channel
+        with outputs not set blocking ARM) and the continuous
+        fault-on-loss-while-ARMED path -- enabling any channel on this
+        bench immediately trips the pre-existing OCP fault (nothing
+        wired to those pins yet), so a real enabled channel can't
+        currently be gotten far enough to test this specific gate.
+        Logic mirrors the already-hardware-verified OCP per-channel
+        response exactly, so risk is low, but this is a real,
+        tracked gap (pending-hardware-calibration.md) until either
+        something's wired to the OCP pins or a Transrex simulator
+        (separately planned) exists to provide a healthy default.
+
+2026-09-17  —  External-enable moved PF15 -> PF13; external-trigger
+               UNCOUPLED from external-enable, PF15 now trigger-only,
+               fires only from ARMED; ERR 16 retired
+-----------------------------------------------------------------------
+  Change:  Direct instruction: "Let's move the 'enable' behavior of
+        PF15 to PF13... The TRIGGER from a rising edge behavior should
+        remain at PF15." Enable and trigger, previously two facets of
+        the SAME physical wire (PF15), are now genuinely independent
+        signals on separate pins. PF13 (docs/pin_mapping_v4.csv,
+        documented "GPInput_12", confirmed unused elsewhere) checked
+        before use, per this project's now-well-established pattern.
+
+        Asked directly, before implementing: should EXTernal:TRIGger
+        still require EXTernal:ENAble to be on first (the old ERR 16
+        rule), now that they're separate pins? User chose to drop the
+        dependency. Real safety is unaffected either way -- SM_Fire()
+        itself (state_machine.c) unconditionally re-checks the enable
+        interlock every time it's called, including from trigger's own
+        edge-detection path, regardless of how trigger was configured.
+
+        state_machine.c: ExternalEnableInputIsHigh() now reads PF13 (was
+        PF15); new ExternalTriggerInputIsHigh() reads PF15 independently.
+        g_lastExternalEnableLevelWhileArmed renamed to
+        g_lastExternalTriggerLevelWhileArmed -- it always tracked
+        trigger's own edge-detection baseline, a name that would now
+        actively mislead since it sounds like it tracks the new enable
+        pin. SM_SetExternalEnableRequired()/SM_SetExternalTriggerRequired()
+        no longer couple to each other in either direction.
+        SM_GetExternalTriggerInputRaw() (new) backs a new
+        EXTernal:TRIGger:INPut? -- previously EXTernal:INPut? covered
+        this same pin since it was shared; now that enable and trigger
+        are separate, each gets its own raw-read diagnostic.
+
+        main.c: PF13 configured GPIO_PULLDOWN (same fail-safe reasoning
+        PF15 originally had for enable -- floating means no permission).
+        PF15 keeps GPIO_PULLDOWN too, now purely so a floating trigger
+        pin never produces a spurious rising edge.
+
+        commands.c/.h, cmd_parser.c: EXTernal:ENAble/ENAble?/INPut?
+        unchanged in shape, now backed by PF13. EXTernal:TRIGger no
+        longer returns ERR 16 -- always succeeds. New
+        EXTernal:TRIGger:INPut? registered. ERR 16 retired (no longer
+        generated) but not renumbered/reassigned, per this project's
+        established error-code convention.
+
+  Verify: Rebuilt clean (zero warnings), reflashed, verified live over
+        serial:
+
+        1. Command-layer: EXTernal:INPut? (PF13) and
+           EXTernal:TRIGger:INPut? (PF15) both read correctly (0,
+           floating/unconnected default). EXTernal:TRIGger 1 succeeds
+           with EXTernal:ENAble still OFF -- confirms the ERR 16
+           coupling is genuinely gone, not just skipped by luck.
+        2. Real-hardware trigger mechanism, re-verified post-split
+           (PD1/DIAGnostic:GPOut12 still looped to PF15 from the
+           original 2026-09-16 test setup): armed with PF15 LOW
+           (baseline correctly captured, no spurious fire over 0.3s);
+           genuine LOW->HIGH transition on PF15 correctly transitioned
+           ARMED -> FIRING; holding PF15 HIGH afterward did not
+           re-fire (confirms edge-triggered, not level-triggered).
+           Zero channels were enabled for this test (to avoid tripping
+           the unrelated, already-known OCP-floating-pin fault from the
+           XREX work above) -- this meant the profile's own auto-
+           completion never actually ran (the shared HRTIM Master
+           needs at least one enabled channel to tick, a real but
+           separate, not-yet-investigated behavior), recovered cleanly
+           via PID:STOP. Not a regression in today's change -- the
+           trigger-fires-a-real-shot path (with real channels enabled)
+           was already confirmed working on 2026-09-16, before today's
+           restructuring, and today's change didn't touch that
+           mechanism, only which pin backs which role.
+
+        NOT YET VERIFIED: PF13's own ARM/PID:PROFile:STARt gating, the
+        FIRING-time SM_FAULT_EXTERNAL_ENABLE fault entry, and
+        FAULT:CLEAR's re-validation, all against a REAL HIGH/LOW signal
+        on PF13 -- nothing is wired to PF13 on the bench yet, so only
+        its raw-read default (floating, reads 0) has been confirmed.
+        These same behaviors were fully confirmed on 2026-09-16 against
+        the old PF15-based design and the underlying code paths are
+        unchanged (SM_ExternalEnableOk()/ArmConditionsMet()/
+        SM_PollFaults()'s external-enable branch), just now reading a
+        different GPIO pin -- low risk, but genuinely unverified until
+        something is wired to PF13 and this exact sequence is re-run.
+
+2026-09-17  —  E-stop polarity inverted for new hardware inverter; PG10
+               discovered wired to the MCU's real NRST pin via the
+               schematic -- E-stop permanently shelved, GPIO config
+               removed; DIAGnostic:GPOut11 (PD0) + DIAGnostic:RSTCause?
+               added along the way
+-----------------------------------------------------------------------
+  Change:  Retried the shelved E-stop feature: a hardware inverter was
+        added between the fiber-optic receiver and PG10, so "no input"
+        (including PG10's own GPIO_PULLDOWN floating default) now needs
+        to read as OK, not asserted -- the opposite of the original
+        design. Renamed ctrlr_config.h's XREX_POLARITY_NORMALLY_HIGH/LOW
+        to the generic FAULT_POLARITY_NORMALLY_HIGH/LOW (a second,
+        unrelated consumer -- EMERGENCY_STOP_POLARITY -- made the old
+        XREX-scoped name actively misleading), added
+        EMERGENCY_STOP_POLARITY defaulting NORMALLY_LOW, and added
+        state_machine.c's EmergencyStopAsserted() to apply it.
+
+        Testing needed a SECOND diagnostic output distinct from PD1
+        (already dedicated to PF15) -- new DIAGnostic:GPOut11 (PD0,
+        "GPOut_11" in pin_mapping_v4.csv's V4 column, confirmed GPO),
+        exact mirror of DIAGnostic:GPOut12.
+
+        REAL BUG FOUND: DIAGnostic:GPOut11 1 consistently returned a
+        single garbled 0x00 byte instead of "OK\r\n", and the pin never
+        actually reached HIGH. Investigated methodically rather than
+        guessed: ruled out direct PD0-PG10 electrical contention (user
+        confirmed the real topology is fully galvanically isolated --
+        PD0 drives a fiber transmitter, through fiber, to an inverting
+        receiver, whose output lands on PG10). Built a new TEMPORARY
+        DIAGnostic:RSTCause?/:CLEar (reads/clears the real RCC->CSR
+        reset-cause flags, stm32g474xx.h's own bit definitions) to get
+        a real answer instead of a further guess. Result: PIN=1 (a
+        genuine NRST-pin assertion), BOR=0 (ruling out power-rail
+        droop) -- a real hardware reset, not corruption.
+
+        User checked the actual schematic: PG10 IS the MCU's real NRST
+        pin's net, tied to the same Molex connector the ST-Link plugs
+        into -- NOT a stale CSV label as concluded on 2026-09-16 (that
+        earlier conclusion is now superseded). This means configuring
+        this pin as a GPIO peripheral input AT ALL was unsound the
+        entire time, independent of EMERGency:ENAble's state -- our own
+        GPIO_PULLDOWN was a weak pull-down fighting NRST's internal
+        pull-up on every boot.
+
+        Asked the user how to proceed (AskUserQuestion): chose to
+        shelve E-stop again AND remove the GPIO_PULLDOWN config on PG10
+        specifically, since that risk exists independent of the
+        feature's enable state. main.c's PG10 GPIO_Init() block
+        removed entirely -- this pin must never be configured as a
+        GPIO peripheral again. state_machine.c's emergency-stop
+        software left in place, dormant (EMERGency:ENAble defaults off
+        and never reads any pin when off).
+
+  Verify: Rebuilt clean (zero warnings) at each step, reflashed each
+        time, verified live over serial:
+
+        1. Inverted polarity, LOW=OK: with EMERGency:ENAble 1 and PD1
+           (looped to PF15 at the time) held LOW, STATE? correctly
+           stayed IDLE -- confirmed the new "no input = good" default
+           behaves correctly in firmware.
+        2. The GPOut11 glitch reproduced 100% reliably, isolated
+           cleanly (GPOut12 on the SAME session kept working perfectly
+           the whole time, ruling out a general regression).
+        3. DIAGnostic:RSTCause:CLEar then reproducing the glitch showed
+           a CLEAN CSR=04000000 PIN=1 BOR=0 from a zeroed baseline --
+           definitive, not inferred.
+        4. CRITICAL FINDING: removing main.c's own PG10 GPIO config
+           entirely did NOT stop the reset -- re-tested from a cleared
+           baseline, PIN=1 still fired. Proves this is a pure board-
+           level electrical fact, unfixable from firmware: the inverting
+           receiver's own output driver asserts the NRST net regardless
+           of what our code does with the "PG10" pin.
+
+        Board left in a known-safe state after every step (all
+        channels disabled, STATE? IDLE). E-stop's real FIRING-time
+        cutoff behavior and a genuine HIGH-restore FAULT:CLEAR path
+        remain unverified and will stay that way until a genuinely free
+        pin (not PG10) is identified from the schematic -- see
+        pending-hardware-calibration.md item 10 (updated).
+
 2026-09-17  —  XREX pin relabeling + real per-channel Water/Temp/
                Enerpro/OCP fault detection (xrex_io.c, new module);
                NORMALLY_HIGH polarity override; XREX:CHANnel:STATus?

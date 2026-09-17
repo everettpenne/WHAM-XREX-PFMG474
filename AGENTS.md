@@ -598,17 +598,17 @@ decision (see `docs/command_reference.md`'s `FIRE` entry).
   derate math again. **Also added 2026-09-15**: `GENERAL:TEST:FAULT`
   (`SM_ReportGeneralFault()`), the General-Fault counterpart to
   `OCP:TEST:FAULT`. **Added 2026-09-16, CONFIRMED ON REAL HARDWARE same
-  day**: a third fault type, `SM_FAULT_EXTERNAL_ENABLE` (PF15,
+  day**: a third fault type, `SM_FAULT_EXTERNAL_ENABLE` (originally PF15,
   "Fiber_Enable" -- PC14 was considered first and rejected, it's
   documented as an OUTPUT in `docs/pin_mapping_v4.csv`, the wrong
   direction), gating `ARM`/`PID:PROFile:STARt` and faulting if lost
   while `FIRING`. New `EXTernal:ENAble`/`EXTernal:ENAble?`/
   `EXTernal:INPut?` commands. **Also added 2026-09-16, same session,
   also confirmed**: external trigger -- a rising edge on that SAME PF15
-  pin, while ARMED, now calls `SM_Fire()` directly (same function
-  `PID:PROFile:STARt` itself calls). Structurally depends on
-  `EXTernal:ENAble` being on first (new `EXTernal:TRIGger`/
-  `EXTernal:TRIGger?`, ERR 16). There is NO separate "open-loop start
+  pin (at the time), while ARMED, now calls `SM_Fire()` directly (same
+  function `PID:PROFile:STARt` itself calls). Originally structurally
+  depended on `EXTernal:ENAble` being on first (new `EXTernal:TRIGger`/
+  `EXTernal:TRIGger?`, `ERR 16`). There is NO separate "open-loop start
   call" anywhere in this codebase -- open-/closed-loop has always been
   the per-channel `PID:LOOPMODE` flag, not a different start mechanism;
   `PID:LOOPMODE`'s `ch` argument now also accepts `0` for "every channel
@@ -623,6 +623,56 @@ decision (see `docs/command_reference.md`'s `FIRE` entry).
   entirely from the serial console. See `docs/changelog.txt`'s
   2026-09-16 verification entry (the most recent of that day's three)
   for the full writeup and exact numbers.
+
+  **RESTRUCTURED 2026-09-17**, per direct instruction: enable and
+  trigger split onto genuinely separate pins -- external-enable MOVED
+  to **PF13** (`GPInput_12` in the pin mapping, confirmed unused
+  elsewhere), external-trigger STAYED on PF15 but is now trigger-ONLY.
+  The old `EXTernal:ENAble`-before-`EXTernal:TRIGger` coupling is GONE
+  (asked directly before implementing; user chose to drop it) -- `ERR
+  16` is retired, not reassigned. New `EXTernal:TRIGger:INPut?`
+  (PF15's own raw read, now that it's no longer covered by
+  `EXTernal:INPut?`, which is PF13-only from here on).
+  `g_lastExternalEnableLevelWhileArmed` (state_machine.c) renamed to
+  `g_lastExternalTriggerLevelWhileArmed` -- it always tracked trigger's
+  edge-detection baseline specifically, a name that would now mislead.
+  Real safety unaffected: `SM_Fire()` still unconditionally re-checks
+  the enable interlock every time, regardless of how trigger was
+  configured. Re-verified on real hardware post-split (edge-triggering
+  behavior, and firing succeeding with `EXTernal:ENAble` never turned
+  on) -- PF13's own `ARM`/fault-entry/`FAULT:CLEAR` gating has NOT yet
+  been re-verified against a real signal (nothing wired to PF13 on the
+  bench yet). See `docs/command_reference.md`'s `EXTernal:ENAble`/
+  `EXTernal:TRIGger` sections and `docs/changelog.txt`'s matching
+  2026-09-17 entry.
+
+  **Also added 2026-09-17, same day**: `XRn_ENA_OUT`/`XRn_CONTACT_OUT`
+  (PG0-PG7) implemented -- previously deferred, fulfilling the
+  "remind me later" obligation from the earlier XREX pin-relabeling
+  task. New `XREX:CHANnel:ENAOut`/`CONTactOut` commands and a new
+  PER-CHANNEL fault type, `SM_FAULT_ENABLE_OUTPUT` (reuses
+  `HandleOvercurrentFault(channel)` directly for its response -- do NOT
+  confuse the name with `SM_FAULT_EXTERNAL_ENABLE`, a single
+  system-wide INPUT interlock; this is a per-channel check of this
+  firmware's OWN commanded OUTPUT state). `ARM` refuses unless every
+  currently-enabled channel's own ENA_OUT+CONTACT_OUT are both HIGH,
+  and this is continuously re-checked once ARMED (not just FIRING,
+  unlike `EXTernal:ENAble`'s own carve-out) -- both confirmed directly
+  before implementing, not assumed. Per-channel gating verified on real
+  hardware; the actual ARM-refusal and fault-on-loss paths for a
+  genuinely-enabled channel remain unverified -- enabling any channel
+  on this bench immediately trips the pre-existing OCP fault (nothing
+  wired to those pins), so this gate can't currently be exercised for
+  real. See `docs/command_reference.md`'s `XREX:CHANnel:ENAOut`
+  section and `docs/changelog.txt`'s matching entry.
+
+  **Also added 2026-09-17**: `GPOut:ENAble` (PC13, `GPOut_Enable_Pin`)
+  and `PWMAlt:ENAble` (PC15, `PWM_Alt_Enable`) -- simple named board
+  outputs, default HIGH at boot (the opposite default of every other
+  software-driven output added this session), each with its own
+  top-level namespace and a plain set/query command pair. Verified on
+  real hardware (default HIGH confirmed, both toggle correctly).
+
   plus CubeMX-generated `stm32g4xx_hal_msp.c`/`stm32g4xx_it.c`/
   `system_stm32g4xx.c`/`syscalls.c`/`sysmem.c`.
 - `python/` -- host-side tooling (see above).
