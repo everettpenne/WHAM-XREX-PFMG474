@@ -23,6 +23,7 @@
 #include "state_machine.h"
 #include "git_version.h"
 #include "main.h"
+#include "xrex_io.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -507,6 +508,14 @@ void cmd_state_query(uart_instance_t *inst, char *args)
                section). */
             snprintf(buf, sizeof(buf), "OK %s EXTERNAL_ENABLE\r\n", name);
         }
+        else if (SM_GetFaultType() == SM_FAULT_EMERGENCY_STOP)
+        {
+            /* Added 2026-09-17 -- distinct from GENERAL for operator
+               diagnostics (an immediate hard cutoff, NOT the graceful
+               ramp-down every other fault type here uses -- see
+               state_machine.h's own emergency-stop section). */
+            snprintf(buf, sizeof(buf), "OK %s EMERGENCY_STOP\r\n", name);
+        }
         else
         {
             snprintf(buf, sizeof(buf), "OK %s GENERAL\r\n", name);
@@ -613,6 +622,55 @@ void cmd_ext_trigger_query(uart_instance_t *inst, char *args)
 }
 
 /* --------------------------------------------------------------------------
+ * EMERGency:ENAble <0|1> / EMERGency:ENAble? / EMERGency:INPut?
+ *
+ * Added 2026-09-17, per direct request. See state_machine.h's own
+ * emergency-stop design comment (SM_SetEmergencyStopRequired() and
+ * friends) for the full design -- this is just the wire-command
+ * wrapper. PG10, NOT the same pin as EXTernal:ENAble above (PF15) --
+ * a completely separate fiber-optic input. Own top-level `EMERGency:`
+ * namespace, same reasoning as `EXTernal:` -- system-wide config, not
+ * nested under `PID:` or any other existing prefix. */
+void cmd_emerg_enable(uart_instance_t *inst, char *args)
+{
+    char *tok;
+    long  val;
+
+    tok = (args != NULL) ? strtok(args, " \r\n") : NULL;
+    if (tok == NULL)
+    {
+        SendErr(inst, 12, "EMERGency:ENAble needs one argument: 0|1");
+        return;
+    }
+    val = atol(tok);
+
+    SM_SetEmergencyStopRequired((val != 0L) ? 1U : 0U);
+    uart_send(inst, "OK\r\n");
+}
+
+void cmd_emerg_enable_query(uart_instance_t *inst, char *args)
+{
+    char buf[16];
+    (void)args;
+
+    snprintf(buf, sizeof(buf), "OK %u\r\n", (unsigned)SM_GetEmergencyStopRequired());
+    uart_send(inst, buf);
+}
+
+/* Raw PG10 logic level, independent of whether the feature is even
+   turned on -- lets an operator confirm real wiring/signal presence
+   before relying on it, same diagnostic role EXTernal:INPut? plays for
+   PF15. */
+void cmd_emerg_input_query(uart_instance_t *inst, char *args)
+{
+    char buf[16];
+    (void)args;
+
+    snprintf(buf, sizeof(buf), "OK %u\r\n", (unsigned)SM_GetEmergencyStopInputRaw());
+    uart_send(inst, buf);
+}
+
+/* --------------------------------------------------------------------------
  * DIAGnostic:GPOut12 <0|1> / DIAGnostic:GPOut12?
  *
  * Added 2026-09-16, per direct request: a generic, software-driven
@@ -657,6 +715,51 @@ void cmd_diag_gpout12_query(uart_instance_t *inst, char *args)
 
     snprintf(buf, sizeof(buf), "OK %u\r\n",
              (unsigned)(HAL_GPIO_ReadPin(GPIOD, GPIO_PIN_1) == GPIO_PIN_SET ? 1U : 0U));
+    uart_send(inst, buf);
+}
+
+/* --------------------------------------------------------------------------
+ * DIAGnostic:OPTBytes?
+ *
+ * TEMPORARY diagnostic, added 2026-09-17 -- direct request: is PB8
+ * (this board's BOOT0 net, docs/pin_mapping_v4.csv) actually available
+ * as a plain GPIO after boot, or does it stay committed to boot-mode
+ * sampling? Reads the LIVE FLASH_OPTR register (FLASH->OPTR, loaded
+ * from the option bytes at reset -- stm32g474xx.h's own bit
+ * definitions, not guessed) rather than relying on memory of what the
+ * G4 family "usually" does. The three bits that actually decide this,
+ * per the CMSIS header:
+ *   nBOOT0     (bit 27) -- the option-byte-supplied boot0 VALUE, used
+ *              only when nSWBOOT0 (below) is 0.
+ *   nSWBOOT0   (bit 26) -- 1 = boot0 is read from the physical pin
+ *              (BOOT0/PB8, whichever this package/remap uses); 0 =
+ *              boot0 is taken ENTIRELY from the nBOOT0 option-byte
+ *              value above, and the physical pin is NOT sampled at
+ *              all for boot purposes -- meaning if nSWBOOT0=0, PB8 is
+ *              free for GPIO use regardless of any BOOT0/PB8 remap
+ *              question, since nothing ever reads it at boot either
+ *              way.
+ *   nBOOT1     (bit 23) -- combines with the effective boot0 value
+ *              (whichever source) to select the final boot target
+ *              (main flash / system memory / SRAM).
+ * Does NOT itself answer whether PB8 is safe to repurpose -- that
+ * still depends on nSWBOOT0's value once read back for real, and
+ * separately, on what PG10 (the other pin asked about, this board's
+ * own "NRST"-labeled net) is actually wired to on the schematic, which
+ * no register on this chip can reveal -- only the schematic can.
+ * Remove once the PB8/PG10 GPIO-reuse question is settled. */
+void cmd_diag_optbytes_query(uart_instance_t *inst, char *args)
+{
+    char buf[96];
+    (void)args;
+
+    uint32_t optr = FLASH->OPTR;
+
+    snprintf(buf, sizeof(buf), "OK OPTR=%08lX nBOOT0=%u nSWBOOT0=%u nBOOT1=%u\r\n",
+             (unsigned long)optr,
+             (unsigned)((optr & FLASH_OPTR_nBOOT0) != 0U),
+             (unsigned)((optr & FLASH_OPTR_nSWBOOT0) != 0U),
+             (unsigned)((optr & FLASH_OPTR_nBOOT1) != 0U));
     uart_send(inst, buf);
 }
 
@@ -774,6 +877,48 @@ void cmd_gds_query(uart_instance_t *inst, char *args)
     }
     snprintf(&buf[len], sizeof(buf) - (size_t)len, "\r\n");
 
+    uart_send(inst, buf);
+}
+
+/* --------------------------------------------------------------------------
+ * XREX:CHANnel:STATus? <ch>
+ *
+ * Added 2026-09-17, per direct request: an XR-labeled diagnostic
+ * alongside the existing GDS? (raw GateDriverStatus_01..12 readback,
+ * above) -- reports one Transrex channel's own Water/Temp/Enerpro/OCP
+ * pins together, by name, rather than needing to remember which of the
+ * 16 underlying physical pins corresponds to which signal. Raw levels
+ * (HIGH/LOW), polarity-agnostic -- same convention GDS?/EXTernal:INPut?/
+ * EMERGency:INPut? already use; XR_WATER_FLT_POLARITY/etc.
+ * (ctrlr_config.h) are what determine which raw level actually means
+ * "faulted," not this command. See xrex_io.h's own header comment for
+ * the full XR1..XR4 pin-naming design. */
+void cmd_xrex_channel_status(uart_instance_t *inst, char *args)
+{
+    char *tok;
+    long  chArg;
+    char  buf[80];
+
+    tok = (args != NULL) ? strtok(args, " \r\n") : NULL;
+    if (tok == NULL)
+    {
+        SendErr(inst, 12, "XREX:CHANnel:STATus? needs one argument: channel");
+        return;
+    }
+    chArg = atol(tok);
+
+    if ((chArg < 1L) || (chArg > (long)HRTIM_NUM_CHANNELS))
+    {
+        SendErr(inst, 11, "Invalid PID channel");
+        return;
+    }
+
+    uint8_t water = 0U, tmp = 0U, enerpro = 0U, ocp = 0U;
+    (void)XrexIo_GetChannelStatus((uint8_t)(chArg - 1L), &water, &tmp, &enerpro, &ocp);
+
+    snprintf(buf, sizeof(buf), "OK WATER=%s TMP=%s ENERPRO=%s OCP=%s\r\n",
+             water ? "HIGH" : "LOW", tmp ? "HIGH" : "LOW",
+             enerpro ? "HIGH" : "LOW", ocp ? "HIGH" : "LOW");
     uart_send(inst, buf);
 }
 

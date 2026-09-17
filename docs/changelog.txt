@@ -1,6 +1,139 @@
 WHAM-XREX-PFMG474 Firmware Changelog
 =====================================
 
+2026-09-17  —  XREX pin relabeling + real per-channel Water/Temp/
+               Enerpro/OCP fault detection (xrex_io.c, new module);
+               NORMALLY_HIGH polarity override; XREX:CHANnel:STATus?
+-----------------------------------------------------------------------
+  Change:  User added a new "XREX Pin Name" column to docs/
+        pin_mapping_v4.csv, naming a variety of pins on this Transrex
+        controller by role: XR1-XR4 are Transrex 1-4, each with its own
+        _WATER_FLT/_TMP_FLT/_ENERPRO_FLT/_OCP_FLT (fault inputs),
+        _FEEDBACK/_DRIVE (relabels of the existing PFM_Input_01..04 and
+        HRTIM1_CH* pins, zero functional change), and _ENA_OUT/
+        _CONTACT_OUT (new outputs, explicitly DEFERRED -- see below).
+        Extracted the full mapping PROGRAMMATICALLY (a Python
+        csv.DictReader script, not by eye), given the safety stakes and
+        this project's established pattern of catching pin-mapping
+        mismatches early (PC14-vs-PF15, PF13-vs-PD1, both 2026-09-16).
+
+        Requested behavior: Water/Temp/Enerpro count as "General Fault"
+        (SM_FAULT_GENERAL); OCP is its own fault type
+        (SM_FAULT_OVERCURRENT); each fault category independently
+        polarity-configurable, defaulting NORMALLY_HIGH; and -- the
+        core new behavior -- a channel's own fault pins only count
+        toward a fault when that Transrex channel is actually enabled
+        (PID_GetChannelEnable()), so e.g. running XR1 alone never
+        blocks/stops output because XR2/3/4's fault pins read LOW.
+
+        POLARITY CONFLICT, resolved by direct user confirmation: the
+        existing GDS_FAULT_POLARITY = GDS_NORMALLY_LOW (ctrlr_config.h)
+        had been set 2026-09-08 from a real hardware snapshot of these
+        SAME 12 physical pins (11/12 LOW, 1 HIGH, consistent with
+        LOW=healthy). The user's new instruction requires the OPPOSITE
+        -- NORMALLY_HIGH -- for Water/Temp/Enerpro. Confirmed directly
+        ("During normal non-faulted operation, these pins will be
+        normally high... falling edge registers as a fault") as a
+        deliberate override, not a mistake, and implemented as such,
+        with the contradiction documented in ctrlr_config.h. NOT yet
+        independently re-verified against a real healthy (non-floating)
+        signal on these pins -- flagged open below.
+
+        EXTI HARDWARE CONFLICT, found before implementation, not after:
+        initial plan was EXTI-interrupt-driven OCP detection (user's
+        own first choice, on my recommendation). Before writing any
+        code, mapped the 4 new OCP pins (PF4/PF5/PF8/PF12) to their EXTI
+        line numbers and found PF4(EXTI4)/PF5(EXTI5)/PF8(EXTI8) directly
+        conflict with PE4/PE5/PE8 -- already claimed by the existing
+        GateDriverStatus EXTI setup (STM32's 16 EXTI lines are shared
+        project-wide, one GPIO port per line via SYSCFG_EXTICR); only
+        PF12(EXTI12, XR3_OCP) was actually free. Flagged this as a real
+        hardware constraint, not a preference; user agreed to poll all
+        4 OCP pins uniformly instead of mixing 3-polled-1-EXTI.
+
+        New module Core/Src/xrex_io.c + Core/Inc/xrex_io.h -- owns all
+        new XREX-semantic fault interpretation, sitting ON TOP of
+        gate_driver.c's existing raw GateDriver_Read() accessor for
+        Water/Temp/Enerpro (reused, not duplicated) and owning entirely
+        new OCP polling (no prior code existed for this).
+        gate_driver.c's own naming/identity/GDS?/GateDriver_* functions
+        deliberately left UNCHANGED (per direct labeling-scope decision
+        -- "add a secondary label for querying, then document and new
+        code" -- the GDS/GateDriverStatus language stays as-is, it was
+        chosen for the sibling limiter/HVPS h-bridge supplies project
+        and is simply outdated terminology here, not wrong code); only
+        GateDriver_CheckFault()'s internal fault-DECISION logic now
+        delegates to XrexIo_EvaluateGateDriverFault().
+
+        New XrexIo_PollOcpFaults() called every PID_Update() tick and
+        once at boot, alongside the existing SM_PollFaults() call --
+        reads PF4/PF5/PF8/PF12 directly (GPIO_PULLDOWN, matching this
+        project's established fail-safe-default convention) and calls
+        the pre-existing SM_ReportOcpFault(channel) (originally added
+        for OCP:TEST:FAULT software injection) on a real fault.
+
+        New XREX:CHANnel:STATus? <ch> (commands.c/.h, cmd_parser.c) --
+        per-channel WATER/TMP/ENERPRO/OCP readback by name, backed by
+        new XrexIo_GetChannelStatus(). Reuses ERR 11/12 (invalid/
+        missing channel), matching every other numbered-channel
+        command's convention -- no new error codes needed.
+
+        BUILD GOTCHA hit and fixed (matches AGENTS.md's own documented
+        pattern for this exact situation): xrex_io.c compiled cleanly
+        but the FIRST link attempt failed with "undefined reference to
+        XrexIo_*" from every caller (commands.c, gate_driver.c, main.c,
+        pid.c) -- Debug/Core/Src/subdir.mk and Debug/objects.list are
+        static, CubeIDE-generated files that don't auto-discover new
+        source files added outside the IDE. Hand-patched both (adding
+        xrex_io.c/.o/.d entries) -- second build linked clean, zero
+        warnings, full `wham_build.py --clean` also clean.
+
+  Verify: Reflashed (python/wham_serial_flash.py) and verified live over
+        serial, 2026-09-17:
+
+        1. XREX:CHANnel:STATus? 1-4 -- all four correctly report
+           WATER/TMP/ENERPRO/OCP (matching GDS?'s own raw readback for
+           the first three); ch=0 and ch=5 correctly ERR 11, missing
+           argument correctly ERR 12.
+        2. Per-channel gating, the core new behavior: at boot, with
+           PID_Init()'s default outputEnabled=1 on channel 1 and NOTHING
+           physically wired yet to the new OCP pins (floating,
+           GPIO_PULLDOWN -> LOW -> fault under NORMALLY_HIGH), the new
+           polling correctly latched STATE? FAULT OVERCURRENT 1 --
+           confirming the whole real-hardware chain (pin read -> polarity
+           -> SM_ReportOcpFault -> state machine) fires correctly, not
+           just compiles. Disabled all 4 channels (PID:CHANnel:ENAble
+           <ch> 0) and FAULT:CLEAR -- STATE? stayed IDLE afterward even
+           though GDS? still showed all 12 pins LOW and all 4 OCP pins
+           LOW -- direct confirmation that a disabled channel's fault
+           pins are genuinely excluded, not just narrowly not-yet-
+           triggered.
+        3. Channel-identity correctness: with ALL channels still
+           disabled, enabled ONLY channel 3 (PID:CHANnel:ENAble 3 1) --
+           STATE? immediately reported FAULT OVERCURRENT 3, not 1 or any
+           other channel, confirming the PF4/PF8/PF12/PF5 -> XR1-XR4
+           pin table (irregular, hand-written, not arithmetic) is
+           correct. Disabled channel 3 again, FAULT:CLEAR, confirmed
+           back to a clean STATE? IDLE with all 4 channels disabled --
+           board left in a known-safe idle state.
+
+        NOT YET VERIFIED: the actual physical Water/Temp/Enerpro/OCP
+        signal sources are not wired to these pins on the bench yet --
+        every real-hardware check above exercised the fail-safe
+        floating/LOW state, not a genuine HIGH-healthy vs LOW-faulted
+        transition from a real sensor/gate-driver signal. The
+        NORMALLY_HIGH polarity default in particular is a direct-
+        instruction override of a previously hardware-confirmed value
+        and needs its own independent real-signal confirmation once
+        these pins are actually connected -- flagged in
+        pending-hardware-calibration.md.
+
+        DEFERRED, not part of this change: XRn_ENA_OUT (PG0-PG3) and
+        XRn_CONTACT_OUT (PG4-PG7) -- per-channel enable/contactor
+        OUTPUT signals from the same new pin_mapping_v4.csv column. Pin
+        identities are confirmed; no GPIO config, command, or behavior
+        exists for them yet.
+
 2026-09-16  —  DIAGnostic:GPOut12 added (PD1); external-enable AND
                external-trigger CONFIRMED on real hardware, exact
                numbers below -- both previous same-day entries closed

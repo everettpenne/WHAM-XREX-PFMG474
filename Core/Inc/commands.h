@@ -144,7 +144,8 @@ void cmd_state_query(uart_instance_t *inst, char *args);  /* STATE? -- OK <IDLE|
                                                                 OK FAULT GENERAL, or
                                                                 OK FAULT OVERCURRENT <ch>
                                                                 (1-based), or
-                                                                OK FAULT EXTERNAL_ENABLE */
+                                                                OK FAULT EXTERNAL_ENABLE, or
+                                                                OK FAULT EMERGENCY_STOP */
 
 /* External-enable interlock (PF15, "Fiber_Enable"), added 2026-09-16 --
  * see state_machine.h's own external-enable section for the full design.
@@ -171,6 +172,23 @@ void cmd_ext_trigger(uart_instance_t *inst, char *args);       /* EXTernal:TRIGg
 void cmd_ext_trigger_query(uart_instance_t *inst, char *args); /* EXTernal:TRIGger? -- OK
                                                                     <0|1> */
 
+/* Emergency stop (PG10, a fiber-optic input -- NOT PF15), added
+ * 2026-09-17 -- see state_machine.h's own design comment
+ * (SM_SetEmergencyStopRequired() and friends). Own top-level
+ * `EMERGency:` namespace. Immediate, unconditional hard cutoff (no
+ * ramp) when asserted (LOW) and this is on -- see
+ * HandleEmergencyStopFault() (state_machine.c). "Acts as though it
+ * does not exist" when off, per direct instruction -- no PG10 read at
+ * all in that case. */
+void cmd_emerg_enable(uart_instance_t *inst, char *args);       /* EMERGency:ENAble <0|1> --
+                                                                     OK */
+void cmd_emerg_enable_query(uart_instance_t *inst, char *args); /* EMERGency:ENAble? -- OK
+                                                                     <0|1> */
+void cmd_emerg_input_query(uart_instance_t *inst, char *args);  /* EMERGency:INPut? -- OK
+                                                                     <0|1>, raw PG10 level,
+                                                                     independent of whether
+                                                                     the feature is on */
+
 /* Generic diagnostic output on PD1 ("GPOut_12" in pin_mapping_v4.csv's
  * V4 column), added 2026-09-16 -- see cmd_diag_gpout12()'s own doc
  * comment (commands.c) for the full reasoning. Not gated behind a
@@ -181,6 +199,15 @@ void cmd_diag_gpout12(uart_instance_t *inst, char *args);       /* DIAGnostic:GP
                                                                      -- OK */
 void cmd_diag_gpout12_query(uart_instance_t *inst, char *args); /* DIAGnostic:GPOut12? --
                                                                      OK <0|1> */
+
+/* TEMPORARY diagnostic, added 2026-09-17 -- see cmd_diag_optbytes_query()'s
+ * own doc comment (commands.c) for the full reasoning: reads the live
+ * FLASH_OPTR register to determine whether PB8 (BOOT0) is actually
+ * available for GPIO reuse post-boot. Remove once the PB8/PG10
+ * GPIO-reuse question is settled. */
+void cmd_diag_optbytes_query(uart_instance_t *inst, char *args); /* DIAGnostic:OPTBytes? --
+                                                                      OK OPTR=.. nBOOT0=..
+                                                                      nSWBOOT0=.. nBOOT1=.. */
 
 /* TEMPORARY debug/verification command, added 2026-09-15 -- software
  * fault injection for SM_ReportOcpFault() (state_machine.h), since no
@@ -213,6 +240,21 @@ void cmd_config_channels(uart_instance_t *inst, char *args); /* CONFig:CHANnels?
  * state per pin, on a single OK line -- see commands.c for the exact
  * format. */
 void cmd_gds_query(uart_instance_t *inst, char *args); /* GDS? -- OK 01=HIGH|LOW ... 12=HIGH|LOW */
+
+/* Per-Transrex-channel fault-pin readback, added 2026-09-17 alongside
+ * the new xrex_io.c module -- reports one channel's own Water/Temp/
+ * Enerpro/OCP pins together, by name, rather than needing to remember
+ * which of GDS?'s 12 raw pins (or the 4 new OCP pins) maps to which
+ * signal for a given Transrex. Raw HIGH/LOW levels only, same
+ * polarity-agnostic convention as GDS?/EXTernal:INPut?/
+ * EMERGency:INPut? -- ctrlr_config.h's XR_WATER_FLT_POLARITY/etc. are
+ * what decide which level actually means "faulted," not this command.
+ * 1-based channel argument, matching this project's universal wire
+ * convention (ERR 11 if out of range, ERR 12 if missing). See
+ * xrex_io.h for the full pin-naming/gating design. */
+void cmd_xrex_channel_status(uart_instance_t *inst, char *args); /* XREX:CHANnel:STATus? <ch> --
+                                                                      OK WATER=HIGH|LOW TMP=HIGH|LOW
+                                                                      ENERPRO=HIGH|LOW OCP=HIGH|LOW */
 
 /* QUADSPI connectivity test (PE12-PE15/PB10-PB11, W25Q128JVS) -- see
  * qspi_test.h. Issues the flash's standard JEDEC Read ID instruction

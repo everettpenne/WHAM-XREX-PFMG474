@@ -366,28 +366,40 @@ decision (see `docs/command_reference.md`'s `FIRE` entry).
      PE0-PE11 `GPIO_MODE_IT_RISING_FALLING`/`GPIO_NOPULL`, backing 7
      EXTI IRQ handlers (`stm32g4xx_it.c`) that all call
      `GateDriver_CheckFault()` (`gate_driver.c`): re-reads all 12 pins
-     bitwise and evaluates them against the compile-time
-     `GDS_FAULT_POLARITY` (`ctrlr_config.h`, `NORMALLY_HIGH` or
-     `NORMALLY_LOW`) -- if any pin is in its fault state, immediately
-     `PFM_ForceStop()`s HRTIM output and latches. One boot-time
-     explicit call (`main.c`) also runs this check once, closing a
-     real gap: EXTI is edge-triggered, so a pin already in its fault
-     state before the interrupt is even configured produces no edge
-     and would otherwise go undetected until something happened to
-     toggle it. `GateDriver_FaultClear()` re-validates immediately
-     after clearing (calls `GateDriver_CheckFault()` again) for the
-     same reason -- unlike PC10's hardware latch, which re-trips on
-     its own if still physically tripped, a still-bad GateDriverStatus
-     pin needs this explicit recheck or a clear would silently "fix"
-     a fault that's still there. **Verified on real hardware,
-     end-to-end**: `GDS_FAULT_POLARITY = GDS_NORMALLY_LOW` was set
-     after confirming this board's actual gate driver wiring; the
-     board's GateDriverStatus_03 (PE2) was already HIGH (a fault under
-     that polarity) at boot -- `FAULT?` correctly read `OK 1`
-     immediately after flashing, `FIRE` was correctly rejected with
-     `ERR 6`, and `FAULT:CLEAR` correctly re-latched (`FAULT?` back to
-     `OK 1`) rather than clearing a fault that was still physically
-     present.
+     bitwise and, as of 2026-09-17, delegates the fault DECISION to
+     `XrexIo_EvaluateGateDriverFault()` (`xrex_io.c`, new module) --
+     these 12 pins are `docs/pin_mapping_v4.csv`'s new "XREX Pin Name"
+     column's `XR1`-`XR4` `_WATER_FLT`/`_TMP_FLT`/`_ENERPRO_FLT`
+     signals, each category independently polarity-configurable
+     (`XR_WATER_FLT_POLARITY`/`XR_TMP_FLT_POLARITY`/
+     `XR_ENERPRO_FLT_POLARITY`, `ctrlr_config.h` -- **replaces** the old
+     single shared `GDS_FAULT_POLARITY`), and gated so a disabled
+     Transrex channel's own pins never count toward a fault
+     (`PID_GetChannelEnable()`) -- see `docs/command_reference.md`'s
+     `XREX:CHANnel:STATus?` section for the full design and real-
+     hardware verification. If any pin is in its fault state, this
+     still immediately `PFM_ForceStop()`s HRTIM output and latches,
+     unchanged. One boot-time explicit call (`main.c`) also runs this
+     check once, closing a real gap: EXTI is edge-triggered, so a pin
+     already in its fault state before the interrupt is even
+     configured produces no edge and would otherwise go undetected
+     until something happened to toggle it. `GateDriver_FaultClear()`
+     re-validates immediately after clearing (calls
+     `GateDriver_CheckFault()` again) for the same reason -- unlike
+     PC10's hardware latch, which re-trips on its own if still
+     physically tripped, a still-bad GateDriverStatus pin needs this
+     explicit recheck or a clear would silently "fix" a fault that's
+     still there. **Historical note**: `GDS_FAULT_POLARITY =
+     GDS_NORMALLY_LOW` (removed 2026-09-17) had itself been verified
+     end-to-end on real hardware on 2026-09-08 -- the board's
+     GateDriverStatus_03 (PE2) was already HIGH (a fault under that
+     polarity) at boot, and `FAULT?`/`FIRE`/`FAULT:CLEAR` all behaved
+     correctly against it. The new per-category `NORMALLY_HIGH`
+     defaults are the OPPOSITE of that confirmed value -- a deliberate
+     override per direct instruction, not yet independently
+     re-verified against a real (non-floating) healthy signal on these
+     same physical pins -- see `docs/command_reference.md` for the
+     full caveat.
 
   Both sources: latched-until-cleared by design (matching the sibling
   project's Lockout/`CLEARFAULTS` convention); `FAULT:CLEAR` never
@@ -665,7 +677,11 @@ its generated per-directory `subdir.mk` and the top-level
 `Debug/objects.list` are **not** automatically refreshed by a plain
 `make`. Every file added this way in this project (`Core/Src`:
 `boot_jump.c`, `cmd_parser.c`, `commands.c`, `uart.c`, `gate_driver.c`,
-`qspi_test.c`, `pfm_input.c`; `Drivers/STM32G4xx_HAL_Driver/Src`:
+`qspi_test.c`, `pfm_input.c`, `xrex_io.c` (2026-09-17 -- re-confirmed
+the gotcha exactly as described here: a first build after adding it
+compiled `xrex_io.c` fine but failed to LINK, `undefined reference to
+XrexIo_*` from every caller, until `Debug/Core/Src/subdir.mk` and
+`Debug/objects.list` were both hand-patched); `Drivers/STM32G4xx_HAL_Driver/Src`:
 `stm32g4xx_hal_qspi.c`, `stm32g4xx_hal_tim.c`, `stm32g4xx_hal_tim_ex.c`
 -- all copied in from an external HAL package rather than hand-written,
 but the exact same gotcha applies) needed its

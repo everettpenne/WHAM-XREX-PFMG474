@@ -31,6 +31,7 @@
 #include "pfm_input.h"
 #include "pid.h"
 #include "state_machine.h"
+#include "xrex_io.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -169,9 +170,13 @@ int main(void)
      check, before this state machine even existed) already found a
      real pre-existing fault: an immediate SM_PollFaults() right after
      SM_Init() picks that up, so a board that boots with a fault
-     already present correctly starts in FAULT, not IDLE. */
+     already present correctly starts in FAULT, not IDLE. XrexIo_PollOcpFaults()
+     (xrex_io.h, added 2026-09-17) is called right alongside it for the
+     same reason -- a board that boots with a real OCP condition already
+     present should also start in FAULT, not IDLE. */
   SM_Init();
   SM_PollFaults();
+  XrexIo_PollOcpFaults();
 
   uart_init(&uart2, &huart2);
 
@@ -196,8 +201,13 @@ int main(void)
        state_machine.h's own SM_PollFaults() comment for why this needs
        to run here too, not just from PID_Update() (which only runs
        while FIRING). Cheap: both underlying reads are simple flag
-       checks, not full re-scans. */
+       checks, not full re-scans. XrexIo_PollOcpFaults() (xrex_io.h,
+       added 2026-09-17) runs at this same cadence for the same reason
+       -- OCP is polled, not EXTI-driven (see xrex_io.h's own header
+       comment for why), so it needs this same "regardless of state"
+       call site to work at all. */
     SM_PollFaults();
+    XrexIo_PollOcpFaults();
     /* Polls for a completed serial command line and dispatches it. */
     uart_process(&uart2);
   }
@@ -490,6 +500,89 @@ static void MX_GPIO_Init(void)
       extEnableInit.Mode = GPIO_MODE_INPUT;
       extEnableInit.Pull = GPIO_PULLDOWN;
       HAL_GPIO_Init(GPIOF, &extEnableInit);
+  }
+
+  /* PG10 -- a fiber-optic emergency-stop input, added 2026-09-17 for
+     the emergency-stop feature (state_machine.c's own emergency-stop
+     section has the full design). docs/pin_mapping_v4.csv labels this
+     net "NRST" -- confirmed directly with the user this is a stale/
+     incorrect label, NOT this MCU's own reset function (that's a
+     separate, dedicated silicon pin, not part of any GPIO port). A
+     100nF cap to ground already exists on this net (per the user) --
+     fine/beneficial mild filtering for a deliberately slow-changing
+     safety signal, not a concern the way it would be for a fast-
+     switching PFM_Input capture pin.
+
+     PB8 (this board's BOOT0 net) was considered FIRST for this purpose
+     and REJECTED -- a live FLASH_OPTR register read
+     (DIAGnostic:OPTBytes?, commands.c) confirmed nSWBOOT0=1 on this
+     chip, meaning PB8 is genuinely sampled for boot-mode selection on
+     EVERY reset, not just first power-on; an active-LOW E-stop's own
+     idle (non-emergency) HIGH state is exactly the "boot into the ROM
+     bootloader instead of the application" condition here, which would
+     silently break normal boot on any ordinary reset during non-
+     emergency operation. PG10, an ordinary GPIO pin with no boot-time
+     role at all, has none of that risk.
+
+     Plain polled input, no EXTI -- same reasoning as PF15 just above:
+     state_machine.c's SM_PollFaults() already checks this at the same
+     cadence (main loop + every real PID_Update() tick) General Fault's
+     own two hardware sources get.
+
+     GPIO_PULLDOWN, matching PF15's own fail-safe reasoning (even
+     though the SAFE direction happens to be the same polarity by
+     coincidence here, not because the reasoning is identical): an
+     unconnected/floating PG10 must read LOW -- E-stop ASSERTED, the
+     safe default for a stop function (a broken/disconnected E-stop
+     wire should read as "stop," never as "all clear"). */
+  {
+      GPIO_InitTypeDef eStopInit = {0};
+
+      __HAL_RCC_GPIOG_CLK_ENABLE();
+
+      eStopInit.Pin  = GPIO_PIN_10;
+      eStopInit.Mode = GPIO_MODE_INPUT;
+      eStopInit.Pull = GPIO_PULLDOWN;
+      HAL_GPIO_Init(GPIOG, &eStopInit);
+  }
+
+  /* XR1_OCP/XR2_OCP/XR3_OCP/XR4_OCP (PF4/PF8/PF12/PF5,
+     docs/pin_mapping_v4.csv's new "XREX Pin Name" column), added
+     2026-09-17 -- real per-channel overcurrent-protect fault inputs,
+     the first real hardware trigger for SM_ReportOcpFault()
+     (state_machine.h) to ever exist in this codebase (previously only
+     reachable via the software-injection OCP:TEST:FAULT command). See
+     xrex_io.h's own extensive header comment for the full design --
+     xrex_io.c's XrexIo_PollOcpFaults() reads these.
+
+     POLLED, not EXTI-driven -- a real hardware conflict, not a
+     preference: 3 of these 4 pins' EXTI line numbers (EXTI4, EXTI5,
+     EXTI8) are already claimed by the EXISTING GateDriverStatus EXTI
+     setup on PE4/PE5/PE8 just above (STM32's 16 EXTI lines are shared
+     project-wide, one GPIO port per line number via SYSCFG_EXTICR --
+     PF4 and PE4 genuinely cannot both be interrupt sources
+     simultaneously). Rather than split these 4 pins across two
+     different detection mechanisms, all 4 are polled uniformly,
+     alongside state_machine.c's own SM_PollFaults() calls (main loop +
+     PID_Update()) -- see xrex_io.h for the full reasoning.
+
+     GPIO_PULLDOWN, NOT this project's usual GPIO_NOPULL for the
+     EXISTING GateDriverStatus pins (which ARE the same class of
+     gate-driver-IC-sourced signal) -- deliberate, matching the fail-
+     safe reasoning already applied to PF15/PG10 above: with
+     XR_OCP_FLT_POLARITY (ctrlr_config.h) defaulting NORMALLY_HIGH, an
+     unconnected/floating OCP pin must read LOW -- fault asserted, the
+     safe default -- rather than an undefined level that could
+     accidentally read HIGH and falsely look healthy. */
+  {
+      GPIO_InitTypeDef ocpInit = {0};
+
+      __HAL_RCC_GPIOF_CLK_ENABLE();
+
+      ocpInit.Pin  = GPIO_PIN_4 | GPIO_PIN_5 | GPIO_PIN_8 | GPIO_PIN_12;
+      ocpInit.Mode = GPIO_MODE_INPUT;
+      ocpInit.Pull = GPIO_PULLDOWN;
+      HAL_GPIO_Init(GPIOF, &ocpInit);
   }
 
   /* PD1 ("GPOut_12" in the V4 column, docs/pin_mapping_v4.csv --

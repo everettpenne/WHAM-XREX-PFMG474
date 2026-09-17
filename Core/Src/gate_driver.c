@@ -14,6 +14,7 @@
 #include "pfm.h"
 #include "pid.h"
 #include "main.h"
+#include "xrex_io.h"
 
 #define GDS_PIN_MASK   (GPIO_PIN_0  | GPIO_PIN_1  | GPIO_PIN_2  | GPIO_PIN_3  | \
                         GPIO_PIN_4  | GPIO_PIN_5  | GPIO_PIN_6  | GPIO_PIN_7  | \
@@ -34,21 +35,21 @@ uint16_t GateDriver_Read(void)
 void GateDriver_CheckFault(void)
 {
     uint16_t raw = GateDriver_Read();
-    uint16_t badBits;
 
-    /* See ctrlr_config.h's GDS_FAULT_POLARITY comment -- exactly the
-       "bitwise read PE0..PE11, fault on HIGH if normally-low / fault
-       on LOW if normally-high" logic requested when this was added. */
-    if (GDS_FAULT_POLARITY == GDS_NORMALLY_LOW)
-    {
-        badBits = raw & GDS_PIN_MASK;
-    }
-    else
-    {
-        badBits = (uint16_t)(~raw) & GDS_PIN_MASK;
-    }
-
-    if (badBits != 0U)
+    /* Fault decision delegated to xrex_io.c, 2026-09-17 -- see that
+       file's own header comment for the full reasoning: these 12 pins
+       are now interpreted with per-Transrex-channel semantics
+       (XRn_WATER_FLT/_TMP_FLT/_ENERPRO_FLT, docs/pin_mapping_v4.csv's
+       new "XREX Pin Name" column), each category independently
+       polarity-configurable (ctrlr_config.h's XR_WATER_FLT_POLARITY/
+       XR_TMP_FLT_POLARITY/XR_ENERPRO_FLT_POLARITY -- REPLACES the old
+       single shared GDS_FAULT_POLARITY this function used to check
+       directly), and gated so a disabled channel's own pins never
+       count toward a fault. This function's own EXTI-trigger/latch/
+       PFM_ForceStop(Soft) mechanics below are otherwise UNCHANGED --
+       still the same "any real fault among these 12 pins" response,
+       just a smarter decision of what counts as one. */
+    if (XrexIo_EvaluateGateDriverFault(raw) != 0U)
     {
         /* *** REAL BUG, FIXED 2026-09-15, confirmed on real hardware ***
            -- see PFM_ForceStopSoft()'s own extensive doc comment

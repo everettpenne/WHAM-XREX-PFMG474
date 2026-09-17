@@ -145,6 +145,57 @@ extern "C" {
  *                              FAULT:CLEAR re-validation, the deliberate
  *                              GPIO_PULLDOWN fail-safe choice).
  *
+ *   SM_FAULT_EMERGENCY_STOP  -- ADDED 2026-09-17, per direct request: a
+ *                              real, physical emergency-stop input
+ *                              (PG10, a fiber-optic receiver input --
+ *                              docs/pin_mapping_v4.csv mislabels this
+ *                              net "NRST", a stale/incorrect name, NOT
+ *                              this MCU's own reset function; confirmed
+ *                              directly with the user). Active LOW:
+ *                              PG10 read LOW means the E-stop is
+ *                              asserted. UNLIKE every other fault type
+ *                              above, deliberately NOT a graceful
+ *                              ramp-down -- HandleEmergencyStopFault()
+ *                              (state_machine.c) calls PID_Stop()
+ *                              directly and unconditionally, with no
+ *                              g_stateBeforeFault branch at all (every
+ *                              other handler ramps if the fault hit
+ *                              while FIRING; this one never does,
+ *                              regardless of state) -- an immediate,
+ *                              unconditional hard cutoff of every
+ *                              enabled channel is the explicit point of
+ *                              an EMERGENCY stop, not a softer
+ *                              "eventually stops" response. Checked
+ *                              continuously in SM_PollFaults() across
+ *                              ALL states (IDLE/ARMED/FIRING alike),
+ *                              matching General Fault's own PC10/
+ *                              GateDriverStatus precedent -- NOT the
+ *                              FIRING-only carve-out External-Enable
+ *                              above deliberately uses; there is no
+ *                              ARM/PID:PROFile:STARt-time gating for
+ *                              this one either, not asked for and not
+ *                              added. Fully opt-in
+ *                              (EMERGency:ENAble/EMERGency:ENAble?) --
+ *                              per direct instruction, "when the E-stop
+ *                              feature is disabled, we act as though it
+ *                              does not exist and the firmware
+ *                              functions like it did before we
+ *                              implemented it": every check below
+ *                              (SM_PollFaults(), SM_ClearFault()) is
+ *                              gated on the enable flag FIRST, with
+ *                              zero behavior change of any kind
+ *                              (including no PG10 read at all) when
+ *                              it's off. `FAULT:CLEAR` re-validates
+ *                              PG10 is back HIGH before actually
+ *                              clearing, same philosophy as every other
+ *                              fault type. `GPIO_PULLDOWN` (main.c),
+ *                              matching PF15's own reasoning: an
+ *                              unconnected/floating PG10 must read LOW
+ *                              (E-stop asserted, the SAFE default for a
+ *                              stop function) rather than an undefined
+ *                              level that could read HIGH and falsely
+ *                              look clear.
+ *
  * *** NOTE TO REVISIT *** -- per direct instruction, "we will define the
  * mapping here at a later time": SM_ReportOcpFault(channel) is a real,
  * callable, fully-implemented entry point (and OCP:TEST:FAULT, commands.c,
@@ -231,7 +282,10 @@ typedef enum
                                SM_GetState() != SM_STATE_FAULT */
     SM_FAULT_GENERAL,
     SM_FAULT_OVERCURRENT,
-    SM_FAULT_EXTERNAL_ENABLE   /* added 2026-09-16 -- see the external-enable
+    SM_FAULT_EXTERNAL_ENABLE,  /* added 2026-09-16 -- see the external-enable
+                                   section below and this file's own
+                                   header comment for the full design */
+    SM_FAULT_EMERGENCY_STOP    /* added 2026-09-17 -- see the emergency-stop
                                    section below and this file's own
                                    header comment for the full design */
 } SM_FaultType_t;
@@ -588,6 +642,89 @@ uint8_t SM_SetExternalTriggerRequired(uint8_t required);
  * turned off -- see SM_SetExternalEnableRequired()'s own comment).
  * Backs `EXTernal:TRIGger?` (commands.c). */
 uint8_t SM_GetExternalTriggerRequired(void);
+
+/* --------------------------------------------------------------------------
+ * Emergency stop (PG10, a fiber-optic receiver input -- NOT the same
+ * pin/signal as PF15 above), added 2026-09-17, per direct request.
+ *
+ * docs/pin_mapping_v4.csv labels this net "NRST" -- confirmed directly
+ * with the user this is a stale/incorrect label, not this MCU's own
+ * reset function; the pin genuinely carries a fiber-optic E-stop input
+ * (with a 100nF cap to ground on the net, fine/beneficial for a
+ * deliberately slow-changing safety signal -- irrelevant to the fast
+ * switching PFM_Input capture pins worry about, not a concern here).
+ * PB8 (this board's BOOT0 net) was considered and REJECTED for this
+ * purpose first -- confirmed via a live FLASH_OPTR register read
+ * (nSWBOOT0=1) that PB8 is genuinely sampled for boot-mode selection
+ * on every reset, not just at first power-on; an active-LOW E-stop's
+ * own idle (non-emergency) HIGH state is exactly the "boot into the
+ * ROM bootloader instead of the application" condition on this chip,
+ * meaning any ordinary reset during normal (non-emergency) operation
+ * could silently skip the application entirely. See
+ * cmd_diag_optbytes_query()'s own doc comment (commands.c) for the
+ * full register-level finding.
+ *
+ * Active LOW: PG10 read LOW means the E-stop is asserted.
+ * Deliberately NOT the graceful ramp-down every other fault type above
+ * uses -- HandleEmergencyStopFault() (state_machine.c) calls
+ * PID_Stop() directly, unconditionally, with no g_stateBeforeFault
+ * branch at all -- an immediate, hard cutoff of every enabled channel,
+ * regardless of what state the fault hit in, is the explicit point of
+ * an EMERGENCY stop.
+ *
+ * Checked continuously in SM_PollFaults() across ALL states (IDLE/
+ * ARMED/FIRING), matching General Fault's own PC10/GateDriverStatus
+ * precedent -- NOT the FIRING-only carve-out external-enable
+ * deliberately uses above. There is no ARM/PID:PROFile:STARt-time
+ * gating for this feature -- not asked for, not added; this is purely
+ * a continuously-monitored fault source with an immediate-cutoff
+ * response, nothing else.
+ *
+ * Fully opt-in, OFF by default. Per direct instruction, "when the
+ * E-stop feature is disabled, we act as though it does not exist and
+ * the firmware functions like it did before we implemented it" --
+ * every single check this feature adds (SM_PollFaults(),
+ * SM_ClearFault()) is gated on SM_GetEmergencyStopRequired() FIRST,
+ * with genuinely zero behavior difference (including no PG10 GPIO read
+ * at all) when it's off -- not merely "the fault never latches," but
+ * the check itself never runs.
+ *
+ * `FAULT:CLEAR` re-validates PG10 is back HIGH before actually
+ * clearing an EMERGENCY_STOP fault (when the feature is on -- a no-op
+ * re-check, same as every other such check in this file, when it's
+ * off), same "only clear if the condition is actually gone"
+ * philosophy as every other fault type.
+ *
+ * `GPIO_PULLDOWN` (main.c's MX_GPIO_Init()), matching PF15's own
+ * reasoning even though the SAFE direction is the same polarity by
+ * coincidence here: an unconnected/floating PG10 must read LOW (E-stop
+ * asserted -- the safe default for a stop function: a broken/
+ * disconnected E-stop wire should read as "stop," not as "all clear"),
+ * never an undefined level. */
+
+/* Turns the emergency-stop feature on (1) or off (0). RAM-only, resets
+ * to 0 on reboot, same as every other runtime config in this project.
+ * Backs `EMERGency:ENAble <0|1>` (commands.c). */
+void SM_SetEmergencyStopRequired(uint8_t required);
+
+/* Current mode, as last set by SM_SetEmergencyStopRequired() (0 by
+ * default at boot). Backs `EMERGency:ENAble?` (commands.c). */
+uint8_t SM_GetEmergencyStopRequired(void);
+
+/* 1 if the feature isn't required at all (SM_GetEmergencyStopRequired()
+ * == 0 -- always "ok" in that case, matching this feature's opt-in,
+ * "acts as though it does not exist" design), OR it IS required and
+ * PG10 currently reads HIGH (not asserted). 0 only when required AND
+ * PG10 currently reads LOW. Used internally by SM_ClearFault(); also
+ * exposed publicly for any diagnostic/command-layer use that wants it. */
+uint8_t SM_EmergencyStopOk(void);
+
+/* Raw PG10 logic level right now (1 = HIGH/not-asserted, 0 = LOW/
+ * asserted) -- independent of whether the feature is even turned on.
+ * Diagnostic: lets an operator confirm real wiring/signal presence
+ * before relying on it, same role SM_GetExternalEnableInputRaw() plays
+ * for PF15. Backs `EMERGency:INPut?` (commands.c). */
+uint8_t SM_GetEmergencyStopInputRaw(void);
 
 #ifdef __cplusplus
 }

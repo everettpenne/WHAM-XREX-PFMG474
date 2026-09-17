@@ -126,10 +126,21 @@ static const command_t command_table[] = {
     { "EXTernal:TRIGger",    cmd_ext_trigger       },
     { "EXTernal:TRIGger?",   cmd_ext_trigger_query },
 
+    /* Emergency stop (PG10, fiber-optic input) -- see commands.h's own
+       comment on cmd_emerg_enable(). Added 2026-09-17. */
+    { "EMERGency:ENAble",    cmd_emerg_enable       },
+    { "EMERGency:ENAble?",   cmd_emerg_enable_query },
+    { "EMERGency:INPut?",    cmd_emerg_input_query  },
+
     /* Generic diagnostic output (PD1, "GPOut_12") -- see commands.h's
        own comment on cmd_diag_gpout12(). Added 2026-09-16. */
     { "DIAGnostic:GPOut12",  cmd_diag_gpout12       },
     { "DIAGnostic:GPOut12?", cmd_diag_gpout12_query },
+
+    /* TEMPORARY diagnostic -- reads FLASH_OPTR to check whether PB8
+       (BOOT0) is free for GPIO reuse, see commands.c's own header
+       comment on cmd_diag_optbytes_query(). */
+    { "DIAGnostic:OPTBytes?", cmd_diag_optbytes_query },
 
     /* TEMPORARY debug/verification command -- software OCP fault
        injection, see commands.c's own header comment on
@@ -144,6 +155,11 @@ static const command_t command_table[] = {
     /* Raw GateDriverStatus_01..12 (PE0..PE11) diagnostic readback --
        see commands.c's own header comment on cmd_gds_query(). */
     { "GDS?",                cmd_gds_query    },
+
+    /* Per-Transrex-channel fault-pin readback (Water/Temp/Enerpro/OCP)
+       -- see commands.c's own header comment on
+       cmd_xrex_channel_status() and xrex_io.h for the full design. */
+    { "XREX:CHANnel:STATus?", cmd_xrex_channel_status },
 
     /* QUADSPI connectivity test (W25Q128JVS) -- excluded entirely when
        QSPI_TEST_FEATURE_ENABLED is 0, same removability pattern as

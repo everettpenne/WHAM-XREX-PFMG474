@@ -1,0 +1,4 @@
+../Core/Src/xrex_io.c:47:16:BitIsFault	2
+../Core/Src/xrex_io.c:52:9:XrexIo_EvaluateGateDriverFault	6
+../Core/Src/xrex_io.c:76:6:XrexIo_PollOcpFaults	5
+../Core/Src/xrex_io.c:93:9:XrexIo_GetChannelStatus	7

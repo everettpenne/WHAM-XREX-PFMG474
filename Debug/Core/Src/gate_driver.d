@@ -32,7 +32,7 @@ Core/Src/gate_driver.o: ../Core/Src/gate_driver.c \
  ../Drivers/STM32G4xx_HAL_Driver/Inc/stm32g4xx_hal_uart.h \
  ../Drivers/STM32G4xx_HAL_Driver/Inc/stm32g4xx_hal_uart_ex.h \
  ../Core/Inc/ctrlr_config.h ../Core/Inc/pfm.h ../Core/Inc/pid.h \
- ../Core/Inc/main.h
+ ../Core/Inc/main.h ../Core/Inc/xrex_io.h
 ../Core/Inc/gate_driver.h:
 ../Core/Inc/ctrlr_config.h:
 ../Core/Inc/hrtim.h:
@@ -72,3 +72,4 @@ Core/Src/gate_driver.o: ../Core/Src/gate_driver.c \
 ../Core/Inc/pfm.h:
 ../Core/Inc/pid.h:
 ../Core/Inc/main.h:
+../Core/Inc/xrex_io.h:

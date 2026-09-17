@@ -10,6 +10,7 @@
 #include "hrtim.h"
 #include "pfm_input.h"
 #include "state_machine.h"
+#include "xrex_io.h"
 #include <string.h>   /* strlen/strcpy/strcmp -- PID_SetChannelNickname() */
 
 typedef struct
@@ -748,8 +749,14 @@ void PID_Update(void)
        which clears g_running -- so the check at the very top of this
        function (`if (g_running == 0U) return;`) already covers that
        case on the NEXT call; this SM_GetState() check below only
-       needs to handle "faulted, ramp not (or no longer) active." */
+       needs to handle "faulted, ramp not (or no longer) active."
+       XrexIo_PollOcpFaults() (xrex_io.h, added 2026-09-17) runs
+       alongside it -- OCP is polled, not EXTI-driven (a real EXTI-line
+       hardware conflict with the existing GateDriverStatus setup, see
+       xrex_io.h's own header comment), so it needs this same real-tick
+       cadence to actually catch anything while FIRING. */
     SM_PollFaults();
+    XrexIo_PollOcpFaults();
     if (SM_GetState() == SM_STATE_FAULT)
     {
         if (g_faultRampActive != 0U)

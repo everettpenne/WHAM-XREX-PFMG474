@@ -43,6 +43,20 @@ static uint8_t ExternalEnableInputIsHigh(void)
     return (HAL_GPIO_ReadPin(GPIOF, GPIO_PIN_15) == GPIO_PIN_SET) ? 1U : 0U;
 }
 
+/* Emergency stop (PG10, a fiber-optic input -- NOT PF15) -- see this
+   file's own header comment for the full design. OFF by default --
+   "acts as though it does not exist" when off, per direct instruction. */
+static uint8_t g_emergencyStopRequired = 0U;
+
+/* GPIO_PULLDOWN in main.c's MX_GPIO_Init() means an unconnected/
+   floating PG10 reads LOW here -- i.e. E-stop ASSERTED by default,
+   the deliberate fail-safe choice for a stop function (see this file's
+   header comment). */
+static uint8_t EmergencyStopInputIsHigh(void)
+{
+    return (HAL_GPIO_ReadPin(GPIOG, GPIO_PIN_10) == GPIO_PIN_SET) ? 1U : 0U;
+}
+
 /* Meaningful only when g_faultType == SM_FAULT_OVERCURRENT -- see
    SM_GetFaultChannel()'s own doc comment (state_machine.h). 0xFF is the
    "not applicable" sentinel (never a real channel index). Added
@@ -127,6 +141,21 @@ static void HandleOvercurrentFault(uint8_t channel)
     }
 }
 
+/* Called on entering SM_STATE_FAULT with g_faultType ==
+   SM_FAULT_EMERGENCY_STOP -- added 2026-09-17, per direct instruction.
+   Deliberately NOT branching on g_stateBeforeFault at all, unlike
+   every other handler above -- an emergency stop means an immediate,
+   unconditional hard cutoff regardless of whether the fault hit while
+   FIRING or not; there is no ramp path for this fault type under any
+   circumstance. PID_Stop() itself is already idempotent/safe to call
+   when nothing was actually running (see its own comment, pid.c), so
+   no separate "nothing to stop" branch is needed here either -- this
+   is intentionally the simplest handler in this file. */
+static void HandleEmergencyStopFault(void)
+{
+    PID_Stop();
+}
+
 /* Readiness gate for SM_Arm() -- STUB, per direct instruction: always
    allows arming today. Real interlock conditions (no fault active --
    already implicitly guaranteed, since IDLE and FAULT are mutually
@@ -206,6 +235,13 @@ static void EnterFault(SM_FaultType_t type, uint8_t channel)
     {
         case SM_FAULT_OVERCURRENT:
             HandleOvercurrentFault(channel);
+            break;
+        case SM_FAULT_EMERGENCY_STOP:   /* deliberately its OWN handler, NOT
+                                            grouped with GENERAL below -- see
+                                            HandleEmergencyStopFault()'s own
+                                            comment: no ramp, ever, unlike
+                                            every other fault type here */
+            HandleEmergencyStopFault();
             break;
         case SM_FAULT_GENERAL:
         case SM_FAULT_EXTERNAL_ENABLE:   /* identical response to GENERAL,
@@ -374,6 +410,18 @@ void SM_PollFaults(void)
     {
         EnterFault(SM_FAULT_GENERAL, 0xFFU);   /* channel N/A for a system-wide fault */
     }
+    /* Emergency stop (PG10), added 2026-09-17 -- checked across ALL
+       states (IDLE/ARMED/FIRING), same as the GENERAL check just
+       above, NOT the FIRING-only carve-out external-enable below uses
+       -- see state_machine.h's own emergency-stop section for why.
+       Per direct instruction ("acts as though it does not exist" when
+       off), the PG10 read itself is gated behind
+       g_emergencyStopRequired first -- genuinely zero work, not just a
+       zero-effect check, when the feature is off. */
+    else if ((g_emergencyStopRequired != 0U) && (EmergencyStopInputIsHigh() == 0U))
+    {
+        EnterFault(SM_FAULT_EMERGENCY_STOP, 0xFFU);   /* channel N/A, system-wide */
+    }
     /* External-enable interlock (PF15), added 2026-09-16 -- deliberately
        gated on SM_STATE_FIRING specifically, not IDLE/ARMED too. See
        state_machine.h's own external-enable section for the full reasoning
@@ -532,6 +580,16 @@ uint8_t SM_ClearFault(void)
     {
         return 0U;   /* still faulted -- stays in SM_STATE_FAULT */
     }
+    /* Emergency stop, added 2026-09-17 -- same philosophy again.
+       SM_EmergencyStopOk() itself already returns 1 unconditionally
+       when g_emergencyStopRequired is 0, so this is a no-op re-check
+       (never blocks clearing, never reads PG10) whenever the feature
+       isn't in use -- matching "acts as though it does not exist" when
+       off. */
+    if (SM_EmergencyStopOk() == 0U)
+    {
+        return 0U;   /* still faulted -- stays in SM_STATE_FAULT */
+    }
 
     g_state        = SM_STATE_IDLE;
     g_faultType    = SM_FAULT_NONE;
@@ -585,4 +643,28 @@ uint8_t SM_SetExternalTriggerRequired(uint8_t required)
 uint8_t SM_GetExternalTriggerRequired(void)
 {
     return g_externalTriggerRequired;
+}
+
+void SM_SetEmergencyStopRequired(uint8_t required)
+{
+    g_emergencyStopRequired = (required != 0U) ? 1U : 0U;
+}
+
+uint8_t SM_GetEmergencyStopRequired(void)
+{
+    return g_emergencyStopRequired;
+}
+
+uint8_t SM_EmergencyStopOk(void)
+{
+    if (g_emergencyStopRequired == 0U)
+    {
+        return 1U;   /* feature not in use -- always "ok", and never reads PG10 */
+    }
+    return EmergencyStopInputIsHigh();
+}
+
+uint8_t SM_GetEmergencyStopInputRaw(void)
+{
+    return EmergencyStopInputIsHigh();
 }

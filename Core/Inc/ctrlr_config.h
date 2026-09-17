@@ -324,49 +324,59 @@
 #define FAULT_RAMP_DOWN_TIME_S  (1.0f)
 
 /* --------------------------------------------------------------------------
- * GateDriverStatus fault polarity (compile-time)
+ * XREX per-channel fault-pin polarity (compile-time)
  *
- * GDS_NORMALLY_HIGH -- pins read HIGH in good operation;
- *                      a LOW reading is a fault.
- * GDS_NORMALLY_LOW  -- pins read LOW in good operation;
- *                      a HIGH reading is a fault.
+ * Added 2026-09-17, per direct request -- REPLACES the old
+ * GDS_FAULT_POLARITY single shared setting below with four independent
+ * ones, one per fault CATEGORY. docs/pin_mapping_v4.csv's new "XREX Pin
+ * Name" column labels the same 12 PE0..PE11 pins (previously
+ * undifferentiated GateDriverStatus_01..12, see gate_driver.h) as each
+ * of XR1..XR4's own _WATER_FLT/_TMP_FLT/_ENERPRO_FLT signals, and adds
+ * 4 new _OCP pins (PF4/PF5/PF8/PF12) that had no real hardware
+ * detection wired up anywhere before now. xrex_io.c owns the actual
+ * per-channel-gated fault-evaluation logic (see that file's own header
+ * comment); these four settings are its only per-category config.
  *
- * Governs both gate_driver.c's GateDriver_CheckFault() (the EXTI-driven
- * fault interrupt on PE0..PE11, see gate_driver.h) and nothing else --
- * GDS? (commands.c) is a raw, polarity-agnostic HIGH/LOW readback and
- * does not consult this value.
+ * XREX_POLARITY_NORMALLY_HIGH -- pins read HIGH in good operation; a
+ *                                 LOW reading (a falling edge from
+ *                                 healthy) is a fault.
+ * XREX_POLARITY_NORMALLY_LOW  -- pins read LOW in good operation; a
+ *                                 HIGH reading is a fault.
  *
- * Set to NORMALLY_LOW per direct confirmation against this board's
- * actual gate driver ICs, 2026-09-08 -- matching the sibling
- * PFM-STM32G474 project's own configured default (GDS_FAULT_POLARITY =
- * GDS_NORMALLY_LOW in supply_config.h), even though that project's own
- * comment calls NORMALLY_HIGH "the safest" choice in the abstract (a
- * disconnected pin reads LOW and immediately trips) -- the actual wiring
- * on real hardware is the deciding fact here, not the abstract argument.
+ * All four default to NORMALLY_HIGH, per direct confirmation --
+ * *** DELIBERATELY THE OPPOSITE of the OLD GDS_FAULT_POLARITY value
+ * this section replaces *** (GDS_NORMALLY_LOW, confirmed 2026-09-08
+ * against real hardware -- see docs/changelog.txt's 2026-09-08 entry
+ * for that finding's own history: a GDS? snapshot showed 11 of 12 pins
+ * reading LOW with only one reading HIGH, consistent with LOW being the
+ * healthy state at the time). Not a mistake, not a re-guess -- flagged
+ * directly and confirmed: "During normal non-faulted operation, these
+ * pins will be normally high," overriding that earlier finding for
+ * Water/Temp/Enerpro specifically. Recorded here rather than silently
+ * applied, since it contradicts prior real-hardware data on the exact
+ * same physical pins. OCP (a genuinely new, never-before-wired signal,
+ * on different pins entirely) has no conflicting prior data and
+ * defaults NORMALLY_HIGH per the same direct instruction.
  *
- * Known consequence, confirmed before choosing this value, not
- * discovered by surprise: a GDS? snapshot taken earlier this session
- * showed GateDriverStatus_03 (PE2) already reading HIGH while the other
- * 11 pins read LOW. Under NORMALLY_LOW, that pin is *already* a fault
- * condition -- expect GateDriver_CheckFault() to latch a fault on it as
- * soon as this interrupt is live (very possibly immediately at boot, if
- * that pin is still HIGH by then). That may well be surfacing a real,
- * previously-invisible fault condition, which is the whole point of
- * this feature -- see docs/changelog.txt.
+ * Independently configurable (not one shared value like the old
+ * GDS_FAULT_POLARITY) -- a real hardware difference between fault
+ * categories, or between them and OCP's own separate pins, is
+ * plausible and worth being able to express without a code change.
  *
- * Single source of truth, unlike the sibling project's own documented
- * history (supply_config.h's own comment describes GDS_FAULT_POLARITY
- * once being defined twice -- once there, once in gate_driver.h -- with
- * gate_driver.h's #ifndef silently winning the race every time,
- * making the copy in supply_config.h dead). Not a risk here structurally:
- * gate_driver.h includes THIS file rather than defining anything
- * itself, and this is the only place GDS_NORMALLY_HIGH/LOW/
- * GDS_FAULT_POLARITY are ever defined.
- * -------------------------------------------------------------------------- */
-#define GDS_NORMALLY_HIGH    (0U)
-#define GDS_NORMALLY_LOW     (1U)
+ * GateDriver_CheckFault() (gate_driver.c) now delegates its own fault
+ * decision to XrexIo_EvaluateGateDriverFault() (xrex_io.c), which
+ * consults these four settings (plus per-channel enable gating)
+ * instead of the old single GDS_FAULT_POLARITY check. GDS? (commands.c)
+ * remains a raw, polarity-agnostic HIGH/LOW readback either way -- see
+ * gate_driver.h's own comment; XREX:CHANnel:STATus? (commands.c, new)
+ * is the XR-labeled equivalent for these specific signals. */
+#define XREX_POLARITY_NORMALLY_HIGH   (0U)
+#define XREX_POLARITY_NORMALLY_LOW    (1U)
 
-#define GDS_FAULT_POLARITY   GDS_NORMALLY_LOW
+#define XR_WATER_FLT_POLARITY     XREX_POLARITY_NORMALLY_HIGH
+#define XR_TMP_FLT_POLARITY       XREX_POLARITY_NORMALLY_HIGH
+#define XR_ENERPRO_FLT_POLARITY   XREX_POLARITY_NORMALLY_HIGH
+#define XR_OCP_FLT_POLARITY       XREX_POLARITY_NORMALLY_HIGH
 
 /* --------------------------------------------------------------------------
  * PFM carrier frequency ceiling (compile-time, hard limit)

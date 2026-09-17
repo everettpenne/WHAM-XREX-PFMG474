@@ -26,10 +26,12 @@ Ported from the sibling PFM-STM32G474 project, per project decision:
 | 8 | Invalid `PFM_Input` channel (1-6) (also reused by `PFMIN:DEBUG:RAW?`/`PFMIN:DEBUG:REG?`) |
 | 9 | `M` out of range for `PFMIN:CAPTURE` (1-`PFM_INPUT_MAX_PERIODS`) |
 | 10 | `TABLE:STEP` `per` value implies a carrier frequency above `PFM_MAX_CARRIER_FREQ_HZ` |
-| 11 | Invalid `PID` channel (also reused by `OCP:TEST:FAULT`, same channel-range check) |
-| 12 | Invalid `PID:*` argument count/value -- see the specific command's own usage (also reused by `OCP:TEST:FAULT`, `PFMIN:DEBUG:RAW?`/`PFMIN:DEBUG:REG?`) |
+| 11 | Invalid `PID` channel (also reused by `OCP:TEST:FAULT`, `XREX:CHANnel:STATus?`, same channel-range check) |
+| 12 | Invalid `PID:*` argument count/value -- see the specific command's own usage (also reused by `OCP:TEST:FAULT`, `PFMIN:DEBUG:RAW?`/`PFMIN:DEBUG:REG?`, `XREX:CHANnel:STATus?`) |
 | 13 | Invalid state-machine transition for the current state (`ARM`/`DISARM`/`PID:PROFile:STARt`, see that section) |
 | 14 | Invalid `PID:CHANnel:NICKname` -- name must be 1-`PID_CHANNEL_NICKNAME_MAX_LEN` chars, no spaces, and not the reserved value `-` |
+| 15 | `PID:PROFile:STARt` refused -- `EXTernal:ENAble` is on and the external-enable pin (`PF15`) does not currently read `HIGH` (see `EXTernal:ENAble`) |
+| 16 | `EXTernal:TRIGger 1` refused -- `EXTernal:ENAble` must already be on first (see `EXTernal:TRIGger`; the reverse direction, `EXTernal:ENAble 0` while trigger is on, is not an error -- it silently force-disables trigger too) |
 
 Codes are never renumbered or reused once assigned, matching the
 sibling project's convention.
@@ -215,12 +217,20 @@ separate:
    is hung.
 2. **GateDriverStatus_01..12 EXTI interrupt** (`PE0`-`PE11`,
    `Core/Inc/gate_driver.h`) — software/interrupt-driven. Re-reads all
-   12 pins on any edge and evaluates them against the compile-time
-   `GDS_FAULT_POLARITY` (`Core/Inc/ctrlr_config.h`); on a fault, forces
-   HRTIM output off and latches. Needs the EXTI ISR to actually run,
-   unlike PC10's autonomous hardware path — a boot-time explicit check
-   (`main.c`) covers the one gap that leaves (a pin already faulted
-   before the interrupt is even armed produces no edge of its own).
+   12 pins on any edge and, as of 2026-09-17, delegates the fault
+   decision to `XrexIo_EvaluateGateDriverFault()` (`xrex_io.c` — see
+   `XREX:CHANnel:STATus?` below): these 12 pins are
+   `docs/pin_mapping_v4.csv`'s `XR1`-`XR4` `_WATER_FLT`/`_TMP_FLT`/
+   `_ENERPRO_FLT` signals, each category independently polarity-
+   configurable (`XR_WATER_FLT_POLARITY`/`XR_TMP_FLT_POLARITY`/
+   `XR_ENERPRO_FLT_POLARITY`, `Core/Inc/ctrlr_config.h` — replaces the
+   old single shared `GDS_FAULT_POLARITY`), and gated so a disabled
+   Transrex channel's own pins never count toward a fault. On a fault,
+   forces HRTIM output off and latches, exactly as before. Needs the
+   EXTI ISR to actually run, unlike PC10's autonomous hardware path — a
+   boot-time explicit check (`main.c`) covers the one gap that leaves (a
+   pin already faulted before the interrupt is even armed produces no
+   edge of its own).
 
 ```
 > FAULT?
@@ -701,6 +711,115 @@ numbering (`01` = `PE0`, `12` = `PE11`). Kept to this project's
 existing single-`OK <value>`-line response convention rather than the
 sibling PFM-STM32G474 project's multi-line/bitmask `GDS?` reply
 shapes.
+
+### `XREX:CHANnel:STATus?`
+
+Added 2026-09-17 alongside `Core/Src/xrex_io.c` — a per-Transrex-
+channel diagnostic readback, reporting one channel's `WATER`/`TMP`/
+`ENERPRO`/`OCP` fault pins together, by name, rather than needing to
+remember which of `GDS?`'s 12 raw pins (or the 4 new OCP pins) maps to
+which signal for a given Transrex. `docs/pin_mapping_v4.csv`'s new
+"XREX Pin Name" column is the source of this naming: `XR1`-`XR4` are
+Transrex 1-4, and each has its own `_WATER_FLT`/`_TMP_FLT`/
+`_ENERPRO_FLT`/`_OCP_FLT` pin (Water/Temperature/Enerpro/overcurrent
+faults respectively).
+
+```
+> XREX:CHANnel:STATus? 1
+< OK WATER=LOW TMP=LOW ENERPRO=LOW OCP=LOW
+```
+
+(Real captured output, 2026-09-17 — all four pins floating/unconnected
+on the bench at the time, hence all `LOW`; see the polarity note below
+for why `LOW` here means "faulted" under this project's default
+config, not "healthy.")
+
+1-based channel argument (`1`-`HRTIM_NUM_CHANNELS`, matching this
+project's universal wire convention), `ERR 12` if missing, `ERR 11` if
+out of range. Reports raw `HIGH`/`LOW` pin levels only, **polarity-
+agnostic** — same convention as `GDS?`/`EXTernal:INPut?`/
+`EMERGency:INPut?` — `ctrlr_config.h`'s `XR_WATER_FLT_POLARITY`/
+`XR_TMP_FLT_POLARITY`/`XR_ENERPRO_FLT_POLARITY`/`XR_OCP_FLT_POLARITY`
+(below) are what decide which level actually means "faulted," not this
+command. `WATER`/`TMP`/`ENERPRO` come from `GateDriver_Read()`'s
+existing `PE0`-`PE11` snapshot (same pins `GDS?` reports, just
+regrouped and renamed per-channel); `OCP` is a direct, uncached read of
+that channel's own `PF4`/`PF5`/`PF8`/`PF12` pin (see below) — neither
+read is debounced or latched, matching `GDS?`'s own philosophy.
+
+#### Fault architecture (Water/Temp/Enerpro/OCP), 2026-09-17
+
+Real per-channel fault detection for four new/reinterpreted signal
+categories, added per direct request against `pin_mapping_v4.csv`'s new
+"XREX Pin Name" column:
+
+| Category | XR1 | XR2 | XR3 | XR4 | Mechanism |
+|---|---|---|---|---|---|
+| `_WATER_FLT` | PE0 | PE1 | PE2 | PE3 | EXTI-driven (existing `GateDriverStatus_01..04`) |
+| `_TMP_FLT` | PE4 | PE5 | PE6 | PE7 | EXTI-driven (existing `GateDriverStatus_05..08`) |
+| `_ENERPRO_FLT` | PE8 | PE9 | PE10 | PE11 | EXTI-driven (existing `GateDriverStatus_09..12`) |
+| `_OCP_FLT` | PF4 | PF8 | PF12 | PF5 | **Polled** (new pins, no EXTI capacity free — see below) |
+
+- **Water/Temp/Enerpro are "General Fault"** (`SM_FAULT_GENERAL`,
+  `STATE?`) — the existing `GateDriverStatus_01..12` EXTI interrupt
+  path (`gate_driver.c`) now delegates its fault DECISION to
+  `XrexIo_EvaluateGateDriverFault()` (`xrex_io.c`) instead of the old
+  single shared `GDS_FAULT_POLARITY` — see `FAULT?`/`FAULT:CLEAR`
+  above for the unchanged mechanics (force-stop/soft-stop, latch,
+  boot-time check).
+- **OCP is its own fault type** (`SM_FAULT_OVERCURRENT`, `STATE?`),
+  via `SM_ReportOcpFault(channel)` — a pre-existing entry point
+  (originally added for `OCP:TEST:FAULT` software injection) now also
+  driven by real hardware: `XrexIo_PollOcpFaults()`, called every
+  `PID_Update()` tick and once at boot, alongside the existing
+  `SM_PollFaults()` call.
+- **Why OCP is polled, not EXTI-driven**: the obvious choice (matching
+  Water/Temp/Enerpro) was rejected after checking the actual hardware —
+  STM32's 16 EXTI lines are shared project-wide, one GPIO port per line
+  number (`SYSCFG_EXTICR`). `PF4`(EXTI4)/`PF5`(EXTI5)/`PF8`(EXTI8)
+  directly conflict with `PE4`/`PE5`/`PE8`, already claimed by the
+  existing GateDriverStatus EXTI setup — only `PF12`(EXTI12, `XR3_OCP`)
+  was actually free. Polling all 4 uniformly (rather than 3 polled + 1
+  EXTI) keeps one consistent mechanism instead of mixing two.
+- **Per-channel gating, the core new behavior**: a channel's own
+  Water/Temp/Enerpro/OCP pins only count toward a fault when
+  `PID_GetChannelEnable(channel)` is currently true (`PID:CHANnel:
+  ENAble?`) — e.g. with only `XR1` enabled, a LOW (faulted) reading on
+  `XR2`/`XR3`/`XR4`'s pins neither stops nor blocks output. **Verified
+  on real hardware**: with all 4 channels disabled, `FAULT:CLEAR`
+  reached and stayed at `STATE? OK IDLE` even with all 12
+  GateDriverStatus pins and all 4 OCP pins reading `LOW` (`GDS?`/
+  `XREX:CHANnel:STATus?`); enabling only channel 3 and re-polling
+  correctly latched `STATE? OK FAULT OVERCURRENT 3` — the right
+  channel, not 1 or a different one — confirming both the gating and
+  the `PF4`/`PF8`/`PF12`/`PF5` → `XR1`-`XR4` pin mapping.
+- **Polarity — `ctrlr_config.h`'s `XR_WATER_FLT_POLARITY`/
+  `XR_TMP_FLT_POLARITY`/`XR_ENERPRO_FLT_POLARITY`/`XR_OCP_FLT_POLARITY`**
+  (each independently `XREX_POLARITY_NORMALLY_HIGH` or `_NORMALLY_LOW`,
+  all four default to `NORMALLY_HIGH`) — **replaces** the old single
+  shared `GDS_FAULT_POLARITY = GDS_NORMALLY_LOW`, which had itself been
+  set from a real hardware snapshot on 2026-09-08 (11/12 pins LOW, 1
+  HIGH). The new `NORMALLY_HIGH` default is the OPPOSITE of that
+  confirmed value — a deliberate override per direct instruction ("During
+  normal non-faulted operation, these pins will be normally high"), not
+  a mistake being reintroduced. **Not yet independently re-verified
+  against a real healthy (non-floating) signal on these specific
+  pins** — the 2026-09-17 real-hardware check above confirmed the
+  gating/mapping/fault-latching chain end-to-end, but every pin
+  involved was floating (`GPIO_PULLDOWN`, nothing wired to the new
+  fault-input pins yet), so it necessarily read as faulted under
+  either polarity and cannot by itself confirm `NORMALLY_HIGH` is the
+  physically correct choice once real Water/Temp/Enerpro/OCP signal
+  sources are actually connected.
+- **`_FEEDBACK`/`_DRIVE`** (`docs/pin_mapping_v4.csv`'s remaining new
+  XREX Pin Name entries) are pure relabels of the existing
+  `PFM_Input_01..04` feedback channels and `HRTIM1_CH*` drive outputs —
+  zero functional change, no new command or behavior.
+- **Deferred, not yet implemented**: `XRn_ENA_OUT` (`PG0`-`PG3`) and
+  `XRn_CONTACT_OUT` (`PG4`-`PG7`) — per-channel enable and contactor
+  *output* signals from `pin_mapping_v4.csv`'s same new column. Pin
+  identities are known; no GPIO config, command, or behavior exists for
+  them yet — explicitly deferred pending the next round of work.
 
 ### `QSPI:ID?`
 
