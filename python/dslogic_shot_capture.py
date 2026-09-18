@@ -93,7 +93,9 @@ DSLOGIC_ATOMIC_SIZE = 8  # bytes of one channel's own data per rotation --
 # ctrlr_config.h) maps to a clamped 0A, not a negative current.
 PFM_TURNON_FREQ_HZ = 5000.0
 PFM_MAX_FREQ_HZ = 100000.0
-PFM_MAX_CURRENT_A = 5000.0
+PFM_MAX_CURRENT_A = 6000.0  # updated 2026-09-18 -- see wham_console.py's
+                            # own PFM_MAX_CURRENT_A comment for why (real
+                            # installed LEMs are 6kA, not 5kA)
 
 
 def _hz_to_amps(hz):

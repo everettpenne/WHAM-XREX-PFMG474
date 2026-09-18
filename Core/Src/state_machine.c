@@ -111,10 +111,11 @@ static uint8_t EmergencyStopAsserted(void)
     return (EMERGENCY_STOP_POLARITY == FAULT_POLARITY_NORMALLY_HIGH) ? (bit == 0U) : (bit != 0U);
 }
 
-/* Meaningful only when g_faultType == SM_FAULT_OVERCURRENT -- see
-   SM_GetFaultChannel()'s own doc comment (state_machine.h). 0xFF is the
-   "not applicable" sentinel (never a real channel index). Added
-   2026-09-15 alongside SM_ReportOcpFault(). */
+/* Meaningful only when g_faultType is one of the PER-CHANNEL fault
+   types (SM_FAULT_OVERCURRENT/SM_FAULT_ENABLE_OUTPUT/SM_FAULT_ENERPRO
+   -- see SM_GetFaultChannel()'s own doc comment, state_machine.h).
+   0xFF is the "not applicable" sentinel (never a real channel index).
+   Added 2026-09-15 alongside SM_ReportOcpFault(). */
 static uint8_t g_faultChannel = 0xFFU;
 
 /* Captured by EnterFault(), before it transitions g_state to
@@ -241,10 +242,12 @@ static uint8_t ArmConditionsMet(void)
     return 1U;   /* TODO (2026-09-13): populate the rest. */
 }
 
-/* Shared by SM_PollFaults() AND SM_ReportOcpFault() -- the one place a
-   fault is actually latched into the state machine, regardless of which
-   source/call site noticed it. `channel` is meaningless for anything
-   other than SM_FAULT_OVERCURRENT -- pass 0xFF (SM_PollFaults()'s own
+/* Shared by SM_PollFaults() AND every SM_Report*Fault() -- the one
+   place a fault is actually latched into the state machine, regardless
+   of which source/call site noticed it. `channel` is meaningless for
+   anything other than the PER-CHANNEL types (SM_FAULT_OVERCURRENT/
+   SM_FAULT_ENABLE_OUTPUT/SM_FAULT_ENERPRO -- see SM_GetFaultChannel()'s
+   own updated comment, 2026-09-18) -- pass 0xFF (SM_PollFaults()'s own
    call site does) when it doesn't apply, matching SM_GetFaultChannel()'s
    own "not applicable" sentinel. Extended 2026-09-15 to take `channel` --
    previously SM_FAULT_GENERAL was this function's only real caller. */
@@ -310,6 +313,14 @@ static void EnterFault(SM_FaultType_t type, uint8_t channel)
                                             response" pattern
                                             SM_FAULT_EXTERNAL_ENABLE uses
                                             for HandleGeneralFault() below */
+        case SM_FAULT_ENERPRO:         /* RECLASSIFIED 2026-09-18 out of
+                                            SM_FAULT_GENERAL -- see that
+                                            enum value's own comment
+                                            (state_machine.h) for the full
+                                            reasoning (Transrex_Controls_
+                                            Upgrade doc gives Enerpro the
+                                            SAME response as Overcurrent,
+                                            not Water/Temp's full stop) */
             HandleOvercurrentFault(channel);
             break;
         case SM_FAULT_EMERGENCY_STOP:   /* deliberately its OWN handler, NOT
@@ -350,7 +361,22 @@ SM_FaultType_t SM_GetFaultType(void)
 
 uint8_t SM_GetFaultChannel(void)
 {
-    return (SM_GetFaultType() == SM_FAULT_OVERCURRENT) ? g_faultChannel : 0xFFU;
+    /* *** REAL BUG, FOUND AND FIXED 2026-09-18, confirmed on real
+       hardware via run_simulator_validation.py's ena_contact scenario:
+       STATE? was reporting "FAULT ENABLE_OUTPUT 256" (0xFF+1) instead
+       of the real 1-based channel -- this function only ever returned
+       g_faultChannel for SM_FAULT_OVERCURRENT, unconditionally 0xFF for
+       every other type, even though SM_FAULT_ENABLE_OUTPUT (added
+       2026-09-17) and now SM_FAULT_ENERPRO (2026-09-18) are BOTH
+       per-channel fault types whose own STATE? branches (commands.c)
+       have always called this same getter expecting a real channel --
+       this widening was simply never made when ENABLE_OUTPUT was added,
+       and nothing had exercised a live ENABLE_OUTPUT fault's STATE?
+       output against a real per-channel value until the simulator
+       provided a clean (non-floating-pin) bench to test it on. */
+    SM_FaultType_t type = SM_GetFaultType();
+    return ((type == SM_FAULT_OVERCURRENT) || (type == SM_FAULT_ENABLE_OUTPUT) ||
+            (type == SM_FAULT_ENERPRO)) ? g_faultChannel : 0xFFU;
 }
 
 uint8_t SM_Arm(void)
@@ -613,6 +639,37 @@ void SM_ReportEnableOutputFault(uint8_t channel)
     }
 
     EnterFault(SM_FAULT_ENABLE_OUTPUT, channel);
+    __enable_irq();
+}
+
+void SM_ReportEnerproFault(uint8_t channel)
+{
+    if (channel >= HRTIM_NUM_CHANNELS)
+    {
+        return;   /* defensive -- a real, correctly-wired caller never
+                      produces this */
+    }
+
+    /* Same critical-section reasoning as SM_ReportOcpFault()/
+       SM_ReportEnableOutputFault() above -- this is called from
+       xrex_io.c's XrexIo_PollEnerproFaults(), itself called from
+       gate_driver.c's GateDriver_CheckFault() in EXTI ISR context, so it
+       needs the same protection against a main-loop/ISR race. */
+    __disable_irq();
+
+    if (g_state == SM_STATE_FAULT)
+    {
+        /* Already faulted (any type) -- same reasoning as
+           SM_ReportOcpFault() above: a channel with a real Enerpro
+           condition must never be left connected just because some
+           other channel's (or this same channel's own, via a different
+           fault type) condition got here first. */
+        (void)PID_SetChannelEnable(channel, 0U);
+        __enable_irq();
+        return;
+    }
+
+    EnterFault(SM_FAULT_ENERPRO, channel);
     __enable_irq();
 }
 

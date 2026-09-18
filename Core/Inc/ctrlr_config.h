@@ -248,9 +248,10 @@
  * Transrex supplies this controller drives may each have a genuinely
  * different full-range current -- there is no reason to expect all
  * four are identical, and nothing has actually measured any of them
- * yet. EVERY entry below is currently the SAME 5000.0f placeholder,
- * which is almost certainly wrong for at least some channels --
- * DO NOT ship/commission with these values unverified.
+ * yet. EVERY entry below is currently the SAME 6000.0f placeholder
+ * (updated 2026-09-18 from an original 5000.0f -- see that value's own
+ * comment below for why), which is almost certainly wrong for at least
+ * some channels -- DO NOT ship/commission with these values unverified.
  *
  * REQUIRED BEFORE FINAL DEPLOYMENT: for EACH of the 4 Transrexes,
  * independently -- drive that channel (PID:PROFILE:CURRENT/PID:LOOPMODE
@@ -278,9 +279,35 @@
  * mismatched edit (e.g. after ever changing HRTIM_NUM_CHANNELS above)
  * fails the build loudly instead of silently reading past the array
  * or leaving a channel uninitialized. */
-#define PFM_MAX_CURRENT_A_PER_CHANNEL  { 5000.0f, 5000.0f, 5000.0f, 5000.0f }   /* ch1, ch2, ch3, ch4 --
-                                                                          ALL PLACEHOLDER,
-                                                                          see comment above */
+#define PFM_MAX_CURRENT_A_PER_CHANNEL  { 6000.0f, 6000.0f, 6000.0f, 6000.0f }   /* ch1, ch2, ch3, ch4 --
+                                                                          UPDATED 2026-09-18, per
+                                                                          direct confirmation
+                                                                          against docs/Transrex/
+                                                                          Transrex_Controls_Upgrade
+                                                                          (1).pdf: that document's
+                                                                          own original spec called
+                                                                          for 5kA output LEMs, but
+                                                                          the REAL installed LEMs
+                                                                          are 6kA -- confirmed
+                                                                          directly, not silently
+                                                                          copied from the document.
+                                                                          Still a SHARED default
+                                                                          across all 4 channels
+                                                                          (not yet independently
+                                                                          measured per-channel) --
+                                                                          the "MUST BE CALIBRATED
+                                                                          BEFORE FINAL DEPLOYMENT"
+                                                                          warning above still
+                                                                          applies unchanged; this is
+                                                                          a better shared placeholder,
+                                                                          not a real per-channel
+                                                                          measurement. Applies
+                                                                          identically to both the
+                                                                          DEMAND output and the
+                                                                          FEEDBACK measurement (same
+                                                                          linear AmpsToHz() mapping
+                                                                          either direction, per
+                                                                          direct confirmation). */
 
 /* --------------------------------------------------------------------------
  * PID_OUTPUT_MAX_SLEW_HZ_PER_TICK -- hard per-tick output slew-rate

@@ -354,13 +354,41 @@ typedef enum
     SM_FAULT_EMERGENCY_STOP,   /* added 2026-09-17 -- see the emergency-stop
                                    section below and this file's own
                                    header comment for the full design */
-    SM_FAULT_ENABLE_OUTPUT     /* added 2026-09-17 -- see the enable-output
+    SM_FAULT_ENABLE_OUTPUT,    /* added 2026-09-17 -- see the enable-output
                                    section below and this file's own
                                    header comment for the full design.
                                    PER-CHANNEL (like SM_FAULT_OVERCURRENT) --
                                    NOT the same thing as
                                    SM_FAULT_EXTERNAL_ENABLE (system-wide,
                                    a different signal entirely) */
+    SM_FAULT_ENERPRO           /* added 2026-09-18 -- RECLASSIFIED out of
+                                   SM_FAULT_GENERAL, per direct correction
+                                   against docs/Transrex/Transrex_Controls_
+                                   Upgrade (1).pdf's own fault table: that
+                                   document gives Enerpro faults the SAME
+                                   response as Overcurrent (reduce
+                                   surviving channels' DEMAND, keep
+                                   running), NOT Water/Temp's full-stop
+                                   response -- the ORIGINAL 2026-09-17
+                                   instruction ("Water, Temperature, and
+                                   Enerpro faults are considered general
+                                   faults") predates this document being
+                                   read and is superseded for Enerpro
+                                   specifically; Water+Temp still route to
+                                   SM_FAULT_GENERAL, unchanged. PER-CHANNEL
+                                   (like SM_FAULT_OVERCURRENT/
+                                   SM_FAULT_ENABLE_OUTPUT) -- reuses
+                                   HandleOvercurrentFault(channel)
+                                   unchanged (see EnterFault()'s switch,
+                                   state_machine.c). Detection stays EXTI-
+                                   driven (PE0-11 has no line-sharing
+                                   conflict, unlike OCP's PF4/5/8/12) --
+                                   only the RESPONSE routing changed; see
+                                   xrex_io.c's XrexIo_PollEnerproFaults(),
+                                   called from gate_driver.c's
+                                   GateDriver_CheckFault() alongside the
+                                   now-Water+Temp-only general-fault
+                                   check. */
 } SM_FaultType_t;
 
 /* Called once at boot (main.c), after pid.c's own PID_Init() AND after
@@ -380,12 +408,20 @@ SM_State_t SM_GetState(void);
  * returns SM_FAULT_NONE otherwise. */
 SM_FaultType_t SM_GetFaultType(void);
 
-/* The channel (0-based) an OCP fault was reported for -- valid
- * (meaningful) only when SM_GetFaultType() == SM_FAULT_OVERCURRENT.
- * Returns 0xFF (never a real channel index) otherwise, including for
- * SM_FAULT_GENERAL/SM_FAULT_NONE -- General Fault is system-wide, not
- * per-channel, so it has no single channel to report here. Added
- * 2026-09-15 alongside SM_ReportOcpFault(), below. */
+/* The channel (0-based) a PER-CHANNEL fault was reported for -- valid
+ * (meaningful) only when SM_GetFaultType() is SM_FAULT_OVERCURRENT,
+ * SM_FAULT_ENABLE_OUTPUT, or SM_FAULT_ENERPRO. Returns 0xFF (never a
+ * real channel index) otherwise, including for SM_FAULT_GENERAL/
+ * SM_FAULT_EXTERNAL_ENABLE/SM_FAULT_EMERGENCY_STOP/SM_FAULT_NONE --
+ * those are system-wide, not per-channel, so they have no single
+ * channel to report here. Added 2026-09-15 alongside
+ * SM_ReportOcpFault(), below -- WIDENED 2026-09-18 (real bug, found via
+ * real-hardware testing: this returned 0xFF for SM_FAULT_ENABLE_OUTPUT
+ * too, even though that fault type's own STATE? branch, commands.c,
+ * has always expected a real channel from this same getter -- see this
+ * function's own .c comment for the full story) to also cover
+ * SM_FAULT_ENABLE_OUTPUT/SM_FAULT_ENERPRO, the two per-channel types
+ * added after this function was first written for OCP alone. */
 uint8_t SM_GetFaultChannel(void);
 
 /* IDLE -> ARMED. Backs the `ARM` command (commands.c). Returns 1 on
@@ -932,6 +968,31 @@ uint8_t SM_GetEmergencyStopInputRaw(void);
  * 0-based and < HRTIM_NUM_CHANNELS (out-of-range is a defensive no-op,
  * matching SM_ReportOcpFault()'s own guard). */
 void SM_ReportEnableOutputFault(uint8_t channel);
+
+/* --------------------------------------------------------------------------
+ * SM_FAULT_ENERPRO -- see this enum value's own comment (above) for the
+ * full reclassification reasoning (docs/Transrex/Transrex_Controls_
+ * Upgrade (1).pdf's fault table vs. the earlier "general fault"
+ * instruction it supersedes for Enerpro specifically).
+ *
+ * Entry point called by xrex_io.c's XrexIo_PollEnerproFaults() (itself
+ * called from gate_driver.c's GateDriver_CheckFault(), EXTI context --
+ * NOT polled like SM_ReportOcpFault()/SM_ReportEnableOutputFault(),
+ * since PE0-11 has no line-sharing conflict) the moment `channel`'s own
+ * Enerpro pin reads faulted (per XR_ENERPRO_FLT_POLARITY,
+ * ctrlr_config.h) while that channel is enabled. EXACT same shape as
+ * SM_ReportOcpFault()/SM_ReportEnableOutputFault() -- critical-section-
+ * protected; if already SM_STATE_FAULT (any type), unconditionally
+ * hard-disables `channel` and returns without re-entering; otherwise
+ * calls EnterFault(SM_FAULT_ENERPRO, channel), which routes to
+ * HandleOvercurrentFault(channel) (state_machine.c) -- the SAME
+ * individual-disable + survivors-derate-and-ramp response OCP gets, per
+ * the real spec. `channel` must be 0-based and < HRTIM_NUM_CHANNELS
+ * (out-of-range is a defensive no-op, matching SM_ReportOcpFault()'s own
+ * guard). No dedicated FAULT:CLEAR re-validation needed, same reasoning
+ * as SM_FAULT_OVERCURRENT/SM_FAULT_ENABLE_OUTPUT -- the affected channel
+ * is already hard-disabled by the time FAULT:CLEAR runs. */
+void SM_ReportEnerproFault(uint8_t channel);
 
 #ifdef __cplusplus
 }

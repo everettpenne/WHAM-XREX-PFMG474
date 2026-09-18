@@ -45,15 +45,25 @@ extern "C" {
  *         enabled (PID_GetChannelEnable()) -- per direct instruction,
  *         running XR1 alone must not register a low reading on XR2/3/4's
  *         fault pins as a reason to stop or prevent output.
- *     All three route to SM_FAULT_GENERAL (state_machine.h) -- per
+ *     Water+Temp route to SM_FAULT_GENERAL (state_machine.h) -- per
  *     direct instruction, "Water, Temperature, and Enerpro faults are
- *     considered general faults" -- no sub-type distinction at the
- *     fault-TYPE level (STATE? still just says GENERAL), only at the
- *     diagnostic-query level (XREX:CHANnel:STATus?, commands.c, below).
+ *     considered general faults." Enerpro was RECLASSIFIED 2026-09-18
+ *     (see SM_FAULT_ENERPRO's own comment, state_machine.h) after
+ *     docs/Transrex/Transrex_Controls_Upgrade (1).pdf's own fault table
+ *     was found to give Enerpro the SAME response as Overcurrent
+ *     (reduce surviving channels' DEMAND, keep running), NOT Water/
+ *     Temp's full-stop -- the original instruction above is now
+ *     superseded for Enerpro specifically, Water+Temp unchanged.
  *     XrexIo_EvaluateGateDriverFault() is gate_driver.c's OWN fault
- *     decision now (GateDriver_CheckFault() delegates to it) -- this
- *     module doesn't re-implement the EXTI/latch/PFM_ForceStop
- *     mechanics, gate_driver.c still owns those.
+ *     decision now (GateDriver_CheckFault() delegates to it) for the
+ *     Water+Temp/SM_FAULT_GENERAL path -- this module doesn't
+ *     re-implement the EXTI/latch/PFM_ForceStop mechanics, gate_driver.c
+ *     still owns those. Enerpro's own per-channel check
+ *     (XrexIo_PollEnerproFaults(), below) is a SEPARATE function, called
+ *     from the same GateDriver_CheckFault() EXTI context but reporting
+ *     directly via SM_ReportEnerproFault(channel) -- no shared latch/
+ *     PFM_ForceStop involvement, matching SM_FAULT_OVERCURRENT's own
+ *     "individual response" precedent instead.
  *
  *   XRn_OCP -- four BRAND NEW pins (PF4/PF5/PF8/PF12), no prior
  *     detection existed anywhere in this codebase (SM_ReportOcpFault()
@@ -127,13 +137,31 @@ extern "C" {
 /* Called from gate_driver.c's GateDriver_CheckFault() with the raw
  * 12-bit PE0..PE11 read (GateDriver_Read()) -- returns 1 if, after
  * per-channel gating and each category's own polarity setting, this
- * represents a real Water/Temp/Enerpro fault; 0 otherwise. Pure
- * decision function -- does not itself latch anything or touch
- * hardware; gate_driver.c's own existing latch/PFM_ForceStop/
+ * represents a real Water OR Temp fault (Enerpro EXCLUDED as of
+ * 2026-09-18 -- see this file's own header comment on the
+ * reclassification; use XrexIo_PollEnerproFaults() below for Enerpro);
+ * 0 otherwise. Pure decision function -- does not itself latch anything
+ * or touch hardware; gate_driver.c's own existing latch/PFM_ForceStop/
  * EnterFault(SM_FAULT_GENERAL) mechanics are unchanged, just now gated
  * on this function's answer instead of the old single-polarity
  * badBits check. */
 uint8_t XrexIo_EvaluateGateDriverFault(uint16_t raw12);
+
+/* Called from gate_driver.c's GateDriver_CheckFault() with the SAME raw
+ * 12-bit PE0..PE11 read passed to XrexIo_EvaluateGateDriverFault() above
+ * (no redundant GPIO re-read) -- checks each enabled channel's own
+ * Enerpro bit (per XR_ENERPRO_FLT_POLARITY, ctrlr_config.h) and calls
+ * SM_ReportEnerproFault(channel) DIRECTLY for any that read faulted.
+ * Unlike XrexIo_EvaluateGateDriverFault() (a pure decision function),
+ * this one has the side effect itself -- matching XrexIo_PollOcpFaults()'s
+ * own "evaluate and report" shape, not the Water+Temp "evaluate, let the
+ * caller latch/stop" shape, because Enerpro's real response
+ * (HandleOvercurrentFault(), via SM_ReportEnerproFault()) is a per-
+ * channel derate-and-ramp, not a shared full-stop -- there is no single
+ * "the fault" to hand back to a caller, each affected channel's own
+ * fault is independent. Added 2026-09-18, see this file's own header
+ * comment for the reclassification. */
+void XrexIo_PollEnerproFaults(uint16_t raw12);
 
 /* Polls all 4 XRn_OCP pins (PF4/PF5/PF8/PF12) and calls
  * SM_ReportOcpFault(channel) (state_machine.h) directly for any

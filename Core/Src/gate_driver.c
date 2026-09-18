@@ -36,19 +36,29 @@ void GateDriver_CheckFault(void)
 {
     uint16_t raw = GateDriver_Read();
 
+    /* Enerpro's own per-channel check, added 2026-09-18 -- see
+       xrex_io.h's own header comment on the reclassification (Enerpro
+       now gets an individual derate-and-ramp response, like OCP, not
+       the shared full-stop below). Deliberately called BEFORE the
+       Water+Temp check, on the SAME raw read (no redundant GPIO
+       access) -- independent of, and not gated by, whatever the
+       Water+Temp check below decides. */
+    XrexIo_PollEnerproFaults(raw);
+
     /* Fault decision delegated to xrex_io.c, 2026-09-17 -- see that
        file's own header comment for the full reasoning: these 12 pins
        are now interpreted with per-Transrex-channel semantics
-       (XRn_WATER_FLT/_TMP_FLT/_ENERPRO_FLT, docs/pin_mapping_v4.csv's
-       new "XREX Pin Name" column), each category independently
-       polarity-configurable (ctrlr_config.h's XR_WATER_FLT_POLARITY/
-       XR_TMP_FLT_POLARITY/XR_ENERPRO_FLT_POLARITY -- REPLACES the old
-       single shared GDS_FAULT_POLARITY this function used to check
-       directly), and gated so a disabled channel's own pins never
-       count toward a fault. This function's own EXTI-trigger/latch/
-       PFM_ForceStop(Soft) mechanics below are otherwise UNCHANGED --
-       still the same "any real fault among these 12 pins" response,
-       just a smarter decision of what counts as one. */
+       (XRn_WATER_FLT/_TMP_FLT, docs/pin_mapping_v4.csv's new "XREX Pin
+       Name" column -- Enerpro handled separately above as of
+       2026-09-18), each category independently polarity-configurable
+       (ctrlr_config.h's XR_WATER_FLT_POLARITY/XR_TMP_FLT_POLARITY --
+       REPLACES the old single shared GDS_FAULT_POLARITY this function
+       used to check directly), and gated so a disabled channel's own
+       pins never count toward a fault. This function's own EXTI-
+       trigger/latch/PFM_ForceStop(Soft) mechanics below are otherwise
+       UNCHANGED -- still the same "any real Water/Temp fault among
+       these pins" response, just a smarter decision of what counts as
+       one. */
     if (XrexIo_EvaluateGateDriverFault(raw) != 0U)
     {
         /* *** REAL BUG, FIXED 2026-09-15, confirmed on real hardware ***

@@ -55,22 +55,41 @@ uint8_t XrexIo_EvaluateGateDriverFault(uint16_t raw12)
     {
         if (PID_GetChannelEnable(ch) == 0U)
         {
-            continue;   /* gated: a disabled channel's own Water/Temp/
-                           Enerpro pins never count toward a fault */
+            continue;   /* gated: a disabled channel's own Water/Temp
+                           pins never count toward a fault */
         }
 
-        uint8_t waterBit   = (uint8_t)((raw12 >> (XR_WATER_FLT_BIT_BASE + ch)) & 1U);
-        uint8_t tmpBit     = (uint8_t)((raw12 >> (XR_TMP_FLT_BIT_BASE + ch)) & 1U);
-        uint8_t enerproBit = (uint8_t)((raw12 >> (XR_ENERPRO_FLT_BIT_BASE + ch)) & 1U);
+        uint8_t waterBit = (uint8_t)((raw12 >> (XR_WATER_FLT_BIT_BASE + ch)) & 1U);
+        uint8_t tmpBit   = (uint8_t)((raw12 >> (XR_TMP_FLT_BIT_BASE + ch)) & 1U);
 
+        /* Enerpro deliberately excluded here as of 2026-09-18 -- see
+           this file's own header comment and XrexIo_PollEnerproFaults()
+           below, which now owns Enerpro's own (differently-routed)
+           fault check. */
         if ((BitIsFault(waterBit, XR_WATER_FLT_POLARITY) != 0U) ||
-            (BitIsFault(tmpBit, XR_TMP_FLT_POLARITY) != 0U) ||
-            (BitIsFault(enerproBit, XR_ENERPRO_FLT_POLARITY) != 0U))
+            (BitIsFault(tmpBit, XR_TMP_FLT_POLARITY) != 0U))
         {
             return 1U;
         }
     }
     return 0U;
+}
+
+void XrexIo_PollEnerproFaults(uint16_t raw12)
+{
+    for (uint8_t ch = 0U; ch < HRTIM_NUM_CHANNELS; ch++)
+    {
+        if (PID_GetChannelEnable(ch) == 0U)
+        {
+            continue;   /* gated -- see this file's own header comment */
+        }
+
+        uint8_t enerproBit = (uint8_t)((raw12 >> (XR_ENERPRO_FLT_BIT_BASE + ch)) & 1U);
+        if (BitIsFault(enerproBit, XR_ENERPRO_FLT_POLARITY) != 0U)
+        {
+            SM_ReportEnerproFault(ch);
+        }
+    }
 }
 
 void XrexIo_PollOcpFaults(void)

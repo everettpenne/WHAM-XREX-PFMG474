@@ -112,7 +112,10 @@ LOGDATA_TIMEOUT = 8.0     # PID:LOGDATA? can be a long single line (~1000 sample
 # correct regardless.
 PFM_TURNON_FREQ_HZ = 5000.0
 PFM_MAX_FREQ_HZ = 100000.0
-PFM_MAX_CURRENT_A = 5000.0
+PFM_MAX_CURRENT_A = 6000.0  # updated 2026-09-18 -- ctrlr_config.h's
+                            # PFM_MAX_CURRENT_A_PER_CHANNEL changed from
+                            # 5000.0f to 6000.0f (confirmed real installed
+                            # LEMs are 6kA, not the original 5kA spec)
 
 # Same caveat as above -- MUST MATCH Core/Inc/ctrlr_config.h's
 # PID_LOOP_RATE_HZ and Core/Inc/pid.h's PID_LOG_MAX_SAMPLES. Used only

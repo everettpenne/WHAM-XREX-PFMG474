@@ -1,6 +1,285 @@
 WHAM-XREX-PFMG474 Firmware Changelog
 =====================================
 
+2026-09-18  —  REAL BUG FIX: SM_GetFaultChannel() returned 0xFF (STATE?
+               reported channel "256") for SM_FAULT_ENABLE_OUTPUT
+-----------------------------------------------------------------------
+  Change:  Found via run_simulator_validation.py's ena_contact scenario
+        (first real end-to-end exercise of a live SM_FAULT_ENABLE_OUTPUT
+        fault's STATE? output against real per-channel data -- the
+        earlier ARM-refusal precondition check had been verified, but
+        not this): dropping XREX:CHANnel:CONTactOut on an armed,
+        running channel correctly entered SM_FAULT_ENABLE_OUTPUT, but
+        STATE? reported "OK FAULT ENABLE_OUTPUT 256" instead of a real
+        1-4 channel number, reproduced consistently.
+
+        Root cause: SM_GetFaultChannel() (state_machine.c) only ever
+        returned the real g_faultChannel when SM_GetFaultType() ==
+        SM_FAULT_OVERCURRENT -- unconditionally 0xFF for every other
+        type. This was correct when the function was first written
+        (2026-09-15, OCP was the only per-channel fault type), but was
+        never widened when SM_FAULT_ENABLE_OUTPUT was added
+        (2026-09-17) even though that fault type's own STATE? branch
+        (commands.c, same day) has always called this same getter
+        expecting a real channel -- 0xFF+1=256 is exactly what got
+        printed. Nothing had exercised this specific path against real
+        per-channel data until the simulator provided a clean, non-
+        floating-pin bench to test it on.
+
+        Fixed: SM_GetFaultChannel() now also returns the real channel
+        for SM_FAULT_ENABLE_OUTPUT and the same-day-added
+        SM_FAULT_ENERPRO (both per-channel types, same as OVERCURRENT).
+        Doc comments updated in both state_machine.h and .c (the "0xFF
+        sentinel" framing, EnterFault()'s own comment) to describe all
+        three per-channel types instead of just OVERCURRENT.
+
+  Verify: Rebuilt clean for BOTH targets (controller +16 bytes, 90196;
+        simulator 95192). Reflashed the SIMULATOR. NOT yet re-verified
+        against a live ena_contact re-run -- that scenario's fault path
+        (XrexIo_PollEnableOutputFaults() reading the CONTROLLER's own
+        local ENA_OUT/CONTACT_OUT output pins) is entirely on the
+        CONTROLLER side, so confirming the fix needs the controller
+        reflashed too -- pending explicit go-ahead, per the standing
+        rule (same flash this session is already waiting on for the
+        Enerpro reclassification, below).
+
+2026-09-18  —  SIM:LOG/SIM:LOGDATA? added -- onboard waveform logging
+               for the simulator, replacing host-side polling
+-----------------------------------------------------------------------
+  Change:  Direct correction: python/run_simulator_validation.py
+        originally captured the simulator's DRIVE_HZ/FEEDBACK_HZ during
+        a shot by polling SIM:CHANnel:STATus? at a fixed host-side
+        interval (~10 samples/sec) -- coarse, and adds serial round-
+        trip jitter to the very waveform being measured. User asked for
+        the same "arm a log, run the shot, retrieve and plot
+        afterward" pattern already established for the CONTROLLER side
+        (pid.h's PID_ArmLog()/PID:LOGDATA?, used throughout this
+        project's own bench sessions) instead.
+
+        New sim_transrex.c waveform log: SimTransrex_ArmLog(channel,
+        maxSamples, minIntervalMs)/GetLogCount()/GetLogSample() --
+        SimTransrex_Update() itself appends a sample every real
+        main-loop tick (no host polling at all), throttled by
+        `minIntervalMs` rather than PID_ArmLog()'s tick-count decim
+        (SimTransrex_Update() runs off the main loop, not a fixed
+        hardware tick like PID_Update()'s HRTIM-driven 1kHz interrupt,
+        so there's no fixed rate to decimate against) -- each sample
+        instead carries its OWN elapsed-ms-since-armed timestamp.
+        Single-channel-at-a-time, matching PID_ArmLog()'s own simpler
+        (non-"All") shape. SIM_LOG_MAX_SAMPLES=1000 (sim_transrex.h) --
+        an initial 2000 overflowed this MCU's RAM by 7200 bytes on a
+        simulator build (on top of pid.c's own 48000-byte log arrays,
+        pfm.c's 40000-byte table, everything else already resident),
+        reduced to 1000 (matching PID_LOG_MAX_SAMPLES's own value),
+        confirmed to link clean.
+
+        New SIM:LOG <ch> <maxSamples> <minIntervalMs>/SIM:LOGDATA? <ch>
+        commands (commands.c/.h, cmd_parser.c), same
+        BUILD_TARGET_SIMULATOR-only guard as the rest of the SIM:
+        namespace, same streaming-reply pattern as PID:LOGDATA?
+        (cmd_pid_logdata()) to avoid needing one giant buffer.
+
+        python/run_simulator_validation.py rewritten to arm both
+        boards' logs (controller: PID:LOG, simulator: the new SIM:LOG)
+        immediately before each scenario's shot and retrieve+plot both
+        afterward, replacing every poll_sim_status() call site.
+
+  Verify: Rebuilt clean for BOTH targets after fixing one syntax error
+        (a doc comment containing a literal "XREX:CHANnel:*/PID:*"
+        prematurely closed the enclosing /* */ block -- caught by the
+        compiler, not silently wrong) and the RAM-overflow-driven size
+        reduction above. Controller: 90180 bytes, byte-identical to the
+        previous entry -- confirms this whole feature is simulator-only,
+        zero controller footprint. Simulator: 95168 bytes. Reflashed
+        the simulator, smoke-tested directly over serial (SIM:LOG 1 100
+        10 -> SIM:LOGDATA? 1 correctly returned exactly 100 samples,
+        10ms apart, driveHz=0/feedbackHz=5000 throughout -- an ungated
+        channel, matching expectations). Then re-ran the baseline
+        closed-loop scenario end-to-end through the rewritten
+        orchestration script: 859 simulator samples + 1000 controller
+        samples over a 3-second shot (vs. 29 samples with the old
+        polling approach) -- both plotted cleanly, scenario still
+        PASSED (final DRIVE_HZ=19992, target 20000).
+
+2026-09-18  —  Enerpro fault reclassified out of General Fault
+               (SM_FAULT_ENERPRO), PFM_MAX_CURRENT_A_PER_CHANNEL
+               updated 5kA -> 6kA
+-----------------------------------------------------------------------
+  Change:  User pointed at docs/Transrex/Transrex_Controls_Upgrade
+        (1).pdf (the original 2026-07-10 system upgrade plan) as
+        authoritative context while reviewing the Transrex simulator
+        work. Its own fault table gives Enerpro faults the SAME
+        response as Overcurrent (reduce surviving channels' DEMAND by
+        25% x fault count, keep running) -- distinct from Water/Temp's
+        full system stop. The firmware had all three (Water+Temp+
+        Enerpro) routed to one SM_FAULT_GENERAL full-stop path, per an
+        earlier direct instruction predating this document
+        ("Water, Temperature, and Enerpro faults are considered
+        general faults," 2026-09-17). Confirmed directly, 2026-09-18:
+        reclassify Enerpro like OCP; Water+Temp unchanged.
+
+        New SM_FAULT_ENERPRO fault type (state_machine.h), grouped with
+        SM_FAULT_OVERCURRENT/SM_FAULT_ENABLE_OUTPUT in EnterFault()'s
+        switch (state_machine.c) -- reuses HandleOvercurrentFault(channel)
+        unchanged. New SM_ReportEnerproFault(channel), exact mirror of
+        SM_ReportOcpFault()/SM_ReportEnableOutputFault()'s critical-
+        section-protected shape.
+
+        xrex_io.c: XrexIo_EvaluateGateDriverFault() no longer checks
+        Enerpro's bit (Water+Temp only now). New
+        XrexIo_PollEnerproFaults(uint16_t raw12) -- per-channel gated
+        check of just the Enerpro bit, calling
+        SM_ReportEnerproFault(channel) directly (matching
+        XrexIo_PollOcpFaults()'s "evaluate and report" shape, not
+        Water+Temp's "evaluate, let the caller latch/stop" shape --
+        Enerpro's real response has no single shared "the fault" to
+        hand back, each channel's is independent). gate_driver.c:
+        GateDriver_CheckFault() now calls XrexIo_PollEnerproFaults() on
+        every EXTI edge, on the SAME raw GateDriver_Read() already used
+        for the (now Water+Temp-only) general-fault check -- no
+        redundant GPIO read. commands.c: STATE? gained an `ENERPRO <ch>`
+        branch alongside the existing OVERCURRENT/ENABLE_OUTPUT ones,
+        same shape.
+
+        Separately, same review: PFM_MAX_CURRENT_A_PER_CHANNEL
+        (ctrlr_config.h) updated from the original 5000.0f placeholder
+        (matching the document's own "5kA output LEMs" spec) to
+        6000.0f -- confirmed directly: the REAL installed LEMs are 6kA,
+        not 5kA. Still a shared default across all 4 channels, still
+        flagged "MUST BE CALIBRATED BEFORE FINAL DEPLOYMENT" pending
+        real per-channel measurement -- this is a better shared
+        placeholder, not a measurement. PFM_TURNON_FREQ_HZ (5000 Hz =
+        0 A) was checked against the same document and found already
+        correct -- no change there.
+
+  Verify: Rebuilt clean for BOTH targets (zero warnings either way).
+        Controller: 90180 bytes (+200 from the previous entry -- this
+        is real shared fault-routing logic, unlike the simulator-only
+        sim_transrex.c work below, which the controller build strips
+        entirely). Simulator: 93936 bytes. Reflashed the simulator over
+        the serial bootloader, confirmed *IDN? unchanged.
+
+        NOT yet verified end-to-end (needs the controller reflashed too
+        -- SIM:FAULT:ENERPRO only drives a transmit pin, it does not
+        loop back into the simulator's own fault detection, so this
+        genuinely needs the controller's own receiving logic running
+        the new code to test for real): inject SIM:FAULT:ENERPRO on one
+        channel while 2+ channels are running, confirm STATE? reports
+        ENERPRO (not GENERAL), the faulted channel hard-disables, and
+        survivors derate by (1 - 1/n) rather than a full stop; separate
+        regression check that SIM:FAULT:WATERTEMP still produces a full
+        stop. Controller not flashed yet -- pending explicit go-ahead,
+        per the standing rule.
+
+2026-09-18  —  sim_transrex.c/.h added: the Transrex simulator's actual
+               closed-loop logic (DRIVE capture -> filter -> FEEDBACK,
+               ENA_OUT/CONTACT_OUT gating, SIM:FAULT:/SIM:MODEL:/
+               SIM:CHANnel:STATus? commands)
+-----------------------------------------------------------------------
+  Change:  First cut of Phases 1-5 from the approved simulator plan
+        (/Users/everettpenne/.claude/plans/cuddly-nibbling-octopus.md),
+        started while the physical fiber connectivity work (this same
+        day's DIAGnostic:GPOut09/10 entry, below) was being wired up on
+        the bench. Everything up to this point was raw pin
+        connectivity -- this is what makes the simulator actually
+        BEHAVE like a Transrex.
+
+        SIMULATOR-ONLY module (BUILD_TARGET_SIMULATOR), new
+        sim_transrex.c/.h:
+          - Reuses pfm_input.c's existing continuous-capture mode
+            (PfmInput_StartContinuous()/ConsumeAveragePeriod()),
+            unchanged, on PFM_Input_01..04 to measure the controller's
+            real commanded XRn_DRIVE frequency.
+          - Single-pole low-pass filter (alpha = dt/(tau+dt), default
+            tau=100ms, SIM:MODEL:TAU) applied directly in Hz -- no
+            Amps-domain round-trip needed since AmpsToHz() (pid.c) is
+            linear, per the plan's own documented assumption.
+          - Writes the filtered result out via this board's own
+            XRn_DRIVE HRTIM channels (HRTIM1_SetChannelPeriod(), same
+            primitive pid.c uses), which the controller receives as its
+            own XRn_FEEDBACK. Started UNCONDITIONALLY at boot
+            (HRTIM1_PWM_Start() + per-channel output-enable), not tied
+            to this board's own ARM/FIRE state -- a real Transrex
+            responds because it's connected and enabled, not because it
+            ran its own internal "shot."
+          - Gated per channel on ENA_OUT+CONTACT_OUT both asserted,
+            read from the controller via GateDriver_Read() (PE0..PE7)
+            -- NOT XrexIo_Get*Output() (PG0..PG7), which are this
+            board's OWN transmit pins for a different purpose (see
+            below). Gated off: floors output to PFM_TURNON_FREQ_HZ
+            (0A) rather than holding the last value -- decided per the
+            plan's own flagged open question #2, on the reasoning that
+            a real disconnected Transrex stops responding, it doesn't
+            keep echoing.
+          - Per-channel/per-category fault injection (Water+Temp
+            combined -- SimTransrex_SetFaultWaterTemp(), one shared
+            fiber+splitter per the finalized wiring; Enerpro; OCP),
+            reusing XrexIo_SetEnableOutput()/SetContactorOutput() for
+            Water+Temp/Enerpro (same physical PG0-7 pins XREX:CHANnel:
+            ENAOut/CONTactOut already drive) and a small direct
+            HAL_GPIO_WritePin() pair for OCP (PG8/PG9/PD0/PD1, no
+            existing xrex_io.c setter for those). Default HEALTHY
+            (HIGH, FAULT_POLARITY_NORMALLY_HIGH) at boot -- a
+            DELIBERATE exception to this project's usual "every new
+            output defaults LOW" convention, per the confirmed "default
+            healthy" scope decision: the whole point of this module is
+            to NOT present the floating/LOW-reads-as-fault state a
+            disconnected real Transrex's pins show on the bench today.
+
+        New SIM: command namespace (commands.c/.h, cmd_parser.c),
+        guarded out of a controller build entirely (declarations,
+        definitions, AND registration all share the same
+        BUILD_TARGET_SIMULATOR guard -- there's no "simulated Transrex"
+        concept on the real controller for this namespace to mean
+        anything about): SIM:FAULT:WATERTEMP/ENERPRO/OCP <ch> <0|1>/?,
+        SIM:MODEL:TAU <ms>/?, SIM:CHANnel:STATus? <ch> (DRIVE_HZ/
+        FEEDBACK_HZ/ENA_OUT/CONTACT_OUT/the three fault states in one
+        snapshot).
+
+        main.c: SimTransrex_Init() called once at boot (after
+        HRTIM1_FullInit()/PfmInput_Init(), both unconditional);
+        SimTransrex_Update() called every main-loop iteration
+        (alongside SM_PollFaults()/XrexIo_PollOcpFaults()) -- NOT from
+        PID_Update(), which only ticks while THIS board's own HRTIM
+        Master is running (i.e. only during a FIRE on this board,
+        irrelevant here). New source file -- added to Debug/Core/Src/
+        subdir.mk and Debug/objects.list by hand, same known gotcha as
+        every prior new .c file this project (AGENTS.md).
+
+        *** KNOWN LIMITATION, flagged directly in sim_transrex.h's own
+        header comment: this build still runs the FULL controller
+        firmware unconditionally, including its own state_machine.c/
+        pid.c/gate_driver.c, all still watching the exact same PE0..PE7
+        pins this module repurposes as ENA_OUT/CONTACT_OUT gating input
+        (those pins are ALSO the simulator's own, unmodified XR1..4
+        Water/Temp fault-detection inputs under gate_driver.c). Harmless
+        as long as the simulator's own PID channels are never
+        PID:CHANnel:ENAble'd on (gate_driver.c's fault evaluation is
+        gated per-channel-enabled) -- differentiating main.c's own
+        state-machine/PID polling to be controller-only, so this caveat
+        goes away entirely, is a follow-up, not done here.
+
+  Verify: Rebuilt clean for BOTH targets (zero warnings either way).
+        Controller build: 89980 bytes, byte-identical to before this
+        change -- confirms the new module and every SIM: command are
+        fully stripped by --gc-sections on that target, zero footprint
+        impact. Simulator build: 93712 bytes. Reflashed the simulator
+        over the serial bootloader, confirmed live: *IDN? unchanged;
+        SIM:MODEL:TAU?/TAU roundtrip (100 default, set/verified 250,
+        reset back to 100); SIM:CHANnel:STATus? 1 returned
+        `DRIVE_HZ=0 FEEDBACK_HZ=5000 ENA_OUT=LOW CONTACT_OUT=LOW
+        WATERTEMP_FAULT=0 ENERPRO_FAULT=0 OCP_FAULT=0` -- correct
+        gated-off floor behavior (no fibers driving ENA_OUT/CONTACT_OUT
+        at test time) and correct default-healthy fault state;
+        SIM:FAULT:OCP 1 1 -> re-query showed OCP_FAULT=1, then 1 0 ->
+        back to 0 -- fault injection round-trips correctly.
+
+        NOT yet verified: the actual closed-loop behavior with fibers
+        connected and the controller actively driving/gated on (Phases
+        1-3's real point) -- pending the physical fiber reconnection
+        this same session's bench work was doing concurrently. Not
+        committed to git yet.
+
 2026-09-18  —  DIAGnostic:GPOut09/GPOut10 added (PG8/PG9), completing
                Transrex simulator OCP fiber-transmitter coverage
 -----------------------------------------------------------------------

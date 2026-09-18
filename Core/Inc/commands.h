@@ -530,6 +530,42 @@ void cmd_pid_profile_start(uart_instance_t *inst, char *args);   /* PID:PROFILE:
                                                                       every channel at
                                                                       once */
 
+/* SIM: namespace -- sim_transrex.h backed, SIMULATOR-ONLY, added
+ * 2026-09-18. See commands.c's own header comment on
+ * cmd_sim_fault_watertemp() for the full reasoning. Guarded out of a
+ * controller build entirely -- these declarations, their definitions,
+ * and their cmd_parser.c registration all share the same
+ * BUILD_TARGET_SIMULATOR guard. */
+#if defined(BUILD_TARGET_SIMULATOR)
+void cmd_sim_fault_watertemp(uart_instance_t *inst, char *args);       /* SIM:FAULT:WATERTEMP
+                                                                            <ch> <0|1> -- OK */
+void cmd_sim_fault_watertemp_query(uart_instance_t *inst, char *args); /* SIM:FAULT:WATERTEMP?
+                                                                            <ch> -- OK <0|1> */
+void cmd_sim_fault_enerpro(uart_instance_t *inst, char *args);         /* SIM:FAULT:ENERPRO
+                                                                            <ch> <0|1> -- OK */
+void cmd_sim_fault_enerpro_query(uart_instance_t *inst, char *args);   /* SIM:FAULT:ENERPRO?
+                                                                            <ch> -- OK <0|1> */
+void cmd_sim_fault_ocp(uart_instance_t *inst, char *args);             /* SIM:FAULT:OCP <ch>
+                                                                            <0|1> -- OK */
+void cmd_sim_fault_ocp_query(uart_instance_t *inst, char *args);       /* SIM:FAULT:OCP? <ch>
+                                                                            -- OK <0|1> */
+void cmd_sim_model_tau(uart_instance_t *inst, char *args);             /* SIM:MODEL:TAU <ms>
+                                                                            -- OK */
+void cmd_sim_model_tau_query(uart_instance_t *inst, char *args);       /* SIM:MODEL:TAU? --
+                                                                            OK <ms> */
+void cmd_sim_channel_status(uart_instance_t *inst, char *args);        /* SIM:CHANnel:STATus?
+                                                                            <ch> -- OK
+                                                                            DRIVE_HZ=... */
+void cmd_sim_log(uart_instance_t *inst, char *args);                   /* SIM:LOG <ch>
+                                                                            <maxSamples>
+                                                                            <minIntervalMs>
+                                                                            -- OK */
+void cmd_sim_logdata(uart_instance_t *inst, char *args);               /* SIM:LOGDATA? <ch>
+                                                                            -- OK <count>
+                                                                            <t0> <drive0>
+                                                                            <feedback0> ... */
+#endif /* BUILD_TARGET_SIMULATOR */
+
 #ifdef __cplusplus
 }
 #endif

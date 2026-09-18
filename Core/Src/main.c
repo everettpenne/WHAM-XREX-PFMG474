@@ -32,6 +32,7 @@
 #include "pid.h"
 #include "state_machine.h"
 #include "xrex_io.h"
+#include "sim_transrex.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -194,6 +195,17 @@ int main(void)
      cmd_fire() -> PFM_Restart()). Ported from the sibling
      PFM-STM32G474 project's main.c, same placement/rationale. */
   HRTIM1_EnableMasterInterrupt();
+
+  /* Transrex simulator logic (sim_transrex.h) -- SIMULATOR-ONLY, added
+     2026-09-18. Starts this board's own HRTIM output + PFM_Input
+     capture unconditionally (not tied to this board's own ARM/FIRE
+     state -- see sim_transrex.h's own comment for why) and drives
+     every fault-injection transmitter to its healthy default. No
+     controller-target equivalent -- this board plays a genuinely
+     different physical role. */
+#if defined(BUILD_TARGET_SIMULATOR)
+  SimTransrex_Init();
+#endif
   /* USER CODE END 2 */
 
   /* Infinite loop */
@@ -218,6 +230,15 @@ int main(void)
                                            "regardless of state" call site
                                            reasoning, but itself only acts
                                            while ARMED/FIRING (xrex_io.h) */
+#if defined(BUILD_TARGET_SIMULATOR)
+    SimTransrex_Update();   /* added 2026-09-18 -- SIMULATOR-ONLY, same
+                                "regardless of state" main-loop cadence;
+                                see sim_transrex.h for why this can't
+                                run from PID_Update() instead (that only
+                                ticks while THIS board's own HRTIM
+                                Master is active, i.e. only during a
+                                FIRE on this board -- irrelevant here) */
+#endif
     /* Polls for a completed serial command line and dispatches it. */
     uart_process(&uart2);
   }

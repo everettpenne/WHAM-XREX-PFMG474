@@ -257,6 +257,25 @@ static const command_t command_table[] = {
     { "PID:PROFile:CURRent", cmd_pid_profile_current },
     { "PID:PROFile:CURRent?", cmd_pid_profile_current_query },
     { "PID:PROFile:STARt",   cmd_pid_profile_start   },
+
+    /* SIM: namespace -- sim_transrex.h backed, SIMULATOR-ONLY, added
+       2026-09-18. See commands.c's own header comment on
+       cmd_sim_fault_watertemp() for the full reasoning -- these rows
+       (and the handlers they point to) do not exist at all in a
+       controller build. */
+#if defined(BUILD_TARGET_SIMULATOR)
+    { "SIM:FAULT:WATERTEMP",  cmd_sim_fault_watertemp        },
+    { "SIM:FAULT:WATERTEMP?", cmd_sim_fault_watertemp_query  },
+    { "SIM:FAULT:ENERPRO",    cmd_sim_fault_enerpro          },
+    { "SIM:FAULT:ENERPRO?",   cmd_sim_fault_enerpro_query    },
+    { "SIM:FAULT:OCP",        cmd_sim_fault_ocp              },
+    { "SIM:FAULT:OCP?",       cmd_sim_fault_ocp_query        },
+    { "SIM:MODEL:TAU",        cmd_sim_model_tau              },
+    { "SIM:MODEL:TAU?",       cmd_sim_model_tau_query        },
+    { "SIM:CHANnel:STATus?",  cmd_sim_channel_status         },
+    { "SIM:LOG",              cmd_sim_log                    },
+    { "SIM:LOGDATA?",         cmd_sim_logdata                },
+#endif
 };
 
 #define NUM_COMMANDS  (sizeof(command_table) / sizeof(command_table[0]))

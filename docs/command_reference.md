@@ -403,7 +403,9 @@ REVISIT" comments).
 - **`STATE?`** — `OK <IDLE|ARMED|FIRING>`, or while faulted:
   `OK FAULT GENERAL` / `OK FAULT OVERCURRENT <ch>` (1-based) /
   `OK FAULT EXTERNAL_ENABLE` / `OK FAULT EMERGENCY_STOP` /
-  `OK FAULT ENABLE_OUTPUT <ch>` (1-based).
+  `OK FAULT ENABLE_OUTPUT <ch>` (1-based) / `OK FAULT ENERPRO <ch>`
+  (1-based — added 2026-09-18, reclassified out of `GENERAL`; see
+  below).
 - New error code **13**: an invalid state-machine transition for the
   current state (e.g. `PID:PROFile:STARt` sent while not `ARMED`;
   `ARM` sent while not `IDLE`).
@@ -939,16 +941,28 @@ categories, added per direct request against `pin_mapping_v4.csv`'s new
 |---|---|---|---|---|---|
 | `_WATER_FLT` | PE0 | PE1 | PE2 | PE3 | EXTI-driven (existing `GateDriverStatus_01..04`) |
 | `_TMP_FLT` | PE4 | PE5 | PE6 | PE7 | EXTI-driven (existing `GateDriverStatus_05..08`) |
-| `_ENERPRO_FLT` | PE8 | PE9 | PE10 | PE11 | EXTI-driven (existing `GateDriverStatus_09..12`) |
+| `_ENERPRO_FLT` | PE8 | PE9 | PE10 | PE11 | EXTI-driven (existing `GateDriverStatus_09..12`) — routes to `SM_FAULT_ENERPRO`, not `GENERAL`, as of 2026-09-18 |
 | `_OCP_FLT` | PF4 | PF8 | PF12 | PF5 | **Polled** (new pins, no EXTI capacity free — see below) |
 
-- **Water/Temp/Enerpro are "General Fault"** (`SM_FAULT_GENERAL`,
-  `STATE?`) — the existing `GateDriverStatus_01..12` EXTI interrupt
-  path (`gate_driver.c`) now delegates its fault DECISION to
-  `XrexIo_EvaluateGateDriverFault()` (`xrex_io.c`) instead of the old
-  single shared `GDS_FAULT_POLARITY` — see `FAULT?`/`FAULT:CLEAR`
-  above for the unchanged mechanics (force-stop/soft-stop, latch,
-  boot-time check).
+- **Water/Temp are "General Fault"** (`SM_FAULT_GENERAL`, `STATE?`) —
+  the existing `GateDriverStatus_01..12` EXTI interrupt path
+  (`gate_driver.c`) now delegates its fault DECISION to
+  `XrexIo_EvaluateGateDriverFault()` (`xrex_io.c`, Water+Temp only as
+  of 2026-09-18 — see below) instead of the old single shared
+  `GDS_FAULT_POLARITY` — see `FAULT?`/`FAULT:CLEAR` above for the
+  unchanged mechanics (force-stop/soft-stop, latch, boot-time check).
+- **Enerpro is its own fault type**, like OCP (`SM_FAULT_ENERPRO`,
+  `STATE?`) — **RECLASSIFIED 2026-09-18** out of `SM_FAULT_GENERAL`,
+  after `docs/Transrex/Transrex_Controls_Upgrade (1).pdf`'s own fault
+  table was found to give Enerpro the SAME response as Overcurrent
+  (reduce surviving channels' `DEMAND`, keep running —
+  `HandleOvercurrentFault()`), not Water/Temp's full stop. Detection
+  stays EXTI-driven (`XrexIo_PollEnerproFaults()`, called from
+  `gate_driver.c`'s `GateDriver_CheckFault()` alongside the now-
+  Water+Temp-only general check, on the same raw `GateDriver_Read()`)
+  — only the RESPONSE routing changed, reporting via
+  `SM_ReportEnerproFault(channel)` directly instead of the shared
+  latch/force-stop path.
 - **OCP is its own fault type** (`SM_FAULT_OVERCURRENT`, `STATE?`),
   via `SM_ReportOcpFault(channel)` — a pre-existing entry point
   (originally added for `OCP:TEST:FAULT` software injection) now also
@@ -1334,6 +1348,150 @@ and its current placeholder status. **One deliberate exception** (added
 2026-09-15): the OCP `(100*1/N)%` derate step (`OVERCURRENT` fault,
 above) bypasses this clamp for that one write only -- see
 `ClampOutputRangeOnly()`'s comment in `pid.c`.
+
+## SIM: namespace (simulator-only)
+
+Added 2026-09-18, backed by `sim_transrex.c/.h` — see that module's own
+header comment for the full design. **Does not exist on a controller
+build at all** — declarations, definitions, and `cmd_parser.c`
+registration all share the same `BUILD_TARGET_SIMULATOR` guard, unlike
+`DIAGnostic:GPOut09-12`/etc., which are generic pins present on both
+targets. Sending any `SIM:` command to a real controller gets
+`ERR 1 Unknown command`.
+
+This is the actual "act like a Transrex" logic: it captures the
+controller's real commanded `XRn_DRIVE` frequency (reusing
+`pfm_input.c`'s existing continuous capture, unchanged), low-pass
+filters it, and drives the result back out on this board's own
+`XRn_DRIVE` HRTIM channels — which the controller receives as its own
+`XRn_FEEDBACK`. Gated per channel on `ENA_OUT`+`CONTACT_OUT` both being
+asserted (received from the controller); when not gated, the output
+floors to `PFM_TURNON_FREQ_HZ` (0 A) rather than holding its last
+value. Runs unconditionally from boot (started in `main.c`, updated
+every main-loop iteration) — not tied to this board's own ARM/FIRE
+state, since a real Transrex's response depends on being connected and
+enabled, not on its own internal shot cycle.
+
+### `SIM:FAULT:WATERTEMP` / `SIM:FAULT:WATERTEMP?`
+
+Combined Water+Temp fault injection for one channel — these two share a
+single fiber+splitter per channel on the finalized wiring
+(`docs/pin_mapping_reference.tex` Section 7), so they cannot be
+independently faulted; this is an honest single command rather than two
+aliased ones. `<0|1>`: 1 injects a fault (drives the transmitter LOW,
+`FAULT_POLARITY_NORMALLY_HIGH`'s fault level); 0 restores healthy
+(HIGH). Drives the same physical pins `XREX:CHANnel:ENAOut` can also
+drive directly — don't use both mechanisms on the same channel at once.
+
+```
+> SIM:FAULT:WATERTEMP 1 1
+< OK
+> SIM:FAULT:WATERTEMP? 1
+< OK 1
+```
+
+- **`SIM:FAULT:WATERTEMP <ch> <0|1>`** — `OK`. `ERR 11` for an invalid
+  channel, `ERR 12` if an argument is missing.
+- **`SIM:FAULT:WATERTEMP? <ch>`** — `OK <0|1>`, this module's own
+  injected state (not a raw pin read).
+
+### `SIM:FAULT:ENERPRO` / `SIM:FAULT:ENERPRO?`
+
+Independent per-channel Enerpro fault injection (one dedicated
+transmitter per channel). Same polarity, argument, and error
+convention as `SIM:FAULT:WATERTEMP` above — drives the same pins
+`XREX:CHANnel:CONTactOut` can also drive directly.
+
+### `SIM:FAULT:OCP` / `SIM:FAULT:OCP?`
+
+Independent per-channel OCP fault injection (one dedicated transmitter
+per channel, XR1-4 in that order matching the controller's own
+irregular `kOcpPin[]` order). Same polarity/argument/error convention
+as `SIM:FAULT:WATERTEMP` above — drives the same pins
+`DIAGnostic:GPOut09`-`GPOut12` can also drive directly.
+
+### `SIM:MODEL:TAU` / `SIM:MODEL:TAU?`
+
+The low-pass filter's time constant, in milliseconds, shared across
+every channel. Default `SIM_TRANSREX_DEFAULT_TAU_MS` (100 — a first,
+reasonable-sounding guess, not derived from real magnet/supply time
+constants; revisit once real bench step-response data exists, same
+placeholder status as several `ctrlr_config.h` calibration constants).
+
+```
+> SIM:MODEL:TAU 250
+< OK
+> SIM:MODEL:TAU?
+< OK 250
+```
+
+- **`SIM:MODEL:TAU <ms>`** — `OK`. `ERR 11` if `ms` is not a positive
+  number (a zero time constant is a divide-by-zero in the filter math,
+  not a meaningful "instant response" request).
+- **`SIM:MODEL:TAU?`** — `OK <ms>`.
+
+### `SIM:CHANnel:STATus?`
+
+One-shot diagnostic snapshot for a channel: the last measured `DRIVE`
+frequency, this module's own current filtered `FEEDBACK` output, the
+live raw `ENA_OUT`/`CONTACT_OUT` gating bits, and the three injected
+fault states.
+
+```
+> SIM:CHANnel:STATus? 1
+< OK DRIVE_HZ=0 FEEDBACK_HZ=5000 ENA_OUT=LOW CONTACT_OUT=LOW WATERTEMP_FAULT=0 ENERPRO_FAULT=0 OCP_FAULT=0
+```
+
+- **`SIM:CHANnel:STATus? <ch>`** — `OK DRIVE_HZ=<n> FEEDBACK_HZ=<n>
+  ENA_OUT=HIGH|LOW CONTACT_OUT=HIGH|LOW WATERTEMP_FAULT=<0|1>
+  ENERPRO_FAULT=<0|1> OCP_FAULT=<0|1>`. `ERR 11`/`ERR 12` same as
+  every other channel-argument command above.
+
+### `SIM:LOG` / `SIM:LOGDATA?`
+
+Added 2026-09-18, per direct correction: `python/run_simulator_validation.py`
+originally polled `SIM:CHANnel:STATus?` at a fixed host-side interval
+during a shot to build a waveform log — coarse (~10 samples/sec) and
+adds serial round-trip jitter. This is the simulator-side equivalent
+of the controller's `PID:LOG`/`PID:LOGDATA?` (below): arm before a
+shot, let `sim_transrex.c`'s `SimTransrex_Update()` log every real
+main-loop tick with no host involvement, retrieve after.
+
+**Differs from `PID:LOG`/`PID:LOGDATA?` in one way**: `PID:LOG` decimates
+against a REAL fixed hardware tick (`PID_Update()` runs on the HRTIM
+Master's 1kHz interrupt, so "every Nth tick" is precise) and reports one
+shared `rate_hz` for the whole log. `SimTransrex_Update()` runs off the
+main loop instead, which has no fixed rate at all — so `SIM:LOG` takes a
+minimum-time-between-samples throttle (milliseconds) rather than a tick
+decimation, and `SIM:LOGDATA?` reports each sample's own elapsed-time-
+since-armed timestamp explicitly instead of a shared rate.
+
+Single-channel-at-a-time (like `PID:LOG`'s single-channel mode, not
+`PID:LOG 0 ...`'s all-channels mode) — arming a new channel discards
+whatever was previously logged.
+
+```
+> SIM:LOG 1 1000 5
+< OK
+... (run a shot) ...
+> SIM:LOGDATA? 1
+< OK 847 0 0 5000 5 0 5000 10 8213 6104 15 20007 9821 ...
+```
+(each triple is `<t_ms> <drive_hz> <feedback_hz>` — `drive_hz` is 0
+until the channel is actually gated on and a real DRIVE signal is
+first measured; `feedback_hz` starts at the `PFM_TURNON_FREQ_HZ` floor
+and converges once gated).
+
+- **`SIM:LOG <ch> <maxSamples> <minIntervalMs>`** — `OK`, arms
+  logging. `maxSamples` clamped to `SIM_LOG_MAX_SAMPLES` (1000,
+  `sim_transrex.h`); `minIntervalMs` of `0` logs every single
+  `SimTransrex_Update()` call, unthrottled. `ERR 11` for an invalid
+  channel, `ERR 12` for a missing/invalid argument.
+- **`SIM:LOGDATA? <ch>`** — `OK <count> <t0_ms> <drive0_hz>
+  <feedback0_hz> <t1_ms> <drive1_hz> <feedback1_hz> ...` — `ch` must be
+  the currently-armed channel. `count` stays at whatever it reached
+  once `maxSamples` is hit (logging simply stops appending, it doesn't
+  wrap or reset). `ERR 11`/`ERR 12` same as `SIM:LOG`.
 
 ## Adding a command
 
