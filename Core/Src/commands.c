@@ -798,6 +798,81 @@ void cmd_diag_gpout11_query(uart_instance_t *inst, char *args)
 }
 
 /* --------------------------------------------------------------------------
+ * DIAGnostic:GPOut09 <0|1> / DIAGnostic:GPOut09?
+ * DIAGnostic:GPOut10 <0|1> / DIAGnostic:GPOut10?
+ *
+ * Added 2026-09-18 -- a THIRD and FOURTH diagnostic output, on PG8
+ * ("GPOut_09" in the V4 column, docs/pin_mapping_v4.csv) and PG9
+ * ("GPOut_10"). Verified directly against the CSV before writing this:
+ * the V3 column for these same two rows says "No connection", and a
+ * DIFFERENT pair of pins (PD8/PD9) carried the "GPOut_09"/"GPOut_10"
+ * names under V3 -- the same class of V3/V4 name-reuse trap as the
+ * earlier PC14-vs-PF15 and PF13-vs-PD1 corrections, so this one was
+ * checked against the CSV rather than assumed.
+ *
+ * Immediate use: closes the last gap in the Transrex simulator's fiber-
+ * transmitter budget (docs/pin_mapping_reference.tex Section 7) -- these
+ * two feed XR1_OCP/XR2_OCP on the controller (GPInput_03/PF4 and
+ * GPInput_07/PF8 respectively), completing OCP fault-injection coverage
+ * for all 4 channels. Otherwise an exact mirror of
+ * cmd_diag_gpout12()/cmd_diag_gpout11() above -- see that pair's own
+ * doc comment for the shared reasoning (generic level output, GPIO
+ * config in main.c, no dedicated module). */
+void cmd_diag_gpout09(uart_instance_t *inst, char *args)
+{
+    char *tok;
+    long  val;
+
+    tok = (args != NULL) ? strtok(args, " \r\n") : NULL;
+    if (tok == NULL)
+    {
+        SendErr(inst, 12, "DIAGnostic:GPOut09 needs one argument: 0|1");
+        return;
+    }
+    val = atol(tok);
+
+    HAL_GPIO_WritePin(GPIOG, GPIO_PIN_8, (val != 0L) ? GPIO_PIN_SET : GPIO_PIN_RESET);
+    uart_send(inst, "OK\r\n");
+}
+
+void cmd_diag_gpout09_query(uart_instance_t *inst, char *args)
+{
+    char buf[16];
+    (void)args;
+
+    snprintf(buf, sizeof(buf), "OK %u\r\n",
+             (unsigned)(HAL_GPIO_ReadPin(GPIOG, GPIO_PIN_8) == GPIO_PIN_SET ? 1U : 0U));
+    uart_send(inst, buf);
+}
+
+void cmd_diag_gpout10(uart_instance_t *inst, char *args)
+{
+    char *tok;
+    long  val;
+
+    tok = (args != NULL) ? strtok(args, " \r\n") : NULL;
+    if (tok == NULL)
+    {
+        SendErr(inst, 12, "DIAGnostic:GPOut10 needs one argument: 0|1");
+        return;
+    }
+    val = atol(tok);
+
+    HAL_GPIO_WritePin(GPIOG, GPIO_PIN_9, (val != 0L) ? GPIO_PIN_SET : GPIO_PIN_RESET);
+    uart_send(inst, "OK\r\n");
+}
+
+void cmd_diag_gpout10_query(uart_instance_t *inst, char *args)
+{
+    char buf[16];
+    (void)args;
+
+    snprintf(buf, sizeof(buf), "OK %u\r\n",
+             (unsigned)(HAL_GPIO_ReadPin(GPIOG, GPIO_PIN_9) == GPIO_PIN_SET ? 1U : 0U));
+    uart_send(inst, buf);
+}
+
+/* --------------------------------------------------------------------------
  * DIAGnostic:OPTBytes?
  *
  * TEMPORARY diagnostic, added 2026-09-17 -- direct request: is PB8

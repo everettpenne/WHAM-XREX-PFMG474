@@ -658,28 +658,31 @@ static void MX_GPIO_Init(void)
 
   /* PC13 ("GPOut_Enable_Pin" in the V4 column, docs/pin_mapping_v4.csv --
      confirmed GPO there, unused elsewhere), added 2026-09-17 per direct
-     request. Push-pull output, driven HIGH BEFORE HAL_GPIO_Init()
-     enables it -- per direct instruction ("By default, keep it HIGH"),
-     the OPPOSITE default of every other software-driven output in this
-     file (DIAGnostic:GPOut11/12, ENA_OUT/CONTACT_OUT above, all
-     deliberately LOW by default) -- a fresh boot must present this
-     pin's real intended default (HIGH), not an incidental LOW that
-     happens to match everything else here. GPIO_NOPULL (irrelevant for
-     a push-pull output, same as every other output block in this
-     file). Driven by GPOut:ENAble (commands.c). */
+     request. Push-pull output, driven to its configured default level
+     BEFORE HAL_GPIO_Init() enables it -- default level is now a named
+     compile-time config, GPOUT_ENABLE_DEFAULT_HIGH (ctrlr_config.h,
+     added 2026-09-18 per direct follow-up instruction, applies to
+     EVERY build of this board -- controller and simulator alike),
+     currently `1` (HIGH) matching the ORIGINAL 2026-09-17 instruction
+     ("By default, keep it HIGH") -- the OPPOSITE default of every
+     other software-driven output in this file (DIAGnostic:GPOut11/12,
+     ENA_OUT/CONTACT_OUT above, all deliberately LOW by default) -- a
+     fresh boot must present this pin's real intended default, not an
+     incidental LOW that happens to match everything else here.
+     GPIO_NOPULL (irrelevant for a push-pull output, same as every
+     other output block in this file). Driven at RUNTIME by
+     GPOut:ENAble (commands.c) -- a separate, coexisting mechanism from
+     this boot-time default, see GPOUT_ENABLE_DEFAULT_HIGH's own
+     comment for why both exist. */
   {
       GPIO_InitTypeDef gpOutEnableInit = {0};
 
       __HAL_RCC_GPIOC_CLK_ENABLE();
 
-      HAL_GPIO_WritePin(GPIOC, GPIO_PIN_13, GPIO_PIN_SET);   /* set level
-                                                                  BEFORE
-                                                                  enabling
-                                                                  the output,
-                                                                  so it's
-                                                                  never
-                                                                  briefly
-                                                                  LOW first */
+      HAL_GPIO_WritePin(GPIOC, GPIO_PIN_13,
+                         (GPOUT_ENABLE_DEFAULT_HIGH != 0U) ? GPIO_PIN_SET : GPIO_PIN_RESET);
+                         /* set level BEFORE enabling the output, so
+                            it's never briefly the opposite level first */
       gpOutEnableInit.Pin   = GPIO_PIN_13;
       gpOutEnableInit.Mode  = GPIO_MODE_OUTPUT_PP;
       gpOutEnableInit.Pull  = GPIO_NOPULL;
@@ -689,18 +692,18 @@ static void MX_GPIO_Init(void)
 
   /* PC15 ("PWM_Alt_Enable" in the V4 column, docs/pin_mapping_v4.csv --
      confirmed GPO there, unused elsewhere), added 2026-09-17 per direct
-     request -- same reasoning as PC13 just above (default HIGH,
-     driven before enable, GPIO_NOPULL). Driven by PWMAlt:ENAble
+     request -- same reasoning as PC13 just above (default level from
+     PWMALT_ENABLE_DEFAULT_HIGH, ctrlr_config.h, currently HIGH; driven
+     before enable; GPIO_NOPULL). Driven at runtime by PWMAlt:ENAble
      (commands.c). */
   {
       GPIO_InitTypeDef pwmAltEnableInit = {0};
 
       __HAL_RCC_GPIOC_CLK_ENABLE();
 
-      HAL_GPIO_WritePin(GPIOC, GPIO_PIN_15, GPIO_PIN_SET);   /* set level
-                                                                  BEFORE
-                                                                  enabling
-                                                                  the output */
+      HAL_GPIO_WritePin(GPIOC, GPIO_PIN_15,
+                         (PWMALT_ENABLE_DEFAULT_HIGH != 0U) ? GPIO_PIN_SET : GPIO_PIN_RESET);
+                         /* set level BEFORE enabling the output */
       pwmAltEnableInit.Pin   = GPIO_PIN_15;
       pwmAltEnableInit.Mode  = GPIO_MODE_OUTPUT_PP;
       pwmAltEnableInit.Pull  = GPIO_NOPULL;
@@ -789,6 +792,40 @@ static void MX_GPIO_Init(void)
                                                       signal -- no reason
                                                       for a faster slew */
       HAL_GPIO_Init(GPIOD, &diagOutInit2);
+  }
+
+  /* PG8/PG9 ("GPOut_09"/"GPOut_10" in the V4 column, docs/pin_mapping_v4.csv
+     -- confirmed GPO there; note the V3 column for these two rows is "No
+     connection" and a DIFFERENT pair of pins, PD8/PD9, carried the
+     "GPOut_09"/"GPOut_10" names in V3 -- verified against the CSV directly
+     before writing this, so as not to repeat the earlier PC14-vs-PF15/
+     PF13-vs-PD1 V3/V4 name-reuse mistakes), added 2026-09-18 -- a THIRD and
+     FOURTH generic, software-driven diagnostic output, same class as
+     PD0/PD1 ("GPOut_11"/"GPOut_12") just above. Immediate use: the Transrex
+     simulator's fiber-transmitter budget assigns these two to XR1_OCP/
+     XR2_OCP (see docs/pin_mapping_reference.tex Section 7) -- until now
+     they had no GPIO config or command on either board, so those two OCP
+     channels were untestable over fiber. Otherwise identical in every
+     respect to PD0/PD1's own diagnostic-output config above -- generic
+     level outputs, nothing OCP-specific baked in here, driven by
+     DIAGnostic:GPOut09/GPOut10 (commands.c). Same initial-state-LOW-
+     before-enable reasoning -- never glitches HIGH on boot. */
+  {
+      GPIO_InitTypeDef diagOutInit3 = {0};
+
+      __HAL_RCC_GPIOG_CLK_ENABLE();
+
+      HAL_GPIO_WritePin(GPIOG, GPIO_PIN_8 | GPIO_PIN_9, GPIO_PIN_RESET);
+                         /* set level BEFORE enabling the output, so it
+                            never glitches HIGH first */
+      diagOutInit3.Pin   = GPIO_PIN_8 | GPIO_PIN_9;
+      diagOutInit3.Mode  = GPIO_MODE_OUTPUT_PP;
+      diagOutInit3.Pull  = GPIO_NOPULL;
+      diagOutInit3.Speed = GPIO_SPEED_FREQ_LOW;   /* diagnostic level
+                                                       outputs, not fast
+                                                       signals -- no reason
+                                                       for a faster slew */
+      HAL_GPIO_Init(GPIOG, &diagOutInit3);
   }
 
   /* USER CODE END MX_GPIO_Init_2 */

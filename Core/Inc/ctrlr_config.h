@@ -57,6 +57,28 @@
 #define FW_VERSION_STRING "v0.1"
 
 /* --------------------------------------------------------------------------
+ * GPOut:ENAble (PC13, "GPOut_Enable_Pin") / PWMAlt:ENAble (PC15,
+ * "PWM_Alt_Enable") boot-time default level -- compile-time config,
+ * added 2026-09-18 per direct instruction, applying to EVERY build of
+ * this board (BUILD_TARGET_CONTROLLER and BUILD_TARGET_SIMULATOR
+ * alike -- these two pins/commands have no target-specific behavior at
+ * all, unlike most of this project's XR-channel logic).
+ *
+ * Both default to `1` (HIGH) here, matching the ORIGINAL 2026-09-17
+ * direct instruction ("By default, keep it HIGH... default output
+ * HIGH") -- that original wording is now satisfied via this named
+ * constant instead of the hardcoded `GPIO_PIN_SET` main.c used before
+ * today, so the default can be changed in ONE place without touching
+ * main.c's GPIO_InitTypeDef blocks at all. Independent of, and
+ * unaffected by, the RUNTIME `GPOut:ENAble <0|1>`/`PWMAlt:ENAble <0|1>`
+ * commands (commands.c) -- those two mechanisms coexist on purpose:
+ * this constant only decides what the pin reads at the instant of
+ * boot, before any serial command has ever been sent; the runtime
+ * command is what lets an operator change it afterward. */
+#define GPOUT_ENABLE_DEFAULT_HIGH    (1U)
+#define PWMALT_ENABLE_DEFAULT_HIGH   (1U)
+
+/* --------------------------------------------------------------------------
  * HRTIM channel count
  *
  * REPURPOSED, 2026-09-09, for the closed-loop PID architecture (see

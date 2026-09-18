@@ -636,6 +636,41 @@ is driving which real input.
   if the argument is missing.
 - **`DIAGnostic:GPOut11?`** — `OK <0|1>`, the pin's current level.
 
+### `DIAGnostic:GPOut09` / `DIAGnostic:GPOut09?`, `DIAGnostic:GPOut10` / `DIAGnostic:GPOut10?`
+
+Added 2026-09-18 — a **third and fourth**, independent diagnostic
+output pair on **PG8** (`GPOut_09` in the V4 column,
+`docs/pin_mapping_v4.csv` — confirmed `GPO`; note the V3 column for
+this same row is `No connection`, and a *different* pair of pins,
+PD8/PD9, carried the `GPOut_09`/`GPOut_10` names under V3 — verified
+directly against the CSV before adding these, to avoid repeating the
+earlier PC14-vs-PF15/PF13-vs-PD1 V3/V4 name-reuse mistakes) and **PG9**
+(`GPOut_10`). Exact mirrors of `DIAGnostic:GPOut11`/`GPOut12` above in
+every respect. Added to close the last gap in the Transrex simulator's
+fiber-transmitter budget (`docs/pin_mapping_reference.tex` Section 7)
+— these two feed XR1_OCP/XR2_OCP on the controller (`GPInput_03`/PF4
+and `GPInput_07`/PF8 respectively), completing OCP fault-injection
+coverage for all 4 channels (XR3/XR4 OCP were already covered by
+`DIAGnostic:GPOut11`/`GPOut12`).
+
+```
+> DIAGnostic:GPOut09 1
+< OK
+> DIAGnostic:GPOut09?
+< OK 1
+> DIAGnostic:GPOut10 1
+< OK
+> DIAGnostic:GPOut10?
+< OK 1
+```
+
+- **`DIAGnostic:GPOut09 <0|1>`** — `OK`, drives PG8 HIGH/LOW. `ERR 12`
+  if the argument is missing.
+- **`DIAGnostic:GPOut09?`** — `OK <0|1>`, the pin's current level.
+- **`DIAGnostic:GPOut10 <0|1>`** — `OK`, drives PG9 HIGH/LOW. `ERR 12`
+  if the argument is missing.
+- **`DIAGnostic:GPOut10?`** — `OK <0|1>`, the pin's current level.
+
 ### `DIAGnostic:RSTCause?` / `DIAGnostic:RSTCause:CLEar`
 
 **TEMPORARY diagnostic**, added 2026-09-17 while investigating a

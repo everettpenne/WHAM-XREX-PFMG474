@@ -226,6 +226,22 @@ void cmd_diag_gpout11(uart_instance_t *inst, char *args);       /* DIAGnostic:GP
 void cmd_diag_gpout11_query(uart_instance_t *inst, char *args); /* DIAGnostic:GPOut11? --
                                                                      OK <0|1> */
 
+/* Generic diagnostic outputs on PG8/PG9 ("GPOut_09"/"GPOut_10" in
+ * pin_mapping_v4.csv's V4 column -- verified against the CSV directly,
+ * NOT the same pins as PD8/PD9 which carried those names under V3),
+ * added 2026-09-18 -- feed the Transrex simulator's XR1_OCP/XR2_OCP
+ * fiber transmitters, completing OCP coverage for all 4 channels. See
+ * cmd_diag_gpout09()/cmd_diag_gpout10()'s own doc comment (commands.c)
+ * for the full reasoning. */
+void cmd_diag_gpout09(uart_instance_t *inst, char *args);       /* DIAGnostic:GPOut09 <0|1>
+                                                                     -- OK */
+void cmd_diag_gpout09_query(uart_instance_t *inst, char *args); /* DIAGnostic:GPOut09? --
+                                                                     OK <0|1> */
+void cmd_diag_gpout10(uart_instance_t *inst, char *args);       /* DIAGnostic:GPOut10 <0|1>
+                                                                     -- OK */
+void cmd_diag_gpout10_query(uart_instance_t *inst, char *args); /* DIAGnostic:GPOut10? --
+                                                                     OK <0|1> */
+
 /* TEMPORARY diagnostic, added 2026-09-17 -- see cmd_diag_optbytes_query()'s
  * own doc comment (commands.c) for the full reasoning: reads the live
  * FLASH_OPTR register to determine whether PB8 (BOOT0) is actually

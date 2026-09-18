@@ -1,3 +1,3 @@
-../Core/Src/cmd_parser.c:263:12:scpi_token_match	7
-../Core/Src/cmd_parser.c:302:12:scpi_match	14
-../Core/Src/cmd_parser.c:344:6:dispatch_command	4
+../Core/Src/cmd_parser.c:272:12:scpi_token_match	7
+../Core/Src/cmd_parser.c:311:12:scpi_match	14
+../Core/Src/cmd_parser.c:353:6:dispatch_command	4

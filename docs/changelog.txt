@@ -1,6 +1,57 @@
 WHAM-XREX-PFMG474 Firmware Changelog
 =====================================
 
+2026-09-18  —  DIAGnostic:GPOut09/GPOut10 added (PG8/PG9), completing
+               Transrex simulator OCP fiber-transmitter coverage
+-----------------------------------------------------------------------
+  Change:  During the Transrex simulator's first fiber connectivity
+        test (see docs/pin_mapping_reference.tex Section 7), only 2 of
+        4 OCP channels (XR3/XR4, via the already-existing
+        DIAGnostic:GPOut11/GPOut12 on PD0/PD1) were testable -- the
+        simulator had no GPIO config or command for GPOut_09/GPOut_10
+        (intended to feed XR1_OCP/XR2_OCP), so those two links were
+        reported UNTESTABLE. Direct follow-up request: "configure
+        GPOut_09, _10 for good measure."
+
+        Verified against docs/pin_mapping_v4.csv before touching
+        anything: GPOut_09 = PG8, GPOut_10 = PG9 in the V4 column
+        (confirmed GPO, no XREX pin name assigned -- these are generic
+        available transmitters, not tied to a fault signal by the
+        hardware itself). Note the V3 column for these same two rows
+        says "No connection" -- a DIFFERENT pair of pins, PD8/PD9,
+        carried the "GPOut_09"/"GPOut_10" names under V3 -- checked
+        directly to avoid repeating the earlier PC14-vs-PF15/PF13-vs-
+        PD1 V3/V4 name-reuse mistakes.
+
+        main.c: new push-pull output block, PG8|PG9, driven LOW BEFORE
+        HAL_GPIO_Init() enables them -- same "never glitch HIGH on
+        boot" convention as every other diagnostic output in this file.
+        New DIAGnostic:GPOut09/GPOut09?/GPOut10/GPOut10? commands
+        (commands.c/.h, cmd_parser.c), exact mirrors of
+        DIAGnostic:GPOut11/GPOut12 -- plain HAL_GPIO_WritePin()/
+        ReadPin() pairs, no dedicated module.
+
+        Not target-gated (BUILD_TARGET_CONTROLLER/SIMULATOR) -- like
+        every other DIAGnostic:GPOut command, present identically on
+        both boards, matching this project's existing precedent.
+
+  Verify: Rebuilt clean for --target simulator (zero warnings), 89980
+        bytes. Reflashed the simulator over the serial bootloader
+        (wham_serial_flash.py --target simulator). Confirmed live over
+        serial: *IDN? unchanged (WHAM-XREX-PFMG474-SIM); both pins read
+        0 immediately after reflash (confirming LOW default); both set
+        HIGH and read back 1 via DIAGnostic:GPOut09/GPOut10; both
+        returned to a safe LOW state afterward. Not yet re-run through
+        the full fiber connectivity test end-to-end against the
+        controller's GPInput_03/GPInput_07 (XR1/XR2 OCP) -- pending
+        physical fiber connection to these two newly-testable
+        transmitters.
+
+        Controller NOT touched -- this is a simulator-only change for
+        now; the equivalent GPIO/command code is identical and will
+        take effect on the controller's own next build+flash, per the
+        standing "always ask before flashing the controller" rule.
+
 2026-09-17  —  PC13 (GPOut_Enable_Pin) and PC15 (PWM_Alt_Enable) added,
                default HIGH, with serial toggle commands
 -----------------------------------------------------------------------

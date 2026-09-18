@@ -148,6 +148,15 @@ static const command_t command_table[] = {
     { "DIAGnostic:GPOut11",  cmd_diag_gpout11       },
     { "DIAGnostic:GPOut11?", cmd_diag_gpout11_query },
 
+    /* Third/fourth generic diagnostic outputs (PG8/PG9, "GPOut_09"/
+       "GPOut_10") -- see commands.h's own comment on cmd_diag_gpout09()/
+       cmd_diag_gpout10(). Added 2026-09-18, closing the Transrex
+       simulator's OCP fiber-transmitter gap for XR1/XR2. */
+    { "DIAGnostic:GPOut09",  cmd_diag_gpout09       },
+    { "DIAGnostic:GPOut09?", cmd_diag_gpout09_query },
+    { "DIAGnostic:GPOut10",  cmd_diag_gpout10       },
+    { "DIAGnostic:GPOut10?", cmd_diag_gpout10_query },
+
     /* TEMPORARY diagnostic -- reads FLASH_OPTR to check whether PB8
        (BOOT0) is free for GPIO reuse, see commands.c's own header
        comment on cmd_diag_optbytes_query(). */
