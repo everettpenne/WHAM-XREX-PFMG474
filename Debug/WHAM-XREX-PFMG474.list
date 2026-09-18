@@ -37,17 +37,17 @@ Idx Name          Size      VMA       LMA       File off  Algn
                   CONTENTS, READONLY, DEBUGGING, OCTETS
  16 .debug_rnglists 000018fc  00000000  00000000  00041fa0  2**0
                   CONTENTS, READONLY, DEBUGGING, OCTETS
- 17 .debug_macro  0002bebb  00000000  00000000  0004389c  2**0
+ 17 .debug_macro  0002bec8  00000000  00000000  0004389c  2**0
                   CONTENTS, READONLY, DEBUGGING, OCTETS
- 18 .debug_line   00023009  00000000  00000000  0006f757  2**0
+ 18 .debug_line   00023009  00000000  00000000  0006f764  2**0
                   CONTENTS, READONLY, DEBUGGING, OCTETS
- 19 .debug_str    00122c74  00000000  00000000  00092760  2**0
+ 19 .debug_str    00122cb3  00000000  00000000  0009276d  2**0
                   CONTENTS, READONLY, DEBUGGING, OCTETS
- 20 .comment      00000043  00000000  00000000  001b53d4  2**0
+ 20 .comment      00000043  00000000  00000000  001b5420  2**0
                   CONTENTS, READONLY
- 21 .debug_frame  00009f08  00000000  00000000  001b5418  2**2
+ 21 .debug_frame  00009f08  00000000  00000000  001b5464  2**2
                   CONTENTS, READONLY, DEBUGGING, OCTETS
- 22 .debug_line_str 00000070  00000000  00000000  001bf320  2**0
+ 22 .debug_line_str 00000070  00000000  00000000  001bf36c  2**0
                   CONTENTS, READONLY, DEBUGGING, OCTETS
 
 Disassembly of section .text:
@@ -10301,10 +10301,10 @@ static void MX_GPIO_Init(void)
  8004af4:	4619      	mov	r1, r3
  8004af6:	4838      	ldr	r0, [pc, #224]	@ (8004bd8 <MX_GPIO_Init+0x304>)
  8004af8:	f004 fd04 	bl	8009504 <HAL_GPIO_Init>
-     pin's real intended default (HIGH), not an incidental LOW that
-     happens to match everything else here. GPIO_NOPULL (irrelevant for
-     a push-pull output, same as every other output block in this
-     file). Driven by GPOut:ENAble (commands.c). */
+     other output block in this file). Driven at RUNTIME by
+     GPOut:ENAble (commands.c) -- a separate, coexisting mechanism from
+     this boot-time default, see GPOUT_ENABLE_DEFAULT_HIGH's own
+     comment for why both exist. */
   {
       GPIO_InitTypeDef gpOutEnableInit = {0};
  8004afc:	f107 034c 	add.w	r3, r7, #76	@ 0x4c
@@ -10327,16 +10327,14 @@ static void MX_GPIO_Init(void)
  8004b20:	64bb      	str	r3, [r7, #72]	@ 0x48
  8004b22:	6cbb      	ldr	r3, [r7, #72]	@ 0x48
 
-      HAL_GPIO_WritePin(GPIOC, GPIO_PIN_13, GPIO_PIN_SET);   /* set level
+      HAL_GPIO_WritePin(GPIOC, GPIO_PIN_13,
  8004b24:	2201      	movs	r2, #1
  8004b26:	f44f 5100 	mov.w	r1, #8192	@ 0x2000
  8004b2a:	482c      	ldr	r0, [pc, #176]	@ (8004bdc <MX_GPIO_Init+0x308>)
  8004b2c:	f004 fe8e 	bl	800984c <HAL_GPIO_WritePin>
-                                                                  the output,
-                                                                  so it's
-                                                                  never
-                                                                  briefly
-                                                                  LOW first */
+                         (GPOUT_ENABLE_DEFAULT_HIGH != 0U) ? GPIO_PIN_SET : GPIO_PIN_RESET);
+                         /* set level BEFORE enabling the output, so
+                            it's never briefly the opposite level first */
       gpOutEnableInit.Pin   = GPIO_PIN_13;
  8004b30:	f44f 5300 	mov.w	r3, #8192	@ 0x2000
  8004b34:	64fb      	str	r3, [r7, #76]	@ 0x4c
@@ -10354,9 +10352,9 @@ static void MX_GPIO_Init(void)
  8004b46:	4619      	mov	r1, r3
  8004b48:	4824      	ldr	r0, [pc, #144]	@ (8004bdc <MX_GPIO_Init+0x308>)
  8004b4a:	f004 fcdb 	bl	8009504 <HAL_GPIO_Init>
-     confirmed GPO there, unused elsewhere), added 2026-09-17 per direct
-     request -- same reasoning as PC13 just above (default HIGH,
-     driven before enable, GPIO_NOPULL). Driven by PWMAlt:ENAble
+     request -- same reasoning as PC13 just above (default level from
+     PWMALT_ENABLE_DEFAULT_HIGH, ctrlr_config.h, currently HIGH; driven
+     before enable; GPIO_NOPULL). Driven at runtime by PWMAlt:ENAble
      (commands.c). */
   {
       GPIO_InitTypeDef pwmAltEnableInit = {0};
@@ -10380,14 +10378,13 @@ static void MX_GPIO_Init(void)
  8004b72:	633b      	str	r3, [r7, #48]	@ 0x30
  8004b74:	6b3b      	ldr	r3, [r7, #48]	@ 0x30
 
-      HAL_GPIO_WritePin(GPIOC, GPIO_PIN_15, GPIO_PIN_SET);   /* set level
+      HAL_GPIO_WritePin(GPIOC, GPIO_PIN_15,
  8004b76:	2201      	movs	r2, #1
  8004b78:	f44f 4100 	mov.w	r1, #32768	@ 0x8000
  8004b7c:	4817      	ldr	r0, [pc, #92]	@ (8004bdc <MX_GPIO_Init+0x308>)
  8004b7e:	f004 fe65 	bl	800984c <HAL_GPIO_WritePin>
-                                                                  BEFORE
-                                                                  enabling
-                                                                  the output */
+                         (PWMALT_ENABLE_DEFAULT_HIGH != 0U) ? GPIO_PIN_SET : GPIO_PIN_RESET);
+                         /* set level BEFORE enabling the output */
       pwmAltEnableInit.Pin   = GPIO_PIN_15;
  8004b82:	f44f 4300 	mov.w	r3, #32768	@ 0x8000
  8004b86:	637b      	str	r3, [r7, #52]	@ 0x34

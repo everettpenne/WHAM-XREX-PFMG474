@@ -1,0 +1,409 @@
+\documentclass[11pt]{article}
+
+\usepackage{color,hyperref,amsmath}
+\usepackage[sc,osf]{mathpazo} % Palatino font, w/ smallcaps & old-style figures
+\usepackage[a4paper, total={5in, 8.25in}]{geometry}
+
+\usepackage[utf8]{inputenc}
+\usepackage{graphicx}
+\usepackage{longtable}
+\usepackage{enumitem}
+\usepackage{tikz}
+\usetikzlibrary{shadows.blur, positioning}
+% This document is far denser with long \texttt{} identifiers/paths in
+% flowing prose than the sibling SOP document (its own template) --
+% \texttt content doesn't hyphenate by default, which caused severe
+% overfull lines throughout a first draft. [htt] extends normal
+% hyphenation to \texttt/\code content specifically to fix this.
+\usepackage[htt]{hyphenat}
+
+\newcommand{\code}[1]{\texttt{#1}}
+\newcommand{\cmd}[1]{\texttt{#1}}
+
+% The 5in measure is narrow for unbreakable \code identifiers; let TeX
+% stretch interword space rather than overrun the margin.
+\setlength{\emergencystretch}{1.5em}
+
+% Default \tabcolsep (6pt each side of every column) adds up fast in
+% this narrow 5in measure -- trim it once, globally, matching the
+% sibling SOP document's own convention (docs/sop/wham_xrex_pfmg474_sop.tex).
+\setlength{\tabcolsep}{4pt}
+
+% Simple boxed CAUTION callout, styled plainly (no tcolorbox dependency) --
+% same macro as the SOP document, but with \small added here: this
+% document's callouts are denser with long \texttt{} identifiers than
+% the SOP's own, which caused severe overfull boxes at the SOP's
+% original full-size setting.
+\newcommand{\caution}[1]{%
+  \par\noindent
+  \fbox{\parbox{4.7in}{\small\textbf{CAUTION:} #1}}
+  \par\smallskip
+}
+
+\title{WHAM-XREX-PFMG474\\ \large Pin Mapping Reference}
+\author{}
+\date{September 2026}
+
+\begin{document}
+\maketitle
+
+\begin{center}
+\begin{tabular}{p{0.45in} p{0.75in} p{0.5in} p{2.7in}}
+  \hline
+  \textbf{Rev} & \textbf{Date} & \textbf{Author} & \textbf{Description} \\
+  \hline
+  A & 2026-09-18 & -- & Initial issue. Covers all four Transrex
+    channels' fault/feedback/drive/enable signals, system-wide
+    interlock pins, the permanently-retired E-stop pin, and the
+    fiber-optic cross-board wiring for the Transrex simulator. \\
+  \hline
+\end{tabular}
+\end{center}
+
+\section{Purpose and Scope}
+\label{sec:purpose}
+
+This document is the curated, organized reference for every pin this
+firmware actually assigns a role to -- derived from, and cross-checked
+against, \code{docs/pin\_mapping\_v4.csv} (the authoritative raw pin
+data) and the current firmware source (\code{Core/Inc/ctrlr\_config.h},
+\code{Core/Src/xrex\_io.c}, \code{Core/Src/state\_machine.c},
+\code{Core/Src/main.c}). Where this document and the firmware source
+ever disagree, the firmware source is correct -- this is a reference
+for humans, not a second source of truth a build depends on.
+
+Scope: pin identity, direction, detection/drive mechanism, fault
+polarity, and the SCPI commands that read or write each signal. Board
+bring-up, power-stage safety procedure, and build/flash mechanics are
+covered by \code{docs/sop/wham\_xrex\_pfmg474\_sop.tex} and
+\code{docs/serial\_reflash\_guide.md}, not repeated here.
+
+\section{The XREX Per-Channel Naming Scheme}
+\label{sec:xrex-naming}
+
+\code{pin\_mapping\_v4.csv}'s ``XREX Pin Name'' column names each of
+the four Transrex channels' own signals \code{XR\emph{n}\_*}, where
+$n \in \{1,2,3,4\}$ maps 1:1 to this firmware's existing WHAM/HRTIM
+channel numbering (confirmed via \code{XR1\_DRIVE} = \code{PA8} =
+\code{HRTIM1\_CHA1}, matching the Phase~U assignment already
+established before the XREX naming existed). Eight signal categories
+exist per channel:
+
+\begin{center}
+\begin{tabular}{p{1.3in} p{3.2in}}
+  \hline
+  \textbf{Category} & \textbf{Meaning} \\
+  \hline
+  \code{\_WATER\_FLT} & Water fault input (General Fault) \\
+  \code{\_TMP\_FLT} & Temperature fault input (General Fault) \\
+  \code{\_ENERPRO\_FLT} & Enerpro fault input (General Fault) \\
+  \code{\_OCP} & Overcurrent-protect fault input (its own fault type) \\
+  \code{\_FEEDBACK} & Current-feedback input (timer capture; a pure
+    relabel of the pre-existing \code{PFM\_Input\_0\emph{n}} pins, no
+    functional change) \\
+  \code{\_DRIVE} & PFM/HRTIM output (a pure relabel of the pre-existing
+    HRTIM phase-output pins, no functional change) \\
+  \code{\_ENA\_OUT} & Channel enable fiber output \\
+  \code{\_CONTACT\_OUT} & Contactor fiber output \\
+  \hline
+\end{tabular}
+\end{center}
+
+\section{Per-Channel Pin Table}
+\label{sec:per-channel}
+
+{\small
+\begin{longtable}{p{1.3in} p{1.3in} p{0.4in} p{0.45in} p{1.15in}}
+  \hline
+  \textbf{Signal} & \textbf{V4 Name} & \textbf{Pin} & \textbf{Dir} & \textbf{Mechanism} \\
+  \hline
+  \endfirsthead
+  \hline
+  \textbf{Signal} & \textbf{V4 Name} & \textbf{Pin} & \textbf{Dir} & \textbf{Mechanism} \\
+  \hline
+  \endhead
+  \code{XR1\_WATER\_FLT} & \code{GateDriverStatus\_01} & PE0 & GPI & EXTI \\
+  \code{XR2\_WATER\_FLT} & \code{GateDriverStatus\_02} & PE1 & GPI & EXTI \\
+  \code{XR3\_WATER\_FLT} & \code{GateDriverStatus\_03} & PE2 & GPI & EXTI \\
+  \code{XR4\_WATER\_FLT} & \code{GateDriverStatus\_04} & PE3 & GPI & EXTI \\
+  \code{XR1\_TMP\_FLT} & \code{GateDriverStatus\_05} & PE4 & GPI & EXTI \\
+  \code{XR2\_TMP\_FLT} & \code{GateDriverStatus\_06} & PE5 & GPI & EXTI \\
+  \code{XR3\_TMP\_FLT} & \code{GateDriverStatus\_07} & PE6 & GPI & EXTI \\
+  \code{XR4\_TMP\_FLT} & \code{GateDriverStatus\_08} & PE7 & GPI & EXTI \\
+  \code{XR1\_ENERPRO\_FLT} & \code{GateDriverStatus\_09} & PE8 & GPI & EXTI \\
+  \code{XR2\_ENERPRO\_FLT} & \code{GateDriverStatus\_10} & PE9 & GPI & EXTI \\
+  \code{XR3\_ENERPRO\_FLT} & \code{GateDriverStatus\_11} & PE10 & GPI & EXTI \\
+  \code{XR4\_ENERPRO\_FLT} & \code{GateDriverStatus\_12} & PE11 & GPI & EXTI \\
+  \code{XR1\_OCP} & \code{GPInput\_03} & PF4 & GPI & Polled \\
+  \code{XR2\_OCP} & \code{GPInput\_07} & PF8 & GPI & Polled \\
+  \code{XR3\_OCP} & \code{GPInput\_11} & PF12 & GPI & Polled \\
+  \code{XR4\_OCP} & \code{GPInput\_04} & PF5 & GPI & Polled \\
+  \code{XR1\_FEEDBACK} & \code{PFM\_Input\_01} & PA15 & GPI & TIM2\_CH1 capture \\
+  \code{XR2\_FEEDBACK} & \code{PFM\_Input\_02} & PD4 & GPI & TIM2\_CH2 capture \\
+  \code{XR3\_FEEDBACK} & \code{PFM\_Input\_03} & PB2 & GPI & TIM5\_CH1 capture \\
+  \code{XR4\_FEEDBACK} & \code{PFM\_Input\_04} & PC12 & GPI & TIM5\_CH2 capture \\
+  \code{XR1\_DRIVE} & \code{PHASE\_U\_PIN} & PA8 & AF13 & HRTIM1\_CHA1 \\
+  \code{XR2\_DRIVE} & \code{PHASE\_V\_PIN} & PA10 & AF13 & HRTIM1\_CHB1 \\
+  \code{XR3\_DRIVE} & \code{PHASE\_W\_PIN} & PB12 & AF13 & HRTIM1\_CHC1 \\
+  \code{XR4\_DRIVE} & \code{PHASE\_X\_PIN} & PB14 & AF13 & HRTIM1\_CHD1 \\
+  \code{XR1\_ENA\_OUT} & \code{GPOut\_01} & PG0 & GPO & Push-pull \\
+  \code{XR2\_ENA\_OUT} & \code{GPOut\_02} & PG1 & GPO & Push-pull \\
+  \code{XR3\_ENA\_OUT} & \code{GPOut\_03} & PG2 & GPO & Push-pull \\
+  \code{XR4\_ENA\_OUT} & \code{GPOut\_04} & PG3 & GPO & Push-pull \\
+  \code{XR1\_CONTACT\_OUT} & \code{GPOut\_05} & PG4 & GPO & Push-pull \\
+  \code{XR2\_CONTACT\_OUT} & \code{GPOut\_06} & PG5 & GPO & Push-pull \\
+  \code{XR3\_CONTACT\_OUT} & \code{GPOut\_07} & PG6 & GPO & Push-pull \\
+  \code{XR4\_CONTACT\_OUT} & \code{GPOut\_08} & PG7 & GPO & Push-pull \\
+  \hline
+\end{longtable}
+}
+
+\noindent\textit{``EXTI'' = interrupt-driven via the shared
+GateDriverStatus EXTI setup, delegating its fault decision to
+\code{XrexIo\_EvaluateGateDriverFault()} (\code{xrex\_io.c}). ``Polled''
+= read every \code{PID\_Update()} tick and once at boot by
+\code{XrexIo\_PollOcpFaults()} -- not EXTI-driven despite matching
+Water/Temp/Enerpro's own category, because 3 of the 4 OCP pins'
+EXTI line numbers directly conflict with the already-claimed
+GateDriverStatus EXTI lines (STM32's 16 EXTI lines are shared
+project-wide, one GPIO port per line via \code{SYSCFG\_EXTICR}).}
+
+\section{Fault Detection: Gating and Polarity}
+\label{sec:polarity}
+
+\textbf{Per-channel gating} (the core architectural rule): a channel's
+own \code{\_WATER\_FLT}/\code{\_TMP\_FLT}/\code{\_ENERPRO\_FLT}/\code{\_OCP}
+pins only count toward a fault when that channel is currently enabled
+(\code{PID:CHANnel:ENAble?}) -- confirmed on real hardware: with only
+channel~3 enabled, an otherwise-faulted board correctly and
+exclusively reported \code{STATE?} $\to$ \code{OK FAULT OVERCURRENT 3}.
+
+{\small
+\textbf{Polarity} -- every category above is independently
+configurable (\code{Core/Inc/ctrlr\_config.h}), currently all four
+defaulting to \code{FAULT\_POLARITY\_NORMALLY\_HIGH} (pins read HIGH
+in healthy operation; a LOW reading is a fault):
+}
+
+\begin{center}
+\begin{tabular}{p{1.7in} p{1.2in} p{1.6in}}
+  \hline
+  \textbf{Constant} & \textbf{Current value} & \textbf{Governs} \\
+  \hline
+  \code{XR\_WATER\_FLT\_POLARITY} & \code{NORMALLY\_HIGH} & Water fault, all 4 ch. \\
+  \code{XR\_TMP\_FLT\_POLARITY} & \code{NORMALLY\_HIGH} & Temp fault, all 4 ch. \\
+  \code{XR\_ENERPRO\_FLT\_POLARITY} & \code{NORMALLY\_HIGH} & Enerpro fault, all 4 ch. \\
+  \code{XR\_OCP\_FLT\_POLARITY} & \code{NORMALLY\_HIGH} & OCP fault, all 4 ch. \\
+  \hline
+\end{tabular}
+\end{center}
+
+\caution{This \code{NORMALLY\_HIGH} default is a \emph{deliberate
+override} of a value that was itself confirmed against real hardware
+on 2026-09-08 (a \code{GDS?} snapshot of these exact 12 physical pins
+found 11 of 12 reading LOW, consistent with LOW being the healthy
+state at the time). The current \code{NORMALLY\_HIGH} default was
+confirmed directly by the project owner and has \emph{not yet been
+independently re-verified against a real, non-floating healthy
+signal} -- every real-hardware check so far exercised only the
+floating/unconnected state (\code{GPIO\_PULLDOWN}), which reads as
+faulted under either polarity and cannot itself validate which
+polarity is physically correct. Re-verify once real Water/Temp/
+Enerpro/OCP signal sources are connected.}
+
+\section{System-Wide (Non-Per-Channel) Pins}
+\label{sec:system-wide}
+
+\begin{longtable}{p{1.0in} p{0.5in} p{0.55in} p{2.6in}}
+  \hline
+  \textbf{V4 Name} & \textbf{Pin} & \textbf{Dir} & \textbf{Role} \\
+  \hline
+  \endfirsthead
+  \hline
+  \textbf{V4 Name} & \textbf{Pin} & \textbf{Dir} & \textbf{Role} \\
+  \hline
+  \endhead
+  \code{GPInput\_12} & PF13 & GPI & External-enable interlock. \code{ARM}/
+    \code{PID:PROFile:STARt} refuse unless HIGH; continuously monitored
+    while \code{ARMED}/\code{FIRING}. Commands: \code{EXTernal:ENAble},
+    \code{EXTernal:ENAble?}, \code{EXTernal:INPut?}. \code{GPIO\_PULLDOWN}
+    fail-safe (floating = LOW = no permission). Moved here 2026-09-17
+    from PF15. \\
+  \code{Fiber\_Enable} & PF15 & GPI & External trigger. A rising edge
+    while \code{ARMED} fires a shot (calls the same \code{SM\_Fire()}
+    \code{PID:PROFile:STARt} uses). Independent of the interlock above
+    as of 2026-09-17 -- no longer requires \code{EXTernal:ENAble} on
+    first. Commands: \code{EXTernal:TRIGger}, \code{EXTernal:TRIGger?},
+    \code{EXTernal:TRIGger:INPut?}. \code{GPIO\_PULLDOWN}. \\
+  \code{GPOut\_Enable\_Pin} & PC13 & GPO & Named board output, default
+    HIGH at boot (\code{GPOUT\_ENABLE\_DEFAULT\_HIGH},
+    \code{ctrlr\_config.h}). Commands: \code{GPOut:ENAble},
+    \code{GPOut:ENAble?}. \\
+  \code{PWM\_Alt\_Enable} & PC15 & GPO & Named board output, default
+    HIGH at boot (\code{PWMALT\_ENABLE\_DEFAULT\_HIGH},
+    \code{ctrlr\_config.h}). Commands: \code{PWMAlt:ENAble},
+    \code{PWMAlt:ENAble?}. \\
+  \code{GPOut\_11} & PD0 & GPO & Generic diagnostic output, default LOW
+    at boot. Commands: \code{DIAGnostic:GPOut11},
+    \code{DIAGnostic:GPOut11?}. \\
+  \code{GPOut\_12} & PD1 & GPO & Generic diagnostic output, default LOW
+    at boot. Commands: \code{DIAGnostic:GPOut12},
+    \code{DIAGnostic:GPOut12?}. \\
+  \code{STM\_Enable\_Pin} & PC14 & GPO & \textbf{Considered and
+    rejected} for the external-enable role (2026-09-16) -- documented
+    direction is OUTWARD (the MCU drives it), the wrong direction for
+    something meant to be read. Not otherwise used. \\
+  \code{BOOT0} & PB8 & N/A & \textbf{Not available for GPIO reuse} --
+    confirmed via a live \code{FLASH\_OPTR} register read
+    (\code{DIAGnostic:OPTBytes?}) that \code{nSWBOOT0=1} on this chip,
+    meaning BOOT0 is genuinely pin-sampled on every reset, not just
+    first power-on. \\
+  \hline
+\end{longtable}
+
+\section{Retired Pins -- Do Not Reuse}
+\label{sec:retired}
+
+\caution{\textbf{PG10 must never be configured as a GPIO peripheral
+pin.} It is electrically the MCU's own \code{NRST} pin, tied to the
+same net as the ST-Link/Molex debug connector -- confirmed directly
+against the board schematic on 2026-09-17, after a hardware
+investigation (a new \code{DIAGnostic:RSTCause?} diagnostic, reading
+the real \code{RCC->CSR} reset-cause flags, proved a genuine
+\code{PINRSTF}-flagged hardware reset, not a firmware bug) found that
+driving a signal into this pin resets the MCU. The reset persisted
+even after removing this firmware's own GPIO configuration for the
+pin entirely, proving it is a board-level electrical fact that cannot
+be routed around in software. \code{docs/pin\_mapping\_v4.csv}'s own
+``NRST'' label for this net, once believed stale/incorrect, was
+correct all along.}
+
+This pin was originally used for an emergency-stop feature
+(\code{SM\_FAULT\_EMERGENCY\_STOP}, \code{EMERGency:ENAble} and
+friends). That software remains in the firmware, permanently dormant
+(\code{EMERGency:ENAble} defaults off, and reads no pin at all while
+off) -- any future emergency-stop implementation must use a genuinely
+different, schematic-confirmed-free pin.
+
+\section{Transrex Simulator: Fiber-Optic Cross-Board Wiring}
+\label{sec:simulator-wiring}
+
+A second, physically identical board (``the simulator,''
+\code{BUILD\_TARGET\_SIMULATOR}) plays the role of a Transrex for
+full-stack bench testing without driving real power hardware. Every
+connection between the two boards is a fiber-optic point-to-point
+link, not a plain electrical wire -- each pin position has either an
+LED transmitter or a photodiode receiver permanently fixed to it,
+identical on both boards, so a signal must go from a transmitter pin
+to a receiver pin over its own fiber, regardless of pin number.
+
+\subsection{DRIVE / FEEDBACK (unaffected by the fiber pool below)}
+
+\begin{center}
+\begin{tabular}{p{2.2in} p{2.2in}}
+  \hline
+  \textbf{From} & \textbf{To} \\
+  \hline
+  Controller \code{XR\emph{n}\_DRIVE} (HRTIM out) & Simulator
+    \code{XR\emph{n}\_FEEDBACK} (TIM capture in) \\
+  Simulator \code{XR\emph{n}\_DRIVE} (HRTIM out) & Controller
+    \code{XR\emph{n}\_FEEDBACK} (TIM capture in) \\
+  \hline
+\end{tabular}
+\end{center}
+
+\subsection{Fiber Transceiver Pool and Capacity Constraint}
+
+The simulator has 12 transmitters (\code{GPOut\_01}--\code{GPOut\_12})
+and 18 receivers (\code{GateDriverStatus\_01}--\code{\_12} plus
+\code{GPInput\_03/04/07/08/11/12}) available for this purpose
+(\code{PFM\_Input}/HRTIM pins excluded -- already assigned above). The
+controller needs \textbf{16} fault-signal receivers driven (12
+\code{GateDriverStatus} for Water/Temp/Enerpro, 4 \code{GPInput} for
+OCP), but the simulator has only 12 transmitters -- a shortfall of
+exactly 4.
+
+\textbf{Resolved with four physical 1-to-2 fiber splitter cables}: each
+channel's Water and Temp faults share one simulator transmitter, split
+to both controller receivers. This means Water and Temp can no longer
+be independently faulted per channel, only together -- freeing exactly
+enough transmitter budget (4 combined Water+Temp, 4 Enerpro, 4 OCP =
+12) to cover OCP as well.
+
+\begin{longtable}{p{0.75in} p{1.85in} p{1.75in}}
+  \hline
+  \textbf{Sim.\ TX} & \textbf{Splits to (controller RX)} & \textbf{Signal} \\
+  \hline
+  \endfirsthead
+  \hline
+  \textbf{Sim.\ TX} & \textbf{Splits to (controller RX)} & \textbf{Signal} \\
+  \hline
+  \endhead
+  \code{GPOut\_01} & \code{GateDriverStatus\_01} + \code{\_05} (PE0+PE4) & XR1 Water+Temp \\
+  \code{GPOut\_02} & \code{GateDriverStatus\_02} + \code{\_06} (PE1+PE5) & XR2 Water+Temp \\
+  \code{GPOut\_03} & \code{GateDriverStatus\_03} + \code{\_07} (PE2+PE6) & XR3 Water+Temp \\
+  \code{GPOut\_04} & \code{GateDriverStatus\_04} + \code{\_08} (PE3+PE7) & XR4 Water+Temp \\
+  \code{GPOut\_05} & \code{GateDriverStatus\_09} (PE8) & XR1 Enerpro \\
+  \code{GPOut\_06} & \code{GateDriverStatus\_10} (PE9) & XR2 Enerpro \\
+  \code{GPOut\_07} & \code{GateDriverStatus\_11} (PE10) & XR3 Enerpro \\
+  \code{GPOut\_08} & \code{GateDriverStatus\_12} (PE11) & XR4 Enerpro \\
+  \code{GPOut\_09} & \code{GPInput\_03} (PF4) & XR1 OCP \\
+  \code{GPOut\_10} & \code{GPInput\_07} (PF8) & XR2 OCP \\
+  \code{GPOut\_11} & \code{GPInput\_11} (PF12) & XR3 OCP \\
+  \code{GPOut\_12} & \code{GPInput\_04} (PF5) & XR4 OCP \\
+  \hline
+\end{longtable}
+
+\noindent\textit{OCP assignment matches the channel order already
+built into the controller's own \code{kOcpPin[]} table
+(\code{xrex\_io.c}) -- XR1/XR2/XR3/XR4~$\to$~PF4/PF8/PF12/PF5, an
+irregular but pre-existing order.}
+
+\subsection{ENA\_OUT / CONTACT\_OUT Reception}
+
+{\small
+The controller's existing, already-built \code{GPOut\_01} through
+\code{GPOut\_08} transmitters (\code{XR1\_ENA\_OUT} through
+\code{XR4\_CONTACT\_OUT}) are received on the simulator's own
+\code{GateDriverStatus\_01} through \code{GateDriverStatus\_08}
+position pins (PE0--PE7), matching number to the controller's own
+\code{GPOut\_01} through \code{GPOut\_08}. This leaves the simulator's
+\code{GateDriverStatus\_09} through \code{GateDriverStatus\_12}
+position pins, and all 6 \code{GPInput} pins
+(\code{\_03}/\code{\_04}/\code{\_07}/\code{\_08}/\code{\_11}/\code{\_12}),
+spare.
+}
+
+External-enable (PF13) and external-trigger (PF15) are \textbf{out of
+scope} for the simulator -- those represent an operator/facility
+permissive and a manual trigger, not something a real Transrex itself
+drives. They continue to be tested via the existing
+\code{DIAGnostic:GPOut11}/\code{GPOut12} loopback method.
+
+\section{References}
+
+{\small
+\begin{itemize}
+  \item \code{docs/pin\_mapping\_v4.csv} -- the authoritative raw pin
+    data this document is derived from.
+  \item \code{Core/Inc/ctrlr\_config.h} -- polarity constants, board
+    identity, default levels.
+  \item \code{Core/Src/xrex\_io.c} and \code{Core/Inc/xrex\_io.h} --
+    per-channel fault-pin interpretation, the \code{kOcpPin[]} table.
+  \item \code{Core/Src/state\_machine.c} and
+    \code{Core/Inc/state\_machine.h} -- fault-type architecture:
+    \code{SM\_FAULT\_GENERAL}, \code{SM\_FAULT\_OVERCURRENT},
+    \code{SM\_FAULT\_EXTERNAL\_ENABLE}, \code{SM\_FAULT\_EMERGENCY\_STOP},
+    \code{SM\_FAULT\_ENABLE\_OUTPUT}.
+  \item \code{docs/command\_reference.md} -- full SCPI command
+    protocol for every command named in this document.
+  \item \code{docs/changelog.txt} -- dated development history and
+    real-hardware verification numbers for everything in this
+    document.
+  \item The Transrex simulator implementation plan (session-local, not
+    part of this repository) -- Section~\ref{sec:simulator-wiring} is a
+    snapshot of that plan's wiring section as of this revision.
+\end{itemize}
+}
+
+\end{document}
