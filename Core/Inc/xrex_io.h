@@ -107,7 +107,7 @@ extern "C" {
  *     XR4=PHASE_X/HRTIM1_CHD1. No functional change; this module does
  *     not touch hrtim.c. (Per-channel output gating -- "don't drive an
  *     output to XR2/3/4 when only XR1 is enabled" -- is already fully
- *     handled by the existing PID:CHANnel:ENAble mechanism, pid.c;
+ *     handled by the existing SOURce:ENAble mechanism, pid.c;
  *     nothing new needed here.)
  *
  *   XRn_ENA_OUT, XRn_CONTACT_OUT -- IMPLEMENTED 2026-09-17 (previously
@@ -147,6 +147,22 @@ extern "C" {
  * badBits check. */
 uint8_t XrexIo_EvaluateGateDriverFault(uint16_t raw12);
 
+/* XR_WATER_FLT_POLARITY/XR_TMP_FLT_POLARITY/XR_ENERPRO_FLT_POLARITY/
+ * XR_OCP_FLT_POLARITY (ctrlr_config.h) -- RUNTIME-CONFIGURABLE as of
+ * 2026-09-22, direct request. Back CONFig:FaultPolarity:WATER/:TEMP/
+ * :ENERPRO/:OCP (commands.c). `polarity` must be exactly
+ * FAULT_POLARITY_NORMALLY_HIGH (0) or FAULT_POLARITY_NORMALLY_LOW (1)
+ * -- returns 0 (rejected, unchanged) for anything else. Getters
+ * always succeed. */
+uint8_t XrexIo_SetFaultPolarityWater(uint32_t polarity);
+uint32_t XrexIo_GetFaultPolarityWater(void);
+uint8_t XrexIo_SetFaultPolarityTemp(uint32_t polarity);
+uint32_t XrexIo_GetFaultPolarityTemp(void);
+uint8_t XrexIo_SetFaultPolarityEnerpro(uint32_t polarity);
+uint32_t XrexIo_GetFaultPolarityEnerpro(void);
+uint8_t XrexIo_SetFaultPolarityOcp(uint32_t polarity);
+uint32_t XrexIo_GetFaultPolarityOcp(void);
+
 /* Called from gate_driver.c's GateDriver_CheckFault() with the SAME raw
  * 12-bit PE0..PE11 read passed to XrexIo_EvaluateGateDriverFault() above
  * (no redundant GPIO re-read) -- checks each enabled channel's own
@@ -175,7 +191,7 @@ void XrexIo_PollEnerproFaults(uint16_t raw12);
 void XrexIo_PollOcpFaults(void);
 
 /* Raw levels (1 = HIGH, 0 = LOW; polarity-agnostic, same "raw
- * readback" convention GDS?/EXTernal:INPut?/EMERGency:INPut? already
+ * readback" convention GDS?/EXTernal:INPut? already
  * use) for one channel's own Water/Temp/Enerpro/OCP pins -- backs
  * XREX:CHANnel:STATus? (commands.c). `channel` is 0-based
  * (0..HRTIM_NUM_CHANNELS-1). Any output pointer may be NULL if that
@@ -216,6 +232,14 @@ uint8_t XrexIo_GetContactorOutput(uint8_t channel);
  * ArmConditionsMet() (state_machine.c); see state_machine.h's own
  * enable-output section for the full design. */
 uint8_t XrexIo_EnableOutputsReadyToArm(void);
+
+/* Same scan as XrexIo_EnableOutputsReadyToArm() (implemented in terms
+ * of this function), but returns the first offending 0-based channel
+ * instead of collapsing to a bool -- 0xFF means every enabled channel
+ * is ready (nothing to report). Added 2026-09-22 so cmd_arm()
+ * (commands.c) can report WHICH channel is misconfigured instead of a
+ * generic "conditions not met". */
+uint8_t XrexIo_FindNotReadyChannel(void);
 
 /* Continuous version of the check above -- called from the SAME tick
  * cadence XrexIo_PollOcpFaults() already gets (main.c's boot + main

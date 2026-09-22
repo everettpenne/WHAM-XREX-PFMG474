@@ -1,3 +1,3 @@
-../Core/Src/cmd_parser.c:291:12:scpi_token_match	32	static
-../Core/Src/cmd_parser.c:330:12:scpi_match	312	static
-../Core/Src/cmd_parser.c:372:6:dispatch_command	32	static
+../Core/Src/cmd_parser.c:353:12:scpi_token_match	32	static
+../Core/Src/cmd_parser.c:392:12:scpi_match	312	static
+../Core/Src/cmd_parser.c:434:6:dispatch_command	32	static

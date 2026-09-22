@@ -5,6 +5,12 @@
 #include "gate_driver.h"
 #include "xrex_io.h"
 #include "stm32g4xx_hal.h"
+#include <math.h>
+
+/* Not M_PI -- newlib's math.h on this bare-metal ARM toolchain doesn't
+   reliably define it without extra feature-test macros; a local
+   constant avoids that portability question entirely. */
+#define SIM_TRANSREX_PI   (3.14159265358979323846f)
 
 /*
  * sim_transrex.c
@@ -13,7 +19,7 @@
  * filter -> FEEDBACK generation, ENA_OUT/CONTACT_OUT gating, fault
  * injection) and its KNOWN LIMITATION note (this build still runs the
  * full controller state machine unconditionally -- don't
- * PID:CHANnel:ENAble the simulator's own channels).
+ * SOURce:ENAble the simulator's own channels).
  *
  * Pin-role table for this file's own reference (docs/
  * pin_mapping_reference.tex Section 7 is the authoritative source --
@@ -50,8 +56,65 @@
  *             the controller as ITS XRn_FEEDBACK.
  */
 
-static float    s_filteredHz[HRTIM_NUM_CHANNELS];
+static float    s_filteredHz[HRTIM_NUM_CHANNELS];        /* clean, ripple-free
+                                                              low-pass-filtered
+                                                              average -- the
+                                                              filter's OWN
+                                                              recursive memory,
+                                                              deliberately never
+                                                              has ripple mixed
+                                                              into it (see
+                                                              SimTransrex_Update()'s
+                                                              own comment on
+                                                              why) */
+static uint32_t s_lastOutputHz[HRTIM_NUM_CHANNELS];       /* what actually got
+                                                              written to HRTIM
+                                                              this tick --
+                                                              s_filteredHz PLUS
+                                                              ripple while
+                                                              gated. This is
+                                                              what SIM:CHANnel:
+                                                              STATus?'s
+                                                              FEEDBACK_HZ and
+                                                              the waveform log
+                                                              report -- the
+                                                              real, physical
+                                                              signal, not the
+                                                              filter's own
+                                                              internal state */
 static uint32_t s_lastMeasuredHz[HRTIM_NUM_CHANNELS];
+static uint8_t  s_haveMeasuredSinceGate[HRTIM_NUM_CHANNELS];   /* 0 until the
+                                                                    first real
+                                                                    PfmInput
+                                                                    sample
+                                                                    lands after
+                                                                    THIS gating
+                                                                    on-edge --
+                                                                    see the
+                                                                    2026-09-21
+                                                                    fix note in
+                                                                    docs/
+                                                                    changelog.txt:
+                                                                    without
+                                                                    this, a
+                                                                    freshly-
+                                                                    gated
+                                                                    channel's
+                                                                    filter
+                                                                    target fell
+                                                                    back to
+                                                                    s_lastMeasuredHz's
+                                                                    stale 0
+                                                                    (held there
+                                                                    every tick
+                                                                    while
+                                                                    ungated,
+                                                                    correctly,
+                                                                    for DRIVE_HZ
+                                                                    reporting)
+                                                                    instead of
+                                                                    the healthy
+                                                                    0A floor */
 static uint8_t  s_faultWaterTemp[HRTIM_NUM_CHANNELS];
 static uint8_t  s_faultEnerpro[HRTIM_NUM_CHANNELS];
 static uint8_t  s_faultOcp[HRTIM_NUM_CHANNELS];
@@ -76,6 +139,26 @@ static uint8_t  s_outputConnected[HRTIM_NUM_CHANNELS];   /* last state actually
                                                               transition */
 static uint32_t s_tauMs = SIM_TRANSREX_DEFAULT_TAU_MS;
 static uint32_t s_lastUpdateTick;
+
+/* Idle tone -- added 2026-09-21 as an opt-in diagnostic ("for the sake
+ * of visual testing... output a baseline frequency of 3kHz and hold it
+ * when not actively in a shot"), DEFAULT FLIPPED TO ON 2026-09-22 per
+ * direct instruction: the simulator should be "pretty passive" out of
+ * the box -- 3kHz on every channel with no serial setup at all, then
+ * respond to the controller's real PFM drive once ENA_OUT+CONTACT_OUT
+ * are both asserted (already unconditional/hardware-gated, no serial
+ * needed for that part either -- see SimTransrex_Update()'s own
+ * comment). Boots ON (1) now, so idle tone IS the default ungated
+ * steady state, not a special diagnostic mode someone has to remember
+ * to turn on. SIM:DIAGnostic:IDLETONE (commands.c) still exists to
+ * turn it OFF live, board-wide (all 4 channels at once), for the rare
+ * case where the original stricter realism (ungated = physically
+ * DISCONNECTED, no output at all) is actually wanted for a specific
+ * test. When ON, an UNGATED channel's output stays CONNECTED and the
+ * filter targets SIM_TRANSREX_IDLE_TONE_HZ instead of
+ * PFM_TURNON_FREQ_HZ. A GATED channel (real shot) is completely
+ * unaffected either way -- this only changes the ungated/idle state. */
+static uint8_t s_idleToneEnabled = 1U;
 
 /* Waveform log -- see sim_transrex.h's own extensive comment on why
  * this differs from pid.h's PID_ArmLog() (no fixed tick to decimate
@@ -131,8 +214,10 @@ void SimTransrex_Init(void)
     {
         (void)PfmInput_StartContinuous(ch);
 
-        s_filteredHz[ch]     = (float)PFM_TURNON_FREQ_HZ;
-        s_lastMeasuredHz[ch] = 0U;
+        s_filteredHz[ch]           = (float)PFM_TURNON_FREQ_HZ;
+        s_lastOutputHz[ch]         = PFM_TURNON_FREQ_HZ;
+        s_lastMeasuredHz[ch]       = 0U;
+        s_haveMeasuredSinceGate[ch] = 0U;
 
         s_faultWaterTemp[ch]   = 0U;
         s_faultEnerpro[ch]     = 0U;
@@ -187,6 +272,27 @@ void SimTransrex_Update(void)
                                                       own 32-bit rollover */
     uint16_t rawGds = GateDriver_Read();
     float    alpha  = (float)dtMs / ((float)s_tauMs + (float)dtMs);
+    float    nowSec = fmodf((float)now / 1000.0f, 1.0f);   /* shared time base
+                                                    for the ripple waveform below
+                                                    -- computed once, not per-
+                                                    channel, so every channel's
+                                                    ripple stays phase-locked
+                                                    together (matching a real
+                                                    Transrex system, where every
+                                                    channel's ripple derives from
+                                                    the SAME AC line). Wrapped to
+                                                    [0,1)s -- EXACT, not an
+                                                    approximation (720Hz and
+                                                    1440Hz both complete a whole
+                                                    number of cycles every
+                                                    second) -- keeps the sinf()
+                                                    argument below from growing
+                                                    unbounded with HAL_GetTick()'s
+                                                    own uptime, which would
+                                                    otherwise lose real angle
+                                                    precision in float (24-bit
+                                                    mantissa) after a long-
+                                                    running session. */
     uint8_t  ch;
 
     s_lastUpdateTick = now;
@@ -209,13 +315,49 @@ void SimTransrex_Update(void)
            forces a one-time output-level reset every call, which would
            glitch an already-connected, actively-PWMing channel if
            called on every tick instead of once per edge. */
-        if (gated != s_outputConnected[ch])
         {
-            HRTIM1_SetChannelOutputEnable(ch, gated);
-            s_outputConnected[ch] = gated;
+            uint8_t desiredConnected = (uint8_t)(gated != 0U ? 1U :
+                                                   (s_idleToneEnabled != 0U ? 1U : 0U));
+
+            if (desiredConnected != s_outputConnected[ch])
+            {
+                HRTIM1_SetChannelOutputEnable(ch, desiredConnected);
+                s_outputConnected[ch] = desiredConnected;
+
+                if (gated != 0U)
+                {
+                    s_haveMeasuredSinceGate[ch] = 0U;   /* off->on edge: no
+                                                              real DRIVE sample
+                                                              captured under
+                                                              THIS gating
+                                                              window yet -- see
+                                                              the 2026-09-21
+                                                              fix note above */
+                }
+            }
         }
 
-        if (gated != 0U)
+        /* DRIVE capture -- 2026-09-21 CORRECTED to run every tick,
+           UNCONDITIONALLY, regardless of `gated`. Previously this whole
+           block (and s_lastMeasuredHz[ch]'s only real update site) was
+           inside `if (gated != 0U)`, with the ungated branch below
+           forcibly zeroing s_lastMeasuredHz[ch] every tick -- a REAL
+           BUG, found via a direct self-loopback diagnostic: PFMIN:
+           DEBUG:RAW?/REG? (raw, unconditional hardware registers)
+           showed genuine, healthy, continuously-updating captures the
+           whole time (firstRise=1, avgCount climbing, real toggling
+           IDR), while SIM:CHANnel:STATus?'s DRIVE_HZ field sat frozen
+           at 0 throughout -- because nothing was ever gated, so this
+           block never ran and never even looked at the real data
+           sitting right there in pfm_input.c. DRIVE_HZ is now a true,
+           always-live measurement of whatever is actually arriving on
+           this channel's receive pin, completely decoupled from
+           gating -- gating still governs ONLY the simulated response
+           (targetHz below), matching "a real Transrex doesn't respond
+           when disconnected, but its receiver still sees whatever
+           light actually arrives" -- these are two genuinely different
+           concepts that were incorrectly conflated into one gated
+           block before. */
         {
             uint32_t avgPeriodTicks = 0U;
             uint16_t sampleCount    = 0U;
@@ -228,32 +370,102 @@ void SimTransrex_Update(void)
                                                                                   pid.c
                                                                                   uses for
                                                                                   measuredHz */
+                if (gated != 0U)
+                {
+                    s_haveMeasuredSinceGate[ch] = 1U;
+                }
             }
             /* else: hold s_lastMeasuredHz[ch] at its previous value --
                a main-loop poll can easily land between two DRIVE edges
                near the low end of the frequency range, and momentarily
                flooring to 0 there would fight the filter for no real
-               reason; the value only genuinely goes stale once gating
-               is lost, handled by the branch below. */
+               reason; genuinely stays 0 only if nothing has EVER been
+               received (Init()'s own default). */
+        }
 
-            targetHz = (float)s_lastMeasuredHz[ch];
+        if (gated != 0U)
+        {
+            targetHz = (s_haveMeasuredSinceGate[ch] != 0U) ?
+                       (float)s_lastMeasuredHz[ch] : (float)PFM_TURNON_FREQ_HZ;   /* 2026-09-21
+                                                                                      fix: before
+                                                                                      the first
+                                                                                      real sample
+                                                                                      under this
+                                                                                      gating
+                                                                                      window,
+                                                                                      target the
+                                                                                      healthy 0A
+                                                                                      floor, not
+                                                                                      a stale value
+                                                                                      held over from
+                                                                                      being ungated */
         }
         else
         {
-            s_lastMeasuredHz[ch] = 0U;
-            targetHz = (float)PFM_TURNON_FREQ_HZ;   /* floor, not hold-last --
-                                                          a real Transrex with
+            targetHz = (s_idleToneEnabled != 0U) ? (float)SIM_TRANSREX_IDLE_TONE_HZ
+                                                  : (float)PFM_TURNON_FREQ_HZ;   /* floor
+                                                          (or, in idle-tone
+                                                          diagnostic mode, the
+                                                          3kHz visual-test
+                                                          tone) -- not
+                                                          hold-last: a real
+                                                          Transrex with
                                                           ENA_OUT/CONTACT_OUT
                                                           dropped stops
-                                                          responding, it
+                                                          RESPONDING, it
                                                           doesn't keep echoing
-                                                          its last output */
+                                                          its last output --
+                                                          but note this is
+                                                          now independent of
+                                                          DRIVE_HZ reporting,
+                                                          which stays live
+                                                          above regardless */
         }
 
-        s_filteredHz[ch] += alpha * (targetHz - s_filteredHz[ch]);
+        s_filteredHz[ch] += alpha * (targetHz - s_filteredHz[ch]);   /* clean,
+                                                                          ripple-free
+                                                                          -- see this
+                                                                          variable's
+                                                                          own comment
+                                                                          above */
 
         {
-            float clampedHz = s_filteredHz[ch];
+            /* Real Transrex current-output ripple (720Hz fundamental +
+               1440Hz 2nd harmonic), added 2026-09-21 -- see sim_transrex.h's
+               own SIM_TRANSREX_RIPPLE_FUNDAMENTAL_HZ comment for the full
+               reasoning/assumptions. Only added while genuinely gated (real
+               simulated current flowing) -- an ungated channel's floor (or
+               idle-tone diagnostic frequency) represents no real current at
+               all, so it stays perfectly clean, matching this module's own
+               existing "no current, no ripple" physical intent. Computed
+               directly in Hz (not Amps-then-reconverted) via this channel's
+               own full-scale-derived amplitude -- same linearity reasoning
+               this file's own top comment already applies to the base
+               filter. */
+            float rippleHz = 0.0f;
+            if (gated != 0U)
+            {
+                /* "X% of this channel's own full-scale current" always
+                   equals "X% of the full [PFM_TURNON_FREQ_HZ,
+                   PFM_MAX_FREQ_HZ] span" here, for ANY channel, REGARDLESS
+                   of that channel's own PFM_MAX_CURRENT_A_PER_CHANNEL[ch]
+                   entry -- the Amps->Hz mapping is linear, and its two Hz
+                   endpoints are shared/global (not per-channel), so a
+                   channel's own Amps calibration only changes the SLOPE,
+                   never the span itself. No per-channel lookup needed as a
+                   result -- not an oversight, this cancels out exactly. */
+                float freqSpanHz = (float)PFM_MAX_FREQ_HZ - (float)PFM_TURNON_FREQ_HZ;
+                float fundamentalAmpHz = freqSpanHz *
+                                          (SIM_TRANSREX_RIPPLE_FUNDAMENTAL_PERCENT / 100.0f);
+                float secondHarmonicAmpHz = freqSpanHz *
+                                             (SIM_TRANSREX_RIPPLE_SECOND_HARMONIC_PERCENT / 100.0f);
+                rippleHz = fundamentalAmpHz *
+                               sinf(2.0f * SIM_TRANSREX_PI * SIM_TRANSREX_RIPPLE_FUNDAMENTAL_HZ * nowSec) +
+                           secondHarmonicAmpHz *
+                               sinf(2.0f * SIM_TRANSREX_PI * SIM_TRANSREX_RIPPLE_SECOND_HARMONIC_HZ * nowSec);
+            }
+
+            float clampedHz = s_filteredHz[ch] + rippleHz;
 
             if (clampedHz < (float)PID_OUTPUT_MIN_HZ)
             {
@@ -271,6 +483,9 @@ void SimTransrex_Update(void)
                                                                                             pid.c
                                                                                             uses */
                 HRTIM1_SetChannelPeriod(ch, per);
+                s_lastOutputHz[ch] = outputHz;   /* the real, ripple-inclusive
+                                                      value -- see this array's
+                                                      own comment above */
             }
         }
 
@@ -289,7 +504,13 @@ void SimTransrex_Update(void)
             {
                 s_logTimeMs[s_logCount]     = now - s_logArmTimeMs;
                 s_logDriveHz[s_logCount]    = s_lastMeasuredHz[ch];
-                s_logFeedbackHz[s_logCount] = (uint32_t)s_filteredHz[ch];
+                s_logFeedbackHz[s_logCount] = s_lastOutputHz[ch];   /* the real,
+                                                                        ripple-
+                                                                        inclusive
+                                                                        value --
+                                                                        see that
+                                                                        array's
+                                                                        own comment */
                 s_logCount++;
                 s_logLastSampleMs = now;
             }
@@ -369,6 +590,16 @@ uint32_t SimTransrex_GetTauMs(void)
     return s_tauMs;
 }
 
+void SimTransrex_SetIdleToneEnabled(uint8_t enabled)
+{
+    s_idleToneEnabled = (enabled != 0U) ? 1U : 0U;
+}
+
+uint8_t SimTransrex_GetIdleToneEnabled(void)
+{
+    return s_idleToneEnabled;
+}
+
 uint8_t SimTransrex_GetChannelStatus(uint8_t channel,
                                       uint32_t *measuredDriveHz,
                                       uint32_t *filteredFeedbackHz,
@@ -393,7 +624,10 @@ uint8_t SimTransrex_GetChannelStatus(uint8_t channel,
     }
     if (filteredFeedbackHz != NULL)
     {
-        *filteredFeedbackHz = (uint32_t)s_filteredHz[channel];
+        *filteredFeedbackHz = s_lastOutputHz[channel];   /* the real, ripple-
+                                                              inclusive value --
+                                                              see that array's
+                                                              own comment */
     }
     if (enaOutGated != NULL)
     {

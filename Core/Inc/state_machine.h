@@ -16,7 +16,7 @@ extern "C" {
  * fault source) / pfm.c (the legacy table-based output path) -- the
  * thing that ties them together into one coherent "what is this
  * controller doing right now" answer, queryable over the wire
- * (STATE?) and enforced at the command layer (PID:PROFile:STARt now
+ * (STATE?) and enforced at the command layer (SHOT:STARt now
  * refuses to do anything unless the machine is actually ARMED).
  *
  * FOUR STATES:
@@ -26,7 +26,7 @@ extern "C" {
  *              called by pid.c) or a fault is cleared (SM_ClearFault()).
  *              Every HRTIM channel output is disabled in this state --
  *              nothing outputs a PFM waveform. Also reachable from
- *              ARMED/FIRING via SM_Stop() (an operator abort, PID:STOP)
+ *              ARMED/FIRING via SM_Stop() (an operator abort, SOURce:STOP)
  *              or SM_Disarm() (stand down without firing).
  *
  *   ARMED   -- a readiness gate between IDLE and FIRING, added per
@@ -38,12 +38,12 @@ extern "C" {
  *              ArmConditionsMet() (currently a STUB, see its own
  *              comment below -- always allows arming today). Entered
  *              via SM_Arm() (the `ARM` command); left via SM_Fire()
- *              (`PID:PROFile:STARt`, which only succeeds from here) or
+ *              (`SHOT:STARt`, which only succeeds from here) or
  *              SM_Disarm() (`DISARM`, stand down) or SM_Stop()
- *              (`PID:STOP`, abort).
+ *              (`SOURce:STOP`, abort).
  *
  *   FIRING  -- entered only from ARMED, via SM_Fire(). Every currently-
- *              ENABLED channel (PID:CHANnel:ENAble -- a separate,
+ *              ENABLED channel (SOURce:ENAble -- a separate,
  *              already-existing per-channel concern, orthogonal to
  *              this system-wide state) gets its HRTIM output connected
  *              and begins the programmed ramp profile
@@ -51,7 +51,7 @@ extern "C" {
  *              automatically when the shot completes
  *              (SM_NotifyShotComplete(), called from PID_Update()'s
  *              own existing shot-completion check), or on a manual
- *              SM_Stop() (`PID:STOP`) abort.
+ *              SM_Stop() (`SOURce:STOP`) abort.
  *
  *   FAULT   -- entered from ANY other state the instant a fault
  *              condition is detected (SM_PollFaults(), see its own
@@ -61,13 +61,13 @@ extern "C" {
  *              path immediately, unconditionally (it isn't part of
  *              this state machine at all -- the legacy FIRE command
  *              never calls SM_Fire() -- so it has no ramp-down concept
- *              to preserve). The CURRENT (pid.c PID:*) output path's
+ *              to preserve). The CURRENT (pid.c SOURce:*) output path's
  *              own stop is each fault type's OWN responsibility -- see
  *              the two handlers below, only one of which is still a
  *              pure stub. Left only via SM_ClearFault() (`FAULT:CLEAR`,
  *              existing command, extended) -- always back to IDLE,
  *              never directly to ARMED/FIRING; a fresh
- *              ARM+PID:PROFile:STARt is always required after any
+ *              ARM+SHOT:STARt is always required after any
  *              fault.
  *
  * TWO FAULT TYPES:
@@ -144,77 +144,24 @@ extern "C" {
  *                              "a real HRTIM/gate-driver fault" via
  *                              STATE?. See the external-enable section further
  *                              down this file for the full design
- *                              (opt-in, ARM/PID:PROFile:STARt gating,
+ *                              (opt-in, ARM/SHOT:STARt gating,
  *                              FIRING-only continuous monitoring,
  *                              FAULT:CLEAR re-validation, the deliberate
  *                              GPIO_PULLDOWN fail-safe choice).
  *
- *   SM_FAULT_EMERGENCY_STOP  -- ADDED 2026-09-17, per direct request: a
- *                              real, physical emergency-stop input
- *                              (PG10, a fiber-optic receiver input --
- *                              docs/pin_mapping_v4.csv mislabels this
- *                              net "NRST", a stale/incorrect name, NOT
- *                              this MCU's own reset function; confirmed
- *                              directly with the user). Polarity per
- *                              EMERGENCY_STOP_POLARITY (ctrlr_config.h)
- *                              -- INVERTED same day, later, once a
- *                              hardware inverter was added between the
- *                              fiber receiver and PG10: now NORMALLY_LOW
- *                              ("no input" reads OK, a HIGH reading is
- *                              the fault), the opposite of this
- *                              feature's original NORMALLY_HIGH
- *                              assumption -- see this section further
- *                              down this file and ctrlr_config.h's own
- *                              comment for the full reasoning and the
- *                              safety trade-off it carries. UNLIKE every
- *                              other fault type
- *                              above, deliberately NOT a graceful
- *                              ramp-down -- HandleEmergencyStopFault()
- *                              (state_machine.c) calls PID_Stop()
- *                              directly and unconditionally, with no
- *                              g_stateBeforeFault branch at all (every
- *                              other handler ramps if the fault hit
- *                              while FIRING; this one never does,
- *                              regardless of state) -- an immediate,
- *                              unconditional hard cutoff of every
- *                              enabled channel is the explicit point of
- *                              an EMERGENCY stop, not a softer
- *                              "eventually stops" response. Checked
- *                              continuously in SM_PollFaults() across
- *                              ALL states (IDLE/ARMED/FIRING alike),
- *                              matching General Fault's own PC10/
- *                              GateDriverStatus precedent -- NOT the
- *                              FIRING-only carve-out External-Enable
- *                              above deliberately uses; there is no
- *                              ARM/PID:PROFile:STARt-time gating for
- *                              this one either, not asked for and not
- *                              added. Fully opt-in
- *                              (EMERGency:ENAble/EMERGency:ENAble?) --
- *                              per direct instruction, "when the E-stop
- *                              feature is disabled, we act as though it
- *                              does not exist and the firmware
- *                              functions like it did before we
- *                              implemented it": every check below
- *                              (SM_PollFaults(), SM_ClearFault()) is
- *                              gated on the enable flag FIRST, with
- *                              zero behavior change of any kind
- *                              (including no PG10 read at all) when
- *                              it's off. `FAULT:CLEAR` re-validates
- *                              PG10 is back OK (per current polarity)
- *                              before actually clearing, same
- *                              philosophy as every other fault type.
- *                              `GPIO_PULLDOWN` (main.c) is UNCHANGED by
- *                              the 2026-09-17 polarity inversion --
- *                              floating still reads LOW at the pin
- *                              either way; only the MEANING assigned to
- *                              that level (ctrlr_config.h's
- *                              EMERGENCY_STOP_POLARITY) flipped. Under
- *                              the CURRENT (NORMALLY_LOW) polarity this
- *                              means a floating/disconnected PG10 now
- *                              reads as OK, not asserted -- a real,
- *                              deliberate, directly-confirmed reversal
- *                              of this feature's original fail-safe
- *                              assumption, not an oversight.
+ *   SM_FAULT_EMERGENCY_STOP  -- REMOVED 2026-09-21. The emergency-stop
+ *                              feature (a PG10 fiber-optic input with an
+ *                              immediate, unconditional hard cutoff) was
+ *                              removed after PG10 was discovered to be
+ *                              electrically tied to NRST (this MCU's
+ *                              real reset pin, not a usable GPIO -- see
+ *                              main.c's MX_GPIO_Init() comment and
+ *                              docs/changelog.txt's 2026-09-17/09-21
+ *                              entries). A future E-stop must use a
+ *                              genuinely free input pin and should
+ *                              re-settle the fail-safe polarity
+ *                              question afresh against that pin's real
+ *                              idle level.
  *
  *   SM_FAULT_ENABLE_OUTPUT   -- ADDED 2026-09-17, per direct request: each
  *                              Transrex channel's own ENA_OUT/CONTACT_OUT
@@ -229,9 +176,9 @@ extern "C" {
  *                              SM_FAULT_EXTERNAL_ENABLE's FIRING-only
  *                              carve-out above, confirmed directly by the
  *                              user). PER-CHANNEL, unlike
- *                              SM_FAULT_EXTERNAL_ENABLE/EMERGENCY_STOP
- *                              (system-wide, single PF13/PG10 signal) --
- *                              only currently-enabled channels
+ *                              SM_FAULT_EXTERNAL_ENABLE (system-wide,
+ *                              single PF13 signal) -- only
+ *                              currently-enabled channels
  *                              (`PID_GetChannelEnable()`) are checked,
  *                              matching the same per-channel-gating
  *                              philosophy already established for
@@ -351,9 +298,6 @@ typedef enum
     SM_FAULT_EXTERNAL_ENABLE,  /* added 2026-09-16 -- see the external-enable
                                    section below and this file's own
                                    header comment for the full design */
-    SM_FAULT_EMERGENCY_STOP,   /* added 2026-09-17 -- see the emergency-stop
-                                   section below and this file's own
-                                   header comment for the full design */
     SM_FAULT_ENABLE_OUTPUT,    /* added 2026-09-17 -- see the enable-output
                                    section below and this file's own
                                    header comment for the full design.
@@ -412,7 +356,7 @@ SM_FaultType_t SM_GetFaultType(void);
  * (meaningful) only when SM_GetFaultType() is SM_FAULT_OVERCURRENT,
  * SM_FAULT_ENABLE_OUTPUT, or SM_FAULT_ENERPRO. Returns 0xFF (never a
  * real channel index) otherwise, including for SM_FAULT_GENERAL/
- * SM_FAULT_EXTERNAL_ENABLE/SM_FAULT_EMERGENCY_STOP/SM_FAULT_NONE --
+ * SM_FAULT_EXTERNAL_ENABLE/SM_FAULT_NONE --
  * those are system-wide, not per-channel, so they have no single
  * channel to report here. Added 2026-09-15 alongside
  * SM_ReportOcpFault(), below -- WIDENED 2026-09-18 (real bug, found via
@@ -437,8 +381,8 @@ uint8_t SM_Arm(void);
  * currently ARMED. */
 void SM_Disarm(void);
 
-/* ARMED -> FIRING. Backs PID:PROFile:STARt (commands.c's
- * cmd_pid_profile_start(), now gated on this) -- calls
+/* ARMED -> FIRING. Backs SHOT:STARt (commands.c's
+ * cmd_shot_start(), now gated on this) -- calls
  * PID_ProfileStart() (pid.c, unchanged) internally and only actually
  * transitions to FIRING if that succeeds. Returns 1 on success, 0 if
  * the current state isn't ARMED, or if PID_ProfileStart() itself
@@ -446,8 +390,16 @@ void SM_Disarm(void);
  * that case, not FIRING. */
 uint8_t SM_Fire(void);
 
-/* ARMED or FIRING -> IDLE, a manual abort -- backs PID:STOP
- * (commands.c's cmd_pid_stop(), now also calling this) alongside its
+/* ARMED -> FIRING for the PLAIN (non-profile) start path -- added
+ * 2026-09-21 alongside gating SOURce:RUN behind ARM. Same contract as
+ * SM_Fire() (requires ARMED + SM_ExternalEnableOk()), but calls
+ * PID_Start() instead of PID_ProfileStart(): an open-ended loop with no
+ * shot clock, brought back to IDLE by SOURce:STOP (SM_Stop()). Returns 1
+ * on success, 0 if not ARMED (state stays ARMED). */
+uint8_t SM_StartPlain(void);
+
+/* ARMED or FIRING -> IDLE, a manual abort -- backs SOURce:STOP
+ * (commands.c's cmd_source_stop(), now also calling this) alongside its
  * existing PID_Stop() call. No-op (not an error) if already IDLE, and
  * deliberately does NOT clear FAULT (see SM_ClearFault() for that --
  * a plain STOP must never be a backdoor out of a real fault latch). */
@@ -596,9 +548,9 @@ uint8_t SM_ClearFault(void);
  *      currently reads HIGH -- folded into that function's existing
  *      generic "arm conditions not met" failure (ERR 13), no new error
  *      code needed for this case.
- *   2. `PID:PROFile:STARt` ALSO re-checks PF13 immediately before
+ *   2. `SHOT:STARt` ALSO re-checks PF13 immediately before
  *      firing (SM_ExternalEnableOk(), below, checked by the command
- *      handler for a precise error -- see cmd_pid_profile_start()'s own
+ *      handler for a precise error -- see cmd_shot_start()'s own
  *      comment -- AND redundantly inside SM_Fire() itself as a last-
  *      line-of-defense, in case some other future caller ever bypasses
  *      the command handler's own check, INCLUDING the external-trigger
@@ -619,7 +571,7 @@ uint8_t SM_ClearFault(void);
  *      checked only while actually FIRING ("if that input is lost
  *      during a shot") -- losing PF13 while merely ARMED (nothing
  *      outputting yet) is NOT itself treated as a fault here; the next
- *      PID:PROFile:STARt attempt will simply fail its own re-check
+ *      SHOT:STARt attempt will simply fail its own re-check
  *      (item 2 above) instead. Deliberately not decided either way
  *      whether ARMED should also actively fault on PF13 loss -- not
  *      asked for, flagged rather than silently added.
@@ -638,7 +590,7 @@ uint8_t SM_ClearFault(void);
  * here, where floating-read-as-enabled would be the dangerous one.
  *
  * *** As a FAULT source, NOT re-checked while IDLE or ARMED other than
- * at the two explicit gate points above (ARM, PID:PROFile:STARt) --
+ * at the two explicit gate points above (ARM, SHOT:STARt) --
  * only genuinely continuously monitored for FAULT purposes while
  * FIRING. If tighter, always-on FAULT monitoring is ever wanted,
  * that's a real, separate decision to make explicitly, not something
@@ -646,7 +598,7 @@ uint8_t SM_ClearFault(void);
 
 /* Turns the interlock above on (1) or off (0). Persists across shots
  * until changed again or the board reboots (RAM state, like every
- * other runtime config in this project -- PID:PROFILE:CURRENT,
+ * other runtime config in this project -- SHOT:CURRent,
  * PID:LOOPMODE, etc.) -- NOT saved to non-volatile storage. Backs
  * `EXTernal:ENAble <0|1>` (commands.c). Takes effect immediately: if turned
  * ON while already FIRING, the very next SM_PollFaults() call (at most
@@ -662,8 +614,10 @@ uint8_t SM_ClearFault(void);
  * trigger was configured. */
 void SM_SetExternalEnableRequired(uint8_t required);
 
-/* Current mode, as last set by SM_SetExternalEnableRequired() (0 by
- * default at boot). Backs `EXTernal:ENAble?` (commands.c). */
+/* Current mode, as last set by SM_SetExternalEnableRequired() (1 by
+ * default at boot as of 2026-09-22 -- was 0 2026-09-16 through
+ * 2026-09-21, see state_machine.c's own g_externalEnableRequired
+ * comment and docs/changelog.txt). Backs `EXTernal:ENAble?` (commands.c). */
 uint8_t SM_GetExternalEnableRequired(void);
 
 /* 1 if the interlock isn't required at all (SM_GetExternalEnableRequired()
@@ -672,11 +626,11 @@ uint8_t SM_GetExternalEnableRequired(void);
  * required AND PF13 currently reads LOW. This is the single source of
  * truth `ArmConditionsMet()`/`SM_Fire()` (state_machine.c) both check
  * internally -- also exposed publicly so the command layer
- * (cmd_pid_profile_start(), commands.c) can give a precise, distinct
+ * (cmd_shot_start(), commands.c) can give a precise, distinct
  * error message instead of a generic failure, matching the same
  * "distinct failure reasons, reported distinctly" precedent that
  * function's own comment already established for
- * PID:PROFILE:TIMING-not-set. */
+ * SHOT:TIMing-not-set. */
 uint8_t SM_ExternalEnableOk(void);
 
 /* Raw PF13 logic level right now (1 = HIGH, 0 = LOW) -- independent of
@@ -695,7 +649,9 @@ uint8_t SM_GetExternalEnableInputRaw(void);
  * (PF13). Trigger and enable are independent physical signals from here
  * on, not two facets of one shared wire.
  *
- * Opt-in, OFF by default. UNCOUPLED from the external-enable interlock
+ * ON by default as of 2026-09-22 (was opt-in/OFF 2026-09-16 through
+ * 2026-09-21 -- see state_machine.c's own g_externalTriggerRequired
+ * comment and docs/changelog.txt). UNCOUPLED from the external-enable interlock
  * 2026-09-17 -- SM_SetExternalTriggerRequired() no longer refuses
  * regardless of SM_GetExternalEnableRequired()'s state (previously it
  * did, back when both features read the same wire and "trigger without
@@ -705,21 +661,21 @@ uint8_t SM_GetExternalEnableInputRaw(void);
  * called from this trigger's own edge-detection path -- a rising edge
  * on PF15 while PF13 doesn't currently read HIGH (and the enable
  * interlock is on) simply fails to fire, exactly as a manual
- * `PID:PROFile:STARt` would.
+ * `SHOT:STARt` would.
  *
  * When ON, and the state machine is currently SM_STATE_ARMED: a
  * LOW-to-HIGH transition on PF15 calls SM_Fire() directly -- the exact
- * same function `PID:PROFile:STARt` itself calls, so every one of that
+ * same function `SHOT:STARt` itself calls, so every one of that
  * path's own guarantees (the external-enable re-check, the
  * profile-timing-configured check, the resulting FIRING-state fault
  * monitoring) apply identically whether a shot started by operator
  * command or by this trigger. Per direct instruction ("this is the same
- * behavior as running PID:PROF:STAR"), there is no second/different
+ * behavior as running SHOT:STARt"), there is no second/different
  * start path for a triggered shot -- see this file's own investigation
  * into whether a distinct "open-loop start call" exists (it doesn't:
  * open- vs. closed-loop has always been the PER-CHANNEL PID:LOOPMODE
- * flag, checked inside the SAME PID_Update() loop both PID:START and
- * PID:PROFile:STARt already share -- there was never a second,
+ * flag, checked inside the SAME PID_Update() loop both SOURce:RUN and
+ * SHOT:STARt already share -- there was never a second,
  * structurally-open-loop start mechanism to call here, aside from the
  * unrelated legacy pfm.c TABLE:*-and-FIRE path, which this feature does
  * NOT touch). And, per direct instruction 2026-09-17: this only ever
@@ -774,115 +730,14 @@ uint8_t SM_GetExternalTriggerRequired(void);
 uint8_t SM_GetExternalTriggerInputRaw(void);
 
 /* --------------------------------------------------------------------------
- * Emergency stop (PG10, a fiber-optic receiver input -- NOT the same
- * pin/signal as PF15 above), added 2026-09-17, per direct request.
- *
- * docs/pin_mapping_v4.csv labels this net "NRST" -- confirmed directly
- * with the user this is a stale/incorrect label, not this MCU's own
- * reset function; the pin genuinely carries a fiber-optic E-stop input
- * (with a 100nF cap to ground on the net, fine/beneficial for a
- * deliberately slow-changing safety signal -- irrelevant to the fast
- * switching PFM_Input capture pins worry about, not a concern here).
- * PB8 (this board's BOOT0 net) was considered and REJECTED for this
- * purpose first -- confirmed via a live FLASH_OPTR register read
- * (nSWBOOT0=1) that PB8 is genuinely sampled for boot-mode selection
- * on every reset, not just at first power-on; an active-LOW E-stop's
- * own idle (non-emergency) HIGH state is exactly the "boot into the
- * ROM bootloader instead of the application" condition on this chip,
- * meaning any ordinary reset during normal (non-emergency) operation
- * could silently skip the application entirely. See
- * cmd_diag_optbytes_query()'s own doc comment (commands.c) for the
- * full register-level finding.
- *
- * Polarity per EMERGENCY_STOP_POLARITY (ctrlr_config.h) -- originally
- * NORMALLY_HIGH (PG10 read LOW meant asserted) when this feature was
- * first built; INVERTED 2026-09-17, later the same day, once a
- * hardware inverter was added between the fiber-optic receiver and
- * PG10 itself. The CURRENT default is NORMALLY_LOW: "no input" --
- * including PG10's own GPIO_PULLDOWN floating default -- reads OK, and
- * a HIGH reading is the fault. See ctrlr_config.h's own comment on
- * EMERGENCY_STOP_POLARITY for the full reasoning, including the
- * explicit safety-trade-off note (a floating/disconnected pin, or an
- * unpowered inverter, now reads as OK rather than asserted -- a real,
- * deliberate reversal of this feature's original fail-safe assumption,
- * confirmed directly, not an oversight). EmergencyStopAsserted()
- * (state_machine.c) is the one place this polarity is actually applied
- * -- EmergencyStopInputIsHigh() itself stays a plain, polarity-agnostic
- * raw reader, matching SM_GetEmergencyStopInputRaw()'s own convention
- * below.
- *
- * Deliberately NOT the graceful ramp-down every other fault type above
- * uses -- HandleEmergencyStopFault() (state_machine.c) calls
- * PID_Stop() directly, unconditionally, with no g_stateBeforeFault
- * branch at all -- an immediate, hard cutoff of every enabled channel,
- * regardless of what state the fault hit in, is the explicit point of
- * an EMERGENCY stop. (Unaffected by the polarity inversion above --
- * once EmergencyStopAsserted() is true, the response is identical
- * either way.)
- *
- * Checked continuously in SM_PollFaults() across ALL states (IDLE/
- * ARMED/FIRING), matching General Fault's own PC10/GateDriverStatus
- * precedent -- NOT the FIRING-only carve-out external-enable
- * deliberately uses above. There is no ARM/PID:PROFile:STARt-time
- * gating for this feature -- not asked for, not added; this is purely
- * a continuously-monitored fault source with an immediate-cutoff
- * response, nothing else.
- *
- * Fully opt-in, OFF by default. Per direct instruction, "when the
- * E-stop feature is disabled, we act as though it does not exist and
- * the firmware functions like it did before we implemented it" --
- * every single check this feature adds (SM_PollFaults(),
- * SM_ClearFault()) is gated on SM_GetEmergencyStopRequired() FIRST,
- * with genuinely zero behavior difference (including no PG10 GPIO read
- * at all) when it's off -- not merely "the fault never latches," but
- * the check itself never runs.
- *
- * `FAULT:CLEAR` re-validates PG10 is back OK (per EMERGENCY_STOP_POLARITY,
- * currently NORMALLY_LOW) before actually clearing an EMERGENCY_STOP
- * fault (when the feature is on -- a no-op re-check, same as every
- * other such check in this file, when it's off), same "only clear if
- * the condition is actually gone" philosophy as every other fault
- * type.
- *
- * `GPIO_PULLDOWN` (main.c's MX_GPIO_Init()) is UNCHANGED by the
- * 2026-09-17 polarity inversion -- an unconnected/floating PG10 still
- * reads LOW at the pin either way; only EMERGENCY_STOP_POLARITY's
- * interpretation of that level flipped (see ctrlr_config.h's own
- * comment on that constant). Under the CURRENT polarity, floating
- * reads as OK, not asserted -- the opposite of this feature's original
- * fail-safe design, a deliberate and directly-confirmed choice driven
- * by the new hardware inverter, not an oversight. */
-
-/* Turns the emergency-stop feature on (1) or off (0). RAM-only, resets
- * to 0 on reboot, same as every other runtime config in this project.
- * Backs `EMERGency:ENAble <0|1>` (commands.c). */
-void SM_SetEmergencyStopRequired(uint8_t required);
-
-/* Current mode, as last set by SM_SetEmergencyStopRequired() (0 by
- * default at boot). Backs `EMERGency:ENAble?` (commands.c). */
-uint8_t SM_GetEmergencyStopRequired(void);
-
-/* 1 if the feature isn't required at all (SM_GetEmergencyStopRequired()
- * == 0 -- always "ok" in that case, matching this feature's opt-in,
- * "acts as though it does not exist" design), OR it IS required and
- * PG10's CURRENT polarity (EMERGENCY_STOP_POLARITY, ctrlr_config.h)
- * says it's not asserted. 0 only when required AND the pin reads as
- * asserted under that polarity. Used internally by SM_ClearFault();
- * also exposed publicly for any diagnostic/command-layer use that
- * wants it. */
-uint8_t SM_EmergencyStopOk(void);
-
-/* Raw PG10 logic level right now (1 = electrically HIGH, 0 =
- * electrically LOW) -- independent of whether the feature is even
- * turned on, and deliberately POLARITY-AGNOSTIC: this is the literal
- * pin state, not an "asserted"/"OK" interpretation (that's
- * SM_EmergencyStopOk()'s job, via EMERGENCY_STOP_POLARITY,
- * ctrlr_config.h) -- same raw-vs-interpreted split as
- * SM_GetExternalEnableInputRaw()/EXTernal:INPut? for PF13, and
- * XREX:CHANnel:STATus? for the XREX fault pins. Diagnostic: lets an
- * operator confirm real wiring/signal presence before relying on it.
- * Backs `EMERGency:INPut?` (commands.c). */
-uint8_t SM_GetEmergencyStopInputRaw(void);
+ * Emergency stop -- REMOVED 2026-09-21. The PG10 fiber-optic E-stop
+ * feature (SM_FAULT_EMERGENCY_STOP, EMERGency:ENAble/ENAble?/INPut?,
+ * SM_SetEmergencyStopRequired()/SM_EmergencyStopOk() and friends) was
+ * removed: PG10 turned out to be electrically tied to NRST, this MCU's
+ * real reset pin, not a usable GPIO (see main.c's MX_GPIO_Init() comment
+ * and docs/changelog.txt). A future E-stop must use a genuinely free
+ * input pin and re-settle the fail-safe polarity afresh.
+ * -------------------------------------------------------------------------- */
 
 /* --------------------------------------------------------------------------
  * Enable/contactor output precondition (PG0-PG3/PG4-PG7 -- XR1-XR4's own
@@ -993,6 +848,17 @@ void SM_ReportEnableOutputFault(uint8_t channel);
  * as SM_FAULT_OVERCURRENT/SM_FAULT_ENABLE_OUTPUT -- the affected channel
  * is already hard-disabled by the time FAULT:CLEAR runs. */
 void SM_ReportEnerproFault(uint8_t channel);
+
+/* DEBUG:FAULT:BYPASS (commands.c) -- bench-only debug override, added
+ * 2026-09-21. Defaults OFF at every boot (RAM-only, never persisted).
+ * When ON, EVERY fault type (Water/Temp/Enerpro/OCP/ENABLE_OUTPUT/
+ * GENERAL/EXTERNAL_ENABLE) is silently ignored -- see
+ * state_machine.c's own g_faultBypassEnabled comment for the full
+ * reasoning and its safety warning. *** NEVER enable against a real
+ * Transrex or any hardware where a real fault condition is physically
+ * possible. *** */
+void SM_SetFaultBypassEnabled(uint8_t enabled);
+uint8_t SM_GetFaultBypassEnabled(void);
 
 #ifdef __cplusplus
 }

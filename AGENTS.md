@@ -83,8 +83,8 @@ is a real HRTIM 16-bit-`PER` hardware limit, not a tuning choice), and
 writing the result via `hrtim.c`'s `HRTIM1_SetChannelPeriod()` (each
 channel's own shadow registers, promoted at that channel's own
 roll-over -- Possibility 3, see "What this project is" above).
-Wire interface: `PID:START`/`STOP`/`SETPOINT <ch> <hz>`/
-`GAINS <ch> <kp> <ki> <kd>`/`STATus? <ch>` (`commands.c`, ERR 11/12).
+Wire interface: `SOURce:RUN`/`STOP`/`SETpoint <ch> <hz>`/
+`STATus? <ch>` and `PID:GAINS <ch> <kp> <ki> <kd>` (`commands.c`, ERR 11/12).
 
 CONFIRMED on real hardware (channel 1, the one channel with a real
 loopback wired on this bench -- see docs/changelog.txt for the full
@@ -109,10 +109,15 @@ shim, `HRTIM1_ApplyPfmStep()` in `hrtim.c`, now calls
 `HRTIM1_SetChannelPeriod()` per channel with no phase/interleave), but
 is NOT how this project actually drives hardware anymore -- see
 `pid.c` above for that. Kept as a bench-testing fallback, not because
-this project needs a table-playback mode. There is still **no state
-machine** -- no ARM precondition, no interlock, no fault gating; `FIRE`
-takes effect immediately whenever sent, per the original project
-decision (see `docs/command_reference.md`'s `FIRE` entry).
+this project needs a table-playback mode. **GATED 2026-09-22** (design-
+review follow-up): `FIRE` now requires `ARM` first (`ERR 13`) and, when
+`EXTernal:ENAble` is on, the PF13 interlock (`ERR 15`), in addition to
+its existing fault (`ERR 6`) and empty-table (`ERR 5`) checks -- it no
+longer "takes effect immediately whenever sent." It is still not
+transitioned to `FIRING` (the legacy table path sits outside the
+IDLE/ARMED/FIRING lifecycle; see `state_machine.h`), so `STATE?` stays
+`ARMED` during playback and a fault mid-playback safes it via
+`EnterFault()` from `ARMED`.
 
 - **Serial command architecture** (`uart.c`, `cmd_parser.c`) -- ported
   from the sibling project, ported *architecture-only* (no command
@@ -191,7 +196,7 @@ decision (see `docs/command_reference.md`'s `FIRE` entry).
     `compute_log_stats()`'s own doc comment for the full reasoning and
     `format_channel_report_md()` for what's written. `timing
     [<rampS> <flatS>]` and `demand <ch> [<amps>]` (added 2026-09-14)
-    wrap PID:PROFile:TIMing/CURRent -- the only two PID:* settings that
+    wrap SHOT:TIMing/CURRent -- the only two SHOT:* settings that
     had no wrapper before this, which a real LLM-console session
     exploited by guessing wrong syntax twice in a row (see
     docs/changelog.txt's matching entry).
@@ -206,7 +211,7 @@ decision (see `docs/command_reference.md`'s `FIRE` entry).
     unconfirmed shot DID fire during one verification pass anyway --
     not a gate bug, a testing-methodology mistake (piped blind "y"
     answers into a non-interactive test run, one of which landed on the
-    real PID:PROFile:STARt confirm instead of a human reading it) --
+    real SHOT:STARt confirm instead of a human reading it) --
     see docs/changelog.txt's matching entry for the full, transparent
     account and the resulting rule: interactive-only, single-stepped,
     real state checks between dangerous actions, for any future testing
@@ -601,20 +606,20 @@ decision (see `docs/command_reference.md`'s `FIRE` entry).
   day**: a third fault type, `SM_FAULT_EXTERNAL_ENABLE` (originally PF15,
   "Fiber_Enable" -- PC14 was considered first and rejected, it's
   documented as an OUTPUT in `docs/pin_mapping_v4.csv`, the wrong
-  direction), gating `ARM`/`PID:PROFile:STARt` and faulting if lost
+  direction), gating `ARM`/`SHOT:STARt` and faulting if lost
   while `FIRING`. New `EXTernal:ENAble`/`EXTernal:ENAble?`/
   `EXTernal:INPut?` commands. **Also added 2026-09-16, same session,
   also confirmed**: external trigger -- a rising edge on that SAME PF15
   pin (at the time), while ARMED, now calls `SM_Fire()` directly (same
-  function `PID:PROFile:STARt` itself calls). Originally structurally
+  function `SHOT:STARt` itself calls). Originally structurally
   depended on `EXTernal:ENAble` being on first (new `EXTernal:TRIGger`/
   `EXTernal:TRIGger?`, `ERR 16`). There is NO separate "open-loop start
   call" anywhere in this codebase -- open-/closed-loop has always been
   the per-channel `PID:LOOPMODE` flag, not a different start mechanism;
   `PID:LOOPMODE`'s `ch` argument now also accepts `0` for "every channel
-  at once" (matching `PID:LOG`'s own existing convention), added in
+  at once" (matching `LOG:ARM`'s own existing convention), added in
   service of this feature but usable standalone. Real-hardware
-  verification (ARM gating, the `PID:PROFile:STARt` re-check/`ERR 15`,
+  verification (ARM gating, the `SHOT:STARt` re-check/`ERR 15`,
   a real FIRING-time fault + ramp-down, `FAULT:CLEAR` re-validation, and
   a genuine rising edge firing a shot from `ARMED`) was done via a new
   diagnostic output, `DIAGnostic:GPOut12` (PD1 -- PF13 was proposed
@@ -748,7 +753,7 @@ should be) unless the link includes `-Wl,-u,_printf_float`. This
 project links against newlib-nano (`--specs=nano.specs`), which strips
 floating-point support out of `printf`/`snprintf` by default to save
 flash. Confirmed on real hardware, 2026-09-10: the first version of
-`PID:GAINS?`/`PID:PROFILE:CURRENT?`/`PID:PROFILE:TIMING?` (see
+`PID:GAINS?`/`SHOT:CURRent?`/`SHOT:TIMing?` (see
 `docs/changelog.txt`) built and linked cleanly, then replied `OK   `
 (spaces where the numbers should be) on real hardware -- traced to
 this exact missing flag. Fixed by hand-adding `-Wl,-u,_printf_float`
@@ -963,9 +968,12 @@ for the current standard to match.
 
 | Doc | Contents |
 |---|---|
+| `docs/README.md` | Index of this folder -- start here |
 | `docs/command_reference.md` | Every serial command, SCPI matching rules, error codes |
 | `docs/serial_reflash_guide.md` | How to use `wham_serial_flash.py`, the BOOT mechanism, the VTOR/MEMRMP fix, troubleshooting |
 | `docs/changelog.txt` | Running change log, dated entries, root causes for fixes |
-| `docs/memory_history.csv` + `docs/memory_report.html` | Flash/RAM footprint, tracked per commit since project start -- see `python/memory_report.py`'s entry above for how/when to regenerate |
+| `docs/reports/memory_history.csv` + `docs/reports/memory_report.html` | Flash/RAM footprint, tracked per commit since project start -- see `python/memory_report.py`'s entry above for how/when to regenerate |
 | `docs/test_protocol.md` | Numbered bench test protocol (T0-T3) -- markedly shorter than the sibling project's, since it only covers what actually exists here (serial identity, BOOT/reflash incl. the Go-jump regression check, and a developer-only HRTIM smoke test). Update it as functionality is added rather than assuming it tracks the sibling's group numbering. |
-| `docs/sop/wham_pfmg474_v4_sop.tex` | Formal Standard Operating Procedure: build, bootstrap flash, serial reflash, verification, troubleshooting. Same LaTeX house style as the sibling project (`mathpazo`, 5in×8.25in `geometry`, plain `\hline` tables) -- compile with `pdflatex` (twice, for cross-references), then render to PNG and visually inspect before calling any edit done; this document's own `\tabcolsep` note explains a real overfull-table pitfall worth reading before adding another table. |
+| `docs/reports/` | Generated reports: `simulator_validation_report.{tex,pdf}` and `simulator_channel_matrix_report.{tex,pdf}` (from `python/run_simulator_validation.py`), plus the memory footprint pair above |
+| `docs/campaigns/` | Campaign planning + results: `test_campaign_plan.md`, `test_campaign_report.md`, `test_campaign_results.md` |
+| `docs/sop/wham_xrex_pfmg474_sop.tex` | Formal Standard Operating Procedure: build, bootstrap flash, serial reflash, verification, troubleshooting. Same LaTeX house style as the sibling project (`mathpazo`, 5in×8.25in `geometry`, plain `\hline` tables) -- compile with `pdflatex` (twice, for cross-references), then render to PNG and visually inspect before calling any edit done; this document's own `\tabcolsep` note explains a real overfull-table pitfall worth reading before adding another table. |

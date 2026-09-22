@@ -561,6 +561,46 @@ void HAL_HRTIM_MspDeInit(HRTIM_HandleTypeDef *hhrtim)
    doesn't apply here. See HRTIM1_PWM_Start() below for what a cold
    start needs now that channels genuinely free-run independently. */
 
+/* Live re-programs the Master timebase's Period register to a NEW PID
+   heartbeat rate, added 2026-09-22 per direct request -- PID_LOOP_RATE_HZ
+   (ctrlr_config.h) is no longer purely compile-time; CONFig:PIDRate
+   (commands.c) calls this via PID_SetLoopRateHz() (pid.c), which owns
+   the actual validation/refusal-while-running policy -- this function
+   trusts its caller and just does the register math + write, same
+   division HRTIM_MASTER_PID_PERIOD (hrtim.h) does at compile time for
+   the boot default, at the SAME fixed /4 prescale HRTIM1_FullInit()
+   above already configured (never changed here -- changing the
+   prescale too would need a full re-init, not just a period rewrite,
+   and /4 already gives this rate range comfortable headroom either
+   direction). Returns 1 on success, 0 if `hz` would produce a Period
+   that over/underflows the 16-bit PER register (PID_SetLoopRateHz()
+   is expected to pre-validate this against a documented range, but
+   this function re-checks independently rather than trusting that
+   blindly -- see its own doc comment). Does NOT touch RepetitionCounter/
+   Mode/PrescalerRatio -- those are unaffected by rate alone and stay
+   exactly as HRTIM1_FullInit() left them. */
+uint8_t HRTIM1_SetPidHeartbeatRate(uint32_t hz)
+{
+    if (hz == 0U)
+    {
+        return 0U;
+    }
+
+    uint32_t rawPeriod = HRTIM_TIMER_CLK_HZ / HRTIM_MASTER_PID_PRESCALE_DIV / hz;
+    if ((rawPeriod == 0U) || (rawPeriod > 65536U))
+    {
+        return 0U;   /* would over/underflow the 16-bit PER register */
+    }
+
+    /* Direct register write, same pattern HRTIM1_SetChannelPeriod()
+       already uses for the per-channel timers (no __HAL_HRTIM_SETPERIOD
+       macro exists in this HAL) -- the Master timer's shadow-register
+       promotion behavior is the same Possibility 3 design that function's
+       own comment describes, so this is safe to write at any time, live. */
+    hhrtim1.Instance->sMasterRegs.MPER = (uint32_t)(rawPeriod - 1U);
+    return 1U;
+}
+
 void HRTIM1_PWM_Start(const uint8_t *channelEnabled)
 {
     uint32_t outputMask = 0U;

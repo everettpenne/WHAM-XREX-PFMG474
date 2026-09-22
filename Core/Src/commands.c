@@ -24,6 +24,7 @@
 #include "git_version.h"
 #include "main.h"
 #include "xrex_io.h"
+#include "telemetry.h"
 #include "sim_transrex.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -126,19 +127,62 @@ void cmd_table_begin(uart_instance_t *inst, char *args)
    HRTIM_NUM_CHANNELS. */
 #define TABLE_STEP_TOKEN_COUNT  (1U + HRTIM_NUM_CHANNELS)
 
-/* Smallest `per` allowed by ctrlr_config.h's PFM_MAX_CARRIER_FREQ_HZ
-   ceiling -- per is INVERSELY related to frequency (freq =
-   HRTIM_TIMER_CLK_HZ / (per+1)), so capping frequency means a MINIMUM
-   per, not a maximum. Same formula as python/pfm_table_upload.py's own
-   per_from_freq() (round(clock/freq) - 1); plain integer division
-   here reproduces that exactly for PFM_MAX_CARRIER_FREQ_HZ = 100000
-   (170000000/100000 = 1700 exactly, no rounding to differ over) --
-   this is a hard compile-time boundary check, not a place to silently
-   accept a rounding mismatch against the host tool. See
-   ctrlr_config.h's own comment on PFM_MAX_CARRIER_FREQ_HZ for why this
-   limit exists. */
-#define TABLE_STEP_MIN_PER \
-    ((uint16_t)((HRTIM_TIMER_CLK_HZ / PFM_MAX_CARRIER_FREQ_HZ) - 1UL))
+/* PFM_MAX_CARRIER_FREQ_HZ (ctrlr_config.h) -- RUNTIME-CONFIGURABLE as
+   of 2026-09-22, direct request. Backs CONFig:MaxCarrierHz
+   (below/cmd_parser.c). Was a compile-time-only ceiling (TABLE_STEP_
+   MIN_PER used to be a #define derived from it); TableStepMinPer()
+   now recomputes the equivalent "smallest allowed per" live from
+   g_pfmMaxCarrierFreqHz every call instead. Same formula as
+   python/pfm_table_upload.py's own per_from_freq() (round(clock/freq)
+   - 1); the compile-time default (100000) still divides exactly
+   (170000000/100000 = 1700, no rounding to differ over) -- an
+   operator-chosen value may not, same "plain integer division,
+   truncates toward the SAFER (higher-per/lower-frequency) side" note
+   that always applied here, not a new caveat. See ctrlr_config.h's own
+   comment on PFM_MAX_CARRIER_FREQ_HZ for why this limit exists at
+   all. */
+static uint32_t g_pfmMaxCarrierFreqHz = PFM_MAX_CARRIER_FREQ_HZ;
+
+/* CONFig:MaxCarrierHz's setter -- `hz` must be > 0 and large enough
+   that HRTIM_TIMER_CLK_HZ/hz - 1 still fits a uint16_t (TableStepMinPer()'s
+   own return type, and PER's real 16-bit hardware register width) --
+   rejecting rather than silently truncating a too-small `hz` into a
+   wrapped, wrong minimum. Roughly hz >= 2595 at this board's fixed
+   170 MHz HRTIM clock (170000000/65536, rounded up) -- deliberately
+   not hardcoded as a named constant here since it's a DERIVED bound
+   from HRTIM_TIMER_CLK_HZ, not an independent design choice like
+   PID_LOOP_RATE_HZ_MIN/_MAX (pid.c). */
+uint8_t PFM_SetMaxCarrierFreqHz(uint32_t hz)
+{
+    if (hz == 0U)
+    {
+        return 0U;
+    }
+    uint32_t rawMinPer = (HRTIM_TIMER_CLK_HZ / hz);
+    if ((rawMinPer == 0U) || (rawMinPer > 65536U))
+    {
+        return 0U;
+    }
+    g_pfmMaxCarrierFreqHz = hz;
+    return 1U;
+}
+
+uint32_t PFM_GetMaxCarrierFreqHz(void)
+{
+    return g_pfmMaxCarrierFreqHz;
+}
+
+/* Smallest `per` allowed by the CURRENT g_pfmMaxCarrierFreqHz ceiling
+   -- per is INVERSELY related to frequency (freq = HRTIM_TIMER_CLK_HZ
+   / (per+1)), so capping frequency means a MINIMUM per, not a
+   maximum. Recomputed live on every call (was TABLE_STEP_MIN_PER, a
+   compile-time #define, before g_pfmMaxCarrierFreqHz existed) --
+   cheap enough (one division) that caching isn't worth the
+   staleness risk if CONFig:MaxCarrierHz changes between calls. */
+static uint16_t TableStepMinPer(void)
+{
+    return (uint16_t)((HRTIM_TIMER_CLK_HZ / g_pfmMaxCarrierFreqHz) - 1UL);
+}
 
 /* Builds the "wrong token count" error text at runtime -- the count
    itself (1 + HRTIM_NUM_CHANNELS) is only known as a preprocessor
@@ -203,12 +247,12 @@ void cmd_table_step(uart_instance_t *inst, char *args)
         return;
     }
 
-    if (vals[0] < (long)TABLE_STEP_MIN_PER)
+    if (vals[0] < (long)TableStepMinPer())
     {
         char msg[96];
         snprintf(msg, sizeof(msg),
                  "per below %u implies carrier > %lu Hz (max allowed)",
-                 (unsigned int)TABLE_STEP_MIN_PER, (unsigned long)PFM_MAX_CARRIER_FREQ_HZ);
+                 (unsigned int)TableStepMinPer(), (unsigned long)g_pfmMaxCarrierFreqHz);
         SendErr(inst, 10, msg);
         return;
     }
@@ -225,6 +269,43 @@ void cmd_table_step(uart_instance_t *inst, char *args)
     }
 
     uart_send(inst, "OK\r\n");
+}
+
+/* CONFig:MaxCarrierHz <hz> / ? -- added 2026-09-22, direct request:
+   PFM_MAX_CARRIER_FREQ_HZ (ctrlr_config.h) made runtime-configurable.
+   See PFM_SetMaxCarrierFreqHz()'s own doc comment, above, for the
+   hardware-register-fit validation applied. Legacy-path-only (only
+   TABLE:STEP, above, consults this) -- has no effect on the modern
+   SHOT:* path, which has its own separate, already-runtime-
+   configurable output bounds (CONFig:PIDRate/TURNONHz/MAXFREQHz). */
+void cmd_config_max_carrier_hz(uart_instance_t *inst, char *args)
+{
+    char *tok;
+    long  hz;
+
+    tok = (args != NULL) ? strtok(args, " \r\n") : NULL;
+    if (tok == NULL)
+    {
+        SendErr(inst, 12, "CONFig:MaxCarrierHz needs one argument: hz");
+        return;
+    }
+    hz = atol(tok);
+    if ((hz <= 0L) || (PFM_SetMaxCarrierFreqHz((uint32_t)hz) == 0U))
+    {
+        SendErr(inst, 12, "hz rejected -- too small/large for the "
+                           "16-bit PER register at this board's HRTIM clock");
+        return;
+    }
+    uart_send(inst, "OK\r\n");
+}
+
+void cmd_config_max_carrier_hz_query(uart_instance_t *inst, char *args)
+{
+    char buf[32];
+    (void)args;
+
+    snprintf(buf, sizeof(buf), "OK %lu\r\n", (unsigned long)PFM_GetMaxCarrierFreqHz());
+    uart_send(inst, buf);
 }
 
 void cmd_table_end(uart_instance_t *inst, char *args)
@@ -285,6 +366,39 @@ static uint8_t AnyFaultLatched(void)
     return (HRTIM1_FaultIsTripped() != 0U) || (GateDriver_FaultIsLatched() != 0U);
 }
 
+/* Shared by cmd_fire/cmd_source_run/cmd_shot_start -- the ARMED-state +
+   external-enable-interlock precondition every fire-attempt command
+   requires before actually starting output. Factored out 2026-09-22:
+   found duplicated byte-for-byte in all three during a review of the
+   PID: -> SOURce:/SHOT:/LOG:/CHANnel: rename -- this is safety-
+   interlock logic, and three independent copies meant a future change
+   to either condition could easily be applied to only some of them.
+   Deliberately does NOT cover cmd_arm()'s own similar-looking check
+   (IDLE-state + external-enable + per-channel-output-readiness,
+   commands.c's cmd_arm()) -- that one reports a DIFFERENT "not
+   currently IDLE" message and has a third precondition this helper
+   doesn't, so folding it in here would either lose that distinct
+   messaging or bloat this helper with an ARM-only concern; kept
+   separate on purpose, not missed.
+
+   Returns 1 if the caller may proceed; 0 if an ERR has already been
+   sent and the caller should return immediately without sending
+   anything further. */
+static uint8_t RequireArmedAndEnabled(uart_instance_t *inst)
+{
+    if (SM_GetState() != SM_STATE_ARMED)
+    {
+        SendErr(inst, 13, "Must ARM first -- see the ARM command");
+        return 0U;
+    }
+    if (SM_ExternalEnableOk() == 0U)
+    {
+        SendErr(inst, 15, "External enable interlock not satisfied -- PF13 reads LOW");
+        return 0U;
+    }
+    return 1U;
+}
+
 void cmd_fire(uart_instance_t *inst, char *args)
 {
     (void)args;
@@ -292,6 +406,22 @@ void cmd_fire(uart_instance_t *inst, char *args)
     if (AnyFaultLatched() != 0U)
     {
         SendErr(inst, 6, "Fault latched -- send FAULT:CLEAR first");
+        return;
+    }
+
+    /* GATED 2026-09-21: FIRE previously bypassed the state machine
+       (only a fault check, no ARM/interlock) -- see this project's
+       design review. Now requires ARMED, same as SHOT:STARt.
+       Deliberately NOT transitioned to FIRING here: the legacy table
+       path is not tracked by the SM's IDLE/ARMED/FIRING lifecycle (it
+       never calls SM_Fire()/SM_NotifyShotComplete(), see state_machine.h),
+       and marking it FIRING would make EnterFault()'s fault handlers
+       assume pid.c's PID_Update() loop is running when it isn't. So
+       ARMED is a required precondition only; a fault during playback
+       still safes the legacy output (EnterFault() from ARMED ->
+       PFM_ForceStop()). */
+    if (RequireArmedAndEnabled(inst) == 0U)
+    {
         return;
     }
 
@@ -393,6 +523,333 @@ void cmd_config_channels(uart_instance_t *inst, char *args)
     uart_send(inst, buf);
 }
 
+/* CONFig:PIDRate <hz> / ? -- added 2026-09-22, direct request:
+   PID_LOOP_RATE_HZ (ctrlr_config.h) made runtime-configurable. See
+   PID_SetLoopRateHz()'s own doc comment (pid.c) for the range check
+   and the refuses-while-running policy -- ERR 12 covers both a
+   malformed argument and a rejected value (out of range, hardware
+   register check failed, or a shot currently running), since none of
+   those need a more specific error code than "this command's
+   argument was rejected." */
+void cmd_config_pid_rate(uart_instance_t *inst, char *args)
+{
+    char *tok;
+    long  hz;
+
+    tok = (args != NULL) ? strtok(args, " \r\n") : NULL;
+    if (tok == NULL)
+    {
+        SendErr(inst, 12, "CONFig:PIDRate needs one argument: hz");
+        return;
+    }
+    hz = atol(tok);
+    if ((hz <= 0L) || (PID_SetLoopRateHz((uint32_t)hz) == 0U))
+    {
+        SendErr(inst, 12, "hz rejected -- out of range, hardware register "
+                           "check failed, or a shot is currently running");
+        return;
+    }
+    uart_send(inst, "OK\r\n");
+}
+
+void cmd_config_pid_rate_query(uart_instance_t *inst, char *args)
+{
+    char buf[32];
+    (void)args;
+
+    snprintf(buf, sizeof(buf), "OK %lu\r\n", (unsigned long)PID_GetLoopRateHz());
+    uart_send(inst, buf);
+}
+
+/* CONFig:TURNONHz <hz> / ? -- added 2026-09-22, direct request:
+   PFM_TURNON_FREQ_HZ (ctrlr_config.h) made runtime-configurable. See
+   PID_SetTurnonFreqHz()'s own doc comment (pid.c) for the cross-
+   validation applied. */
+void cmd_config_turnon_hz(uart_instance_t *inst, char *args)
+{
+    char *tok;
+    long  hz;
+
+    tok = (args != NULL) ? strtok(args, " \r\n") : NULL;
+    if (tok == NULL)
+    {
+        SendErr(inst, 12, "CONFig:TURNONHz needs one argument: hz");
+        return;
+    }
+    hz = atol(tok);
+    if ((hz <= 0L) || (PID_SetTurnonFreqHz((uint32_t)hz) == 0U))
+    {
+        SendErr(inst, 12, "hz rejected -- must be >= PID_OUTPUT_MIN_HZ and "
+                           "strictly below the current CONFig:MAXFREQHz");
+        return;
+    }
+    uart_send(inst, "OK\r\n");
+}
+
+void cmd_config_turnon_hz_query(uart_instance_t *inst, char *args)
+{
+    char buf[32];
+    (void)args;
+
+    snprintf(buf, sizeof(buf), "OK %lu\r\n", (unsigned long)PID_GetTurnonFreqHz());
+    uart_send(inst, buf);
+}
+
+/* CONFig:MAXFREQHz <hz> / ? -- added 2026-09-22, direct request:
+   PFM_MAX_FREQ_HZ (ctrlr_config.h) made runtime-configurable. See
+   PID_SetMaxFreqHz()'s own doc comment (pid.c) for the cross-
+   validation applied. */
+void cmd_config_max_freq_hz(uart_instance_t *inst, char *args)
+{
+    char *tok;
+    long  hz;
+
+    tok = (args != NULL) ? strtok(args, " \r\n") : NULL;
+    if (tok == NULL)
+    {
+        SendErr(inst, 12, "CONFig:MAXFREQHz needs one argument: hz");
+        return;
+    }
+    hz = atol(tok);
+    if ((hz <= 0L) || (PID_SetMaxFreqHz((uint32_t)hz) == 0U))
+    {
+        SendErr(inst, 12, "hz rejected -- must be <= PID_OUTPUT_MAX_HZ and "
+                           "strictly above the current CONFig:TURNONHz");
+        return;
+    }
+    uart_send(inst, "OK\r\n");
+}
+
+void cmd_config_max_freq_hz_query(uart_instance_t *inst, char *args)
+{
+    char buf[32];
+    (void)args;
+
+    snprintf(buf, sizeof(buf), "OK %lu\r\n", (unsigned long)PID_GetMaxFreqHz());
+    uart_send(inst, buf);
+}
+
+/* CONFig:MAXCURRent <ch> <amps> / <ch> -- added 2026-09-22, direct
+   request: PFM_MAX_CURRENT_A_PER_CHANNEL[ch] (ctrlr_config.h) made
+   runtime-configurable -- the real per-channel calibration that
+   constant's own "MUST BE CALIBRATED BEFORE FINAL DEPLOYMENT" comment
+   describes. See PID_SetMaxCurrentA()'s own doc comment (pid.c).
+   1-based channel on the wire, matching every other SOURce:* or
+   CONFig:* per-channel command in this file. */
+void cmd_config_max_current(uart_instance_t *inst, char *args)
+{
+    char  *tok;
+    long   chArg;
+    double amps;
+    uint8_t ch;
+
+    tok = (args != NULL) ? strtok(args, " \r\n") : NULL;
+    if (tok == NULL)
+    {
+        SendErr(inst, 12, "CONFig:MAXCURRent needs two arguments: channel amps");
+        return;
+    }
+    chArg = atol(tok);
+
+    tok = strtok(NULL, " \r\n");
+    if (tok == NULL)
+    {
+        SendErr(inst, 12, "CONFig:MAXCURRent needs two arguments: channel amps");
+        return;
+    }
+    amps = atof(tok);
+
+    if ((chArg < 1L) || (chArg > (long)HRTIM_NUM_CHANNELS))
+    {
+        SendErr(inst, 11, "Invalid channel");
+        return;
+    }
+    ch = (uint8_t)(chArg - 1L);
+
+    if (PID_SetMaxCurrentA(ch, (float)amps) == 0U)
+    {
+        SendErr(inst, 12, "amps rejected -- must be > 0");
+        return;
+    }
+    uart_send(inst, "OK\r\n");
+}
+
+void cmd_config_max_current_query(uart_instance_t *inst, char *args)
+{
+    char   buf[32];
+    char  *tok;
+    long   chArg;
+    uint8_t ch;
+    float  amps;
+
+    tok = (args != NULL) ? strtok(args, " \r\n") : NULL;
+    if (tok == NULL)
+    {
+        SendErr(inst, 12, "CONFig:MAXCURRent? needs one argument: channel");
+        return;
+    }
+    chArg = atol(tok);
+    if ((chArg < 1L) || (chArg > (long)HRTIM_NUM_CHANNELS))
+    {
+        SendErr(inst, 11, "Invalid channel");
+        return;
+    }
+    ch = (uint8_t)(chArg - 1L);
+
+    (void)PID_GetMaxCurrentA(ch, &amps);
+    snprintf(buf, sizeof(buf), "OK %g\r\n", (double)amps);
+    uart_send(inst, buf);
+}
+
+/* CONFig:SLEWRate <hzPerTick> / ? -- added 2026-09-22, direct request:
+   PID_OUTPUT_MAX_SLEW_HZ_PER_TICK (ctrlr_config.h) made runtime-
+   configurable. See PID_SetSlewRateHzPerTick()'s own doc comment
+   (pid.c) -- this is a real hardware-safety clamp, only enforced > 0
+   here, no upper bound. */
+void cmd_config_slew_rate(uart_instance_t *inst, char *args)
+{
+    char   *tok;
+    double  hzPerTick;
+
+    tok = (args != NULL) ? strtok(args, " \r\n") : NULL;
+    if (tok == NULL)
+    {
+        SendErr(inst, 12, "CONFig:SLEWRate needs one argument: hzPerTick");
+        return;
+    }
+    hzPerTick = atof(tok);
+    if (PID_SetSlewRateHzPerTick((float)hzPerTick) == 0U)
+    {
+        SendErr(inst, 12, "hzPerTick rejected -- must be > 0");
+        return;
+    }
+    uart_send(inst, "OK\r\n");
+}
+
+void cmd_config_slew_rate_query(uart_instance_t *inst, char *args)
+{
+    char buf[32];
+    (void)args;
+
+    snprintf(buf, sizeof(buf), "OK %g\r\n", (double)PID_GetSlewRateHzPerTick());
+    uart_send(inst, buf);
+}
+
+/* CONFig:FaultRampTime <s> / ? -- added 2026-09-22, direct request:
+   FAULT_RAMP_DOWN_TIME_S (ctrlr_config.h) made runtime-configurable.
+   See PID_SetFaultRampDownTimeS()'s own doc comment (pid.c) -- only
+   takes effect on the NEXT fault, not one already in progress. */
+void cmd_config_fault_ramp_time(uart_instance_t *inst, char *args)
+{
+    char   *tok;
+    double  s;
+
+    tok = (args != NULL) ? strtok(args, " \r\n") : NULL;
+    if (tok == NULL)
+    {
+        SendErr(inst, 12, "CONFig:FaultRampTime needs one argument: seconds");
+        return;
+    }
+    s = atof(tok);
+    if (PID_SetFaultRampDownTimeS((float)s) == 0U)
+    {
+        SendErr(inst, 12, "seconds rejected -- must be > 0");
+        return;
+    }
+    uart_send(inst, "OK\r\n");
+}
+
+void cmd_config_fault_ramp_time_query(uart_instance_t *inst, char *args)
+{
+    char buf[32];
+    (void)args;
+
+    snprintf(buf, sizeof(buf), "OK %g\r\n", (double)PID_GetFaultRampDownTimeS());
+    uart_send(inst, buf);
+}
+
+/* CONFig:FaultPolarity:WATER/:TEMP/:ENERPRO/:OCP <0|1> / ? -- added
+   2026-09-22, direct request: XR_WATER_FLT_POLARITY/XR_TMP_FLT_POLARITY/
+   XR_ENERPRO_FLT_POLARITY/XR_OCP_FLT_POLARITY (ctrlr_config.h) made
+   runtime-configurable. <0|1> matches FAULT_POLARITY_NORMALLY_HIGH(0)/
+   _LOW(1)'s own encoding (ctrlr_config.h) directly -- see
+   XrexIo_SetFaultPolarity*()'s own doc comment (xrex_io.h) for the
+   validation applied. Four independent commands, not one with a
+   category argument, matching this project's existing SIM:FAULT:*
+   per-category convention and the fact these ARE four independent
+   settings on real hardware (ctrlr_config.h's own comment on why). */
+static void ConfigFaultPolaritySet(uart_instance_t *inst, char *args, const char *name,
+                                    uint8_t (*setter)(uint32_t))
+{
+    char *tok;
+    long  val;
+
+    tok = (args != NULL) ? strtok(args, " \r\n") : NULL;
+    if (tok == NULL)
+    {
+        SendErr(inst, 12, "needs one argument: 0 (normally high) or 1 (normally low)");
+        (void)name;
+        return;
+    }
+    val = atol(tok);
+    if ((val != 0L) && (val != 1L))
+    {
+        SendErr(inst, 12, "must be 0 (normally high) or 1 (normally low)");
+        return;
+    }
+    (void)setter((uint32_t)val);   /* can't actually fail -- val is already
+                                       checked to be exactly 0 or 1 above,
+                                       the same two values the setter itself
+                                       accepts (see XrexIo_SetFaultPolarity*()'s
+                                       own doc comment) */
+    uart_send(inst, "OK\r\n");
+}
+
+static void ConfigFaultPolarityQuery(uart_instance_t *inst, char *args, uint32_t (*getter)(void))
+{
+    char buf[32];
+    (void)args;
+
+    snprintf(buf, sizeof(buf), "OK %lu\r\n", (unsigned long)getter());
+    uart_send(inst, buf);
+}
+
+void cmd_config_fault_polarity_water(uart_instance_t *inst, char *args)
+{
+    ConfigFaultPolaritySet(inst, args, "WATER", XrexIo_SetFaultPolarityWater);
+}
+void cmd_config_fault_polarity_water_query(uart_instance_t *inst, char *args)
+{
+    ConfigFaultPolarityQuery(inst, args, XrexIo_GetFaultPolarityWater);
+}
+
+void cmd_config_fault_polarity_temp(uart_instance_t *inst, char *args)
+{
+    ConfigFaultPolaritySet(inst, args, "TEMP", XrexIo_SetFaultPolarityTemp);
+}
+void cmd_config_fault_polarity_temp_query(uart_instance_t *inst, char *args)
+{
+    ConfigFaultPolarityQuery(inst, args, XrexIo_GetFaultPolarityTemp);
+}
+
+void cmd_config_fault_polarity_enerpro(uart_instance_t *inst, char *args)
+{
+    ConfigFaultPolaritySet(inst, args, "ENERPRO", XrexIo_SetFaultPolarityEnerpro);
+}
+void cmd_config_fault_polarity_enerpro_query(uart_instance_t *inst, char *args)
+{
+    ConfigFaultPolarityQuery(inst, args, XrexIo_GetFaultPolarityEnerpro);
+}
+
+void cmd_config_fault_polarity_ocp(uart_instance_t *inst, char *args)
+{
+    ConfigFaultPolaritySet(inst, args, "OCP", XrexIo_SetFaultPolarityOcp);
+}
+void cmd_config_fault_polarity_ocp_query(uart_instance_t *inst, char *args)
+{
+    ConfigFaultPolarityQuery(inst, args, XrexIo_GetFaultPolarityOcp);
+}
+
 /* --------------------------------------------------------------------------
  * FAULT? / FAULT:CLEar
  *
@@ -440,22 +897,78 @@ void cmd_fault_clear(uart_instance_t *inst, char *args)
  * ARM / DISARM / STATE? -- the top-level operating-state machine
  * (state_machine.h), added 2026-09-13. See that header for the full
  * design (IDLE/ARMED/FIRING/FAULT). Bare, top-level commands (no
- * `PID:`/other namespace prefix) -- system-wide state, not specific to
+ * `SOURce:`/other namespace prefix) -- system-wide state, not specific to
  * any one subsystem, matching this project's existing bare `FIRE`
  * (pfm.c's legacy table-based output path, unrelated). Error code 13
  * (new): an invalid state-machine transition for the current state.
  * -------------------------------------------------------------------------- */
 
 /* IDLE -> ARMED. See SM_Arm()'s own doc comment for exactly what
-   "the appropriate conditions" currently checks (a stub, always
-   allows arming today). */
+   "the appropriate conditions" currently checks.
+
+   REWORKED 2026-09-22, direct request: this used to collapse every
+   failure reason (wrong state, external-enable interlock not
+   satisfied, a specific channel's ENA_OUT/CONTACT_OUT not both set)
+   into one generic "conditions not met" -- an operator with one
+   misconfigured channel out of four had no way to tell which one from
+   the wire protocol alone. Now checks each precondition itself, in the
+   same order ArmConditionsMet() (state_machine.c) does internally, and
+   reports the FIRST one that fails with its own specific message --
+   matching the "distinct failure reasons, reported distinctly" pattern
+   cmd_shot_start()/cmd_source_run() already established for
+   SHOT:STARt/SOURce:RUN. SM_Arm() itself is still called last as
+   the actual transition (and its own internal ArmConditionsMet() check
+   stays as a redundant last-line-of-defense re-check, same reasoning
+   as SM_Fire()'s own re-check of SM_ExternalEnableOk() -- a narrow
+   race window between these checks and the call, and defense against
+   any other caller that reaches SM_Arm() directly) -- its generic
+   fallback message below should only ever fire on that narrow race,
+   never on a normal, reproducible misconfiguration. */
 void cmd_arm(uart_instance_t *inst, char *args)
 {
+    /* 96 bytes: comfortably fits the longest message below (82 chars)
+       plus SendErr()'s own "ERR %d %s\r\n" framing, well under
+       SendErr()'s own 128-byte buffer (commands.c, near the top) --
+       *** REAL BUG, FOUND AND FIXED 2026-09-22, confirmed on real
+       hardware ***: the first cut used buf[64], which silently
+       truncated this exact message mid-word ("...see XREX:CHA") since
+       the full text is 120 chars -- snprintf null-terminates within
+       whatever size it's given rather than overflowing, so this never
+       crashed or corrupted anything, it just quietly sent a cut-off
+       error message. Shortened the message text too (dropped the
+       trailing "or SOURce:ENAble 0 if unused" clause) rather than
+       just growing the buffer further, since the core "which channel,
+       which check" information is what actually matters here. */
+    char buf[96];
+    uint8_t badChannel;
+
     (void)args;
+
+    if (SM_GetState() != SM_STATE_IDLE)
+    {
+        SendErr(inst, 13, "Can't ARM -- not currently IDLE");
+        return;
+    }
+
+    if (SM_ExternalEnableOk() == 0U)
+    {
+        SendErr(inst, 15, "External enable interlock not satisfied -- PF13 reads LOW");
+        return;
+    }
+
+    badChannel = XrexIo_FindNotReadyChannel();
+    if (badChannel != 0xFFU)
+    {
+        snprintf(buf, sizeof(buf),
+                 "Channel %u's ENA_OUT/CONTACT_OUT not both set -- see "
+                 "XREX:CHANnel:ENAOut/CONTactOut", (unsigned)(badChannel + 1U));
+        SendErr(inst, 13, buf);
+        return;
+    }
 
     if (SM_Arm() == 0U)
     {
-        SendErr(inst, 13, "Can't ARM -- not currently IDLE, or arm conditions not met");
+        SendErr(inst, 13, "Can't ARM -- arm conditions not met");   /* narrow race only, see comment above */
         return;
     }
     uart_send(inst, "OK\r\n");
@@ -471,6 +984,45 @@ void cmd_disarm(uart_instance_t *inst, char *args)
 
     SM_Disarm();
     uart_send(inst, "OK\r\n");
+}
+
+/* DEBUG:FAULT:BYPASS <0|1> / ? -- added 2026-09-21, direct request: a
+   bench-only override so a channel can be run with no real fault-
+   detect signal present (e.g. testing a controller-target build with
+   no simulator/Transrex physically connected to feed its Water/Temp/
+   Enerpro/OCP inputs healthy -- they float, and float reads as an
+   instant fault the moment a channel is enabled). See
+   state_machine.h's own SM_SetFaultBypassEnabled() comment for the
+   full reasoning/safety warning -- defaults OFF at every boot, RAM-
+   only, never persisted. */
+void cmd_debug_fault_bypass(uart_instance_t *inst, char *args)
+{
+    char *tok;
+    long  val;
+
+    tok = (args != NULL) ? strtok(args, " \r\n") : NULL;
+    if (tok == NULL)
+    {
+        SendErr(inst, 12, "DEBUG:FAULT:BYPASS needs one argument: 0 or 1");
+        return;
+    }
+    val = atol(tok);
+    if ((val != 0L) && (val != 1L))
+    {
+        SendErr(inst, 11, "Invalid value -- must be 0 or 1");
+        return;
+    }
+    SM_SetFaultBypassEnabled((uint8_t)val);
+    uart_send(inst, "OK\r\n");
+}
+
+void cmd_debug_fault_bypass_query(uart_instance_t *inst, char *args)
+{
+    char buf[16];
+    (void)args;
+
+    snprintf(buf, sizeof(buf), "OK %u\r\n", (unsigned)SM_GetFaultBypassEnabled());
+    uart_send(inst, buf);
 }
 
 /* OK <IDLE|ARMED|FIRING|FAULT>, OK FAULT GENERAL, or OK FAULT OVERCURRENT
@@ -509,14 +1061,6 @@ void cmd_state_query(uart_instance_t *inst, char *args)
                section). */
             snprintf(buf, sizeof(buf), "OK %s EXTERNAL_ENABLE\r\n", name);
         }
-        else if (SM_GetFaultType() == SM_FAULT_EMERGENCY_STOP)
-        {
-            /* Added 2026-09-17 -- distinct from GENERAL for operator
-               diagnostics (an immediate hard cutoff, NOT the graceful
-               ramp-down every other fault type here uses -- see
-               state_machine.h's own emergency-stop section). */
-            snprintf(buf, sizeof(buf), "OK %s EMERGENCY_STOP\r\n", name);
-        }
         else if (SM_GetFaultType() == SM_FAULT_ENABLE_OUTPUT)
         {
             /* Added 2026-09-17 -- PER-CHANNEL, like OVERCURRENT (whose
@@ -554,6 +1098,78 @@ void cmd_state_query(uart_instance_t *inst, char *args)
 }
 
 /* --------------------------------------------------------------------------
+ * SYS:TIME? / SYS:TELEM? / SYS:EVENT <0|1> / SYS:EVENT?
+ *
+ * Telemetry contract, Phase 1 of docs/telemetry.md. `SYS:` is the namespace
+ * that owns the telemetry data-contract: SYS:TIME? exposes the monotonic
+ * millisecond clock (HAL_GetTick, SysTick 1 ms), SYS:TELEM? the schema
+ * version (TELEMETRY_SCHEMA_VERSION, telemetry.h -- bumped on any wire-format
+ * change), and SYS:EVENT gates the unsolicited `!EVT` stream (default ON).
+ * The `!EVT` lines themselves are emitted by telemetry.c's
+ * Telemetry_PollEmit(), not by any of these handlers.
+ * -------------------------------------------------------------------------- */
+void cmd_sys_time(uart_instance_t *inst, char *args)
+{
+    char buf[24];
+    (void)args;
+
+    snprintf(buf, sizeof(buf), "OK %lu\r\n", (unsigned long)HAL_GetTick());
+    uart_send(inst, buf);
+}
+
+void cmd_sys_telem(uart_instance_t *inst, char *args)
+{
+    char buf[24];
+    (void)args;
+
+    snprintf(buf, sizeof(buf), "OK %u\r\n", (unsigned int)TELEMETRY_SCHEMA_VERSION);
+    uart_send(inst, buf);
+}
+
+void cmd_sys_event(uart_instance_t *inst, char *args)
+{
+    char *tok;
+    long  val;
+
+    tok = (args != NULL) ? strtok(args, " \r\n") : NULL;
+    if (tok == NULL)
+    {
+        SendErr(inst, 12, "SYS:EVENT needs one argument: 0|1");
+        return;
+    }
+    val = atol(tok);
+    if ((val != 0L) && (val != 1L))
+    {
+        SendErr(inst, 11, "Invalid value -- must be 0 or 1");
+        return;
+    }
+
+    Telemetry_SetEventEnabled((uint8_t)val);
+    uart_send(inst, "OK\r\n");
+}
+
+void cmd_sys_event_query(uart_instance_t *inst, char *args)
+{
+    char buf[16];
+    (void)args;
+
+    snprintf(buf, sizeof(buf), "OK %u\r\n", (unsigned int)Telemetry_GetEventEnabled());
+    uart_send(inst, buf);
+}
+
+/* SYS:EVLOG? -- flight recorder (docs/telemetry.md Phase 4). Replays the
+   retained event history as "OK <n>" then n one-line !EVT packets, oldest
+   first. Delegates entirely to telemetry.c's Telemetry_ReplayFlightLog() so
+   the replay and the live stream share one renderer. Unlike the gated live
+   stream, this history is always recorded -- SYS:EVENT 0 silences !EVT
+   without losing the post-mortem log. */
+void cmd_sys_evlog(uart_instance_t *inst, char *args)
+{
+    (void)args;
+    Telemetry_ReplayFlightLog(inst);
+}
+
+/* --------------------------------------------------------------------------
  * EXTernal:ENAble <0|1> / EXTernal:ENAble? / EXTernal:INPut?
  *
  * Added 2026-09-16, per direct request. Backing pin MOVED 2026-09-17
@@ -562,7 +1178,7 @@ void cmd_state_query(uart_instance_t *inst, char *args)
  * see EXTernal:TRIGger below and state_machine.h's own external-enable
  * section (SM_SetExternalEnableRequired() and friends) for the full
  * design. This is just the wire-command wrapper around that. Own
- * top-level `EXTernal:` namespace (not nested under `PID:` or any other
+ * top-level `EXTernal:` namespace (not nested under `SOURce:` or any other
  * existing prefix) -- system-wide config, not specific to any one
  * subsystem, same reasoning as `ARM`/`DISARM` above being bare; two
  * ':'-levels here (rather than one compound word) purely so
@@ -663,55 +1279,6 @@ void cmd_ext_trigger_input_query(uart_instance_t *inst, char *args)
     (void)args;
 
     snprintf(buf, sizeof(buf), "OK %u\r\n", (unsigned)SM_GetExternalTriggerInputRaw());
-    uart_send(inst, buf);
-}
-
-/* --------------------------------------------------------------------------
- * EMERGency:ENAble <0|1> / EMERGency:ENAble? / EMERGency:INPut?
- *
- * Added 2026-09-17, per direct request. See state_machine.h's own
- * emergency-stop design comment (SM_SetEmergencyStopRequired() and
- * friends) for the full design -- this is just the wire-command
- * wrapper. PG10, NOT the same pin as EXTernal:ENAble above (PF13) --
- * a completely separate fiber-optic input. Own top-level `EMERGency:`
- * namespace, same reasoning as `EXTernal:` -- system-wide config, not
- * nested under `PID:` or any other existing prefix. */
-void cmd_emerg_enable(uart_instance_t *inst, char *args)
-{
-    char *tok;
-    long  val;
-
-    tok = (args != NULL) ? strtok(args, " \r\n") : NULL;
-    if (tok == NULL)
-    {
-        SendErr(inst, 12, "EMERGency:ENAble needs one argument: 0|1");
-        return;
-    }
-    val = atol(tok);
-
-    SM_SetEmergencyStopRequired((val != 0L) ? 1U : 0U);
-    uart_send(inst, "OK\r\n");
-}
-
-void cmd_emerg_enable_query(uart_instance_t *inst, char *args)
-{
-    char buf[16];
-    (void)args;
-
-    snprintf(buf, sizeof(buf), "OK %u\r\n", (unsigned)SM_GetEmergencyStopRequired());
-    uart_send(inst, buf);
-}
-
-/* Raw PG10 logic level, independent of whether the feature is even
-   turned on -- lets an operator confirm real wiring/signal presence
-   before relying on it, same diagnostic role EXTernal:INPut? plays for
-   PF13. */
-void cmd_emerg_input_query(uart_instance_t *inst, char *args)
-{
-    char buf[16];
-    (void)args;
-
-    snprintf(buf, sizeof(buf), "OK %u\r\n", (unsigned)SM_GetEmergencyStopInputRaw());
     uart_send(inst, buf);
 }
 
@@ -1010,7 +1577,7 @@ void cmd_diag_rstcause_clear(uart_instance_t *inst, char *args)
  * the operator-console sense (wham_console.py/wham_llm_console.py's
  * _is_dangerous()) -- triggering a fault only ever STOPS/reduces output,
  * never starts new output, the same "safe direction, never gated"
- * reasoning FAULT:CLEAR/PID:STOP already get.
+ * reasoning FAULT:CLEAR/SOURce:STOP already get.
  *
  * Remove once real OCP hardware detection exists and has its own real
  * trigger path -- keeping a software fault-injection command around
@@ -1032,7 +1599,7 @@ void cmd_ocp_test_fault(uart_instance_t *inst, char *args)
 
     if ((chArg < 1L) || (chArg > (long)HRTIM_NUM_CHANNELS))
     {
-        SendErr(inst, 11, "Invalid PID channel");
+        SendErr(inst, 11, "Invalid channel");
         return;
     }
 
@@ -1056,7 +1623,7 @@ void cmd_ocp_test_fault(uart_instance_t *inst, char *args)
  * injection -- calls SM_ReportGeneralFault() directly, exactly as
  * SM_PollFaults() itself does the instant it polls a real tripped
  * source. Same "safe direction, never gated" reasoning as
- * OCP:TEST:FAULT/FAULT:CLEAR/PID:STOP -- triggering a fault only ever
+ * OCP:TEST:FAULT/FAULT:CLEAR/SOURce:STOP -- triggering a fault only ever
  * stops/reduces output.
  *
  * Remove once a real reason to keep it around after all fault paths are
@@ -1117,8 +1684,8 @@ void cmd_gds_query(uart_instance_t *inst, char *args)
  * above) -- reports one Transrex channel's own Water/Temp/Enerpro/OCP
  * pins together, by name, rather than needing to remember which of the
  * 16 underlying physical pins corresponds to which signal. Raw levels
- * (HIGH/LOW), polarity-agnostic -- same convention GDS?/EXTernal:INPut?/
- * EMERGency:INPut? already use; XR_WATER_FLT_POLARITY/etc.
+ * (HIGH/LOW), polarity-agnostic -- same convention GDS?/EXTernal:INPut?
+ * already use; XR_WATER_FLT_POLARITY/etc.
  * (ctrlr_config.h) are what determine which raw level actually means
  * "faulted," not this command. See xrex_io.h's own header comment for
  * the full XR1..XR4 pin-naming design. */
@@ -1138,7 +1705,7 @@ void cmd_xrex_channel_status(uart_instance_t *inst, char *args)
 
     if ((chArg < 1L) || (chArg > (long)HRTIM_NUM_CHANNELS))
     {
-        SendErr(inst, 11, "Invalid PID channel");
+        SendErr(inst, 11, "Invalid channel");
         return;
     }
 
@@ -1191,7 +1758,7 @@ void cmd_xrex_ena_out(uart_instance_t *inst, char *args)
     chArg = atol(tok);
     if ((chArg < 1L) || (chArg > (long)HRTIM_NUM_CHANNELS))
     {
-        SendErr(inst, 11, "Invalid PID channel");
+        SendErr(inst, 11, "Invalid channel");
         return;
     }
 
@@ -1222,7 +1789,7 @@ void cmd_xrex_ena_out_query(uart_instance_t *inst, char *args)
     chArg = atol(tok);
     if ((chArg < 1L) || (chArg > (long)HRTIM_NUM_CHANNELS))
     {
-        SendErr(inst, 11, "Invalid PID channel");
+        SendErr(inst, 11, "Invalid channel");
         return;
     }
 
@@ -1245,7 +1812,7 @@ void cmd_xrex_contact_out(uart_instance_t *inst, char *args)
     chArg = atol(tok);
     if ((chArg < 1L) || (chArg > (long)HRTIM_NUM_CHANNELS))
     {
-        SendErr(inst, 11, "Invalid PID channel");
+        SendErr(inst, 11, "Invalid channel");
         return;
     }
 
@@ -1276,7 +1843,7 @@ void cmd_xrex_contact_out_query(uart_instance_t *inst, char *args)
     chArg = atol(tok);
     if ((chArg < 1L) || (chArg > (long)HRTIM_NUM_CHANNELS))
     {
-        SendErr(inst, 11, "Invalid PID channel");
+        SendErr(inst, 11, "Invalid channel");
         return;
     }
 
@@ -1468,16 +2035,16 @@ void cmd_pfmin_dmastat(uart_instance_t *inst, char *args)
  * PFMIN:DEBUG:RAW? <ch>
  *
  * TEMPORARY debug command, added 2026-09-15 -- same removability
- * precedent as PFMIN:DMASTAT? just above: diagnosing why PID:STATus?'s
+ * precedent as PFMIN:DMASTAT? just above: diagnosing why SOURce:STATus?'s
  * measuredHz reads persistently 0 for WHAM channels 2/3/4 while
  * channel 1 works, confirmed on real hardware (each channel isolated
  * alone, driving confirmed-correct real HRTIM output over a full
  * shot). Non-destructive read of PfmInput_GetDebugRaw() (pfm_input.h)
- * -- unlike PID:STATus?'s own PfmInput_ConsumeAveragePeriod() call,
+ * -- unlike SOURce:STATus?'s own PfmInput_ConsumeAveragePeriod() call,
  * does NOT reset the accumulator, so repeated polling can watch
  * avgCount accumulate (or not) live during a shot without disturbing
  * the real control loop's own consumption. `ch` is 1-based (WHAM
- * channel numbering, matching PID:STATus?), internally
+ * channel numbering, matching SOURce:STATus?), internally
  * channel = ch - 1 (PFM_Input_01..04, the first 4 of the 6 physical
  * PFM_Input channels -- see pid.c's own per-channel loop). Remove once
  * the root cause is found and fixed. */
@@ -1621,21 +2188,38 @@ void cmd_pfmin_data(uart_instance_t *inst, char *args)
 #endif /* PFM_INPUT_FEATURE_ENABLED */
 
 /* --------------------------------------------------------------------------
- * PID:* -- closed-loop control, see pid.h for the full architecture.
- * Channel numbering matches PFMIN:DATA?'s own convention: 1..N on the
- * wire, 0..N-1 internally (N = HRTIM_NUM_CHANNELS, CONFig:CHANnels?
- * reports it). Error codes 11 (invalid channel) and 12 (invalid
- * argument count/value) -- see commands.h.
+ * Closed-loop control + demand-output / shot-profile / log / channel
+ * namespaces, see pid.h for the full architecture. Channel numbering
+ * matches PFMIN:DATA?'s own convention: 1..N on the wire, 0..N-1
+ * internally (N = HRTIM_NUM_CHANNELS, CONFig:CHANnels? reports it).
+ * Error codes 11 (invalid channel) and 12 (invalid argument count/value)
+ * -- see commands.h. RENAMED 2026-09-22 (PID: -> SOURce:/SHOT:/LOG:/
+ * CHANnel:), clean cut -- the pid.c API underneath is unchanged.
  * -------------------------------------------------------------------------- */
 
-void cmd_pid_start(uart_instance_t *inst, char *args)
+void cmd_source_run(uart_instance_t *inst, char *args)
 {
     (void)args;
-    (void)PID_Start();
+
+    /* GATED 2026-09-21: SOURce:RUN previously bypassed the state machine
+       (PID_Start() directly, no ARM/interlock) -- see this project's
+       design review. Now mirrors cmd_shot_start()'s own gate (shared
+       via RequireArmedAndEnabled(), above): must be ARMED, and the
+       external-enable interlock must be satisfied. SM_StartPlain()
+       (state_machine.h/.c) is the ARMED -> FIRING transition that
+       actually calls PID_Start(); SOURce:STOP (SM_Stop()) returns it
+       to IDLE -- this loop has no shot clock, so there is no auto-
+       completion path. */
+    if (RequireArmedAndEnabled(inst) == 0U)
+    {
+        return;
+    }
+
+    (void)SM_StartPlain();
     uart_send(inst, "OK\r\n");
 }
 
-void cmd_pid_stop(uart_instance_t *inst, char *args)
+void cmd_source_stop(uart_instance_t *inst, char *args)
 {
     (void)args;
     PID_Stop();
@@ -1647,7 +2231,7 @@ void cmd_pid_stop(uart_instance_t *inst, char *args)
     uart_send(inst, "OK\r\n");
 }
 
-void cmd_pid_setpoint(uart_instance_t *inst, char *args)
+void cmd_source_setpoint(uart_instance_t *inst, char *args)
 {
     char *tok;
     long  chArg;
@@ -1657,7 +2241,7 @@ void cmd_pid_setpoint(uart_instance_t *inst, char *args)
     tok = (args != NULL) ? strtok(args, " \r\n") : NULL;
     if (tok == NULL)
     {
-        SendErr(inst, 12, "PID:SETPOINT needs two arguments: channel hz");
+        SendErr(inst, 12, "SOURce:SETpoint needs two arguments: channel hz");
         return;
     }
     chArg = atol(tok);
@@ -1665,14 +2249,14 @@ void cmd_pid_setpoint(uart_instance_t *inst, char *args)
     tok = strtok(NULL, " \r\n");
     if (tok == NULL)
     {
-        SendErr(inst, 12, "PID:SETPOINT needs two arguments: channel hz");
+        SendErr(inst, 12, "SOURce:SETpoint needs two arguments: channel hz");
         return;
     }
     hzArg = atol(tok);
 
     if ((chArg < 1L) || (chArg > (long)HRTIM_NUM_CHANNELS))
     {
-        SendErr(inst, 11, "Invalid PID channel");
+        SendErr(inst, 11, "Invalid channel");
         return;
     }
     ch = (uint8_t)(chArg - 1L);   /* 1..N on the wire -> 0..N-1 internally */
@@ -1734,7 +2318,7 @@ void cmd_pid_gains(uart_instance_t *inst, char *args)
 
     if ((chArg < 1L) || (chArg > (long)HRTIM_NUM_CHANNELS))
     {
-        SendErr(inst, 11, "Invalid PID channel");
+        SendErr(inst, 11, "Invalid channel");
         return;
     }
     ch = (uint8_t)(chArg - 1L);
@@ -1767,7 +2351,7 @@ void cmd_pid_gains_query(uart_instance_t *inst, char *args)
 
     if ((chArg < 1L) || (chArg > (long)HRTIM_NUM_CHANNELS))
     {
-        SendErr(inst, 11, "Invalid PID channel");
+        SendErr(inst, 11, "Invalid channel");
         return;
     }
     ch = (uint8_t)(chArg - 1L);
@@ -1778,7 +2362,7 @@ void cmd_pid_gains_query(uart_instance_t *inst, char *args)
     uart_send(inst, buf);
 }
 
-void cmd_pid_status(uart_instance_t *inst, char *args)
+void cmd_source_status(uart_instance_t *inst, char *args)
 {
     char buf[96];
     char *tok;
@@ -1791,14 +2375,14 @@ void cmd_pid_status(uart_instance_t *inst, char *args)
     tok = (args != NULL) ? strtok(args, " \r\n") : NULL;
     if (tok == NULL)
     {
-        SendErr(inst, 12, "PID:STATus? needs one argument: channel");
+        SendErr(inst, 12, "SOURce:STATus? needs one argument: channel");
         return;
     }
     chArg = atol(tok);
 
     if ((chArg < 1L) || (chArg > (long)HRTIM_NUM_CHANNELS))
     {
-        SendErr(inst, 11, "Invalid PID channel");
+        SendErr(inst, 11, "Invalid channel");
         return;
     }
     ch = (uint8_t)(chArg - 1L);
@@ -1818,7 +2402,7 @@ void cmd_pid_status(uart_instance_t *inst, char *args)
    rather than a whole new command. See PID_ArmLogAll()'s own doc
    comment in pid.h for why this exists (a genuine simultaneous
    cross-channel comparison, not N separate single-channel runs). */
-void cmd_pid_log(uart_instance_t *inst, char *args)
+void cmd_log_arm(uart_instance_t *inst, char *args)
 {
     char *tok;
     long  chArg;
@@ -1828,7 +2412,7 @@ void cmd_pid_log(uart_instance_t *inst, char *args)
     tok = (args != NULL) ? strtok(args, " \r\n") : NULL;
     if (tok == NULL)
     {
-        SendErr(inst, 12, "PID:LOG needs three arguments: channel(0=all) maxSamples decim");
+        SendErr(inst, 12, "LOG:ARM needs three arguments: channel(0=all) maxSamples decim");
         return;
     }
     chArg = atol(tok);
@@ -1836,7 +2420,7 @@ void cmd_pid_log(uart_instance_t *inst, char *args)
     tok = strtok(NULL, " \r\n");
     if (tok == NULL)
     {
-        SendErr(inst, 12, "PID:LOG needs three arguments: channel(0=all) maxSamples decim");
+        SendErr(inst, 12, "LOG:ARM needs three arguments: channel(0=all) maxSamples decim");
         return;
     }
     nArg = atol(tok);
@@ -1844,14 +2428,14 @@ void cmd_pid_log(uart_instance_t *inst, char *args)
     tok = strtok(NULL, " \r\n");
     if (tok == NULL)
     {
-        SendErr(inst, 12, "PID:LOG needs three arguments: channel(0=all) maxSamples decim");
+        SendErr(inst, 12, "LOG:ARM needs three arguments: channel(0=all) maxSamples decim");
         return;
     }
     decimArg = atol(tok);
 
     if ((chArg < 0L) || (chArg > (long)HRTIM_NUM_CHANNELS))
     {
-        SendErr(inst, 11, "Invalid PID channel (0 = all channels)");
+        SendErr(inst, 11, "Invalid channel (0 = all channels)");
         return;
     }
 
@@ -1888,14 +2472,14 @@ void cmd_pid_log(uart_instance_t *inst, char *args)
    clock out either way -- the call overhead is noise against that.
 
    OPTIONAL channel argument, added 2026-09-10 alongside PID_ArmLogAll():
-   `PID:LOGDATA?` (no argument) is UNCHANGED, exactly its original
+   `LOG:DATA?` (no argument) is UNCHANGED, exactly its original
    behavior -- valid only when a single channel is armed (PID_ArmLog()),
    fetches that channel's data, ERR 12 if all-channels mode is active
-   (ambiguous without a channel to pick). `PID:LOGDATA? <ch>` works in
+   (ambiguous without a channel to pick). `LOG:DATA? <ch>` works in
    EITHER mode: under all-channels mode any ch is valid; under
    single-channel mode ch must equal the one actually armed (ERR 12
    otherwise -- no data exists for any other channel this run). */
-void cmd_pid_logdata(uart_instance_t *inst, char *args)
+void cmd_log_data(uart_instance_t *inst, char *args)
 {
     char *tok;
     long  chArg;
@@ -1911,7 +2495,7 @@ void cmd_pid_logdata(uart_instance_t *inst, char *args)
     {
         if (PID_IsLogAllChannels() != 0U)
         {
-            SendErr(inst, 12, "PID:LOGDATA? needs a channel argument while "
+            SendErr(inst, 12, "LOG:DATA? needs a channel argument while "
                                "all-channels logging is armed");
             return;
         }
@@ -1922,14 +2506,14 @@ void cmd_pid_logdata(uart_instance_t *inst, char *args)
         chArg = atol(tok);
         if ((chArg < 1L) || (chArg > (long)HRTIM_NUM_CHANNELS))
         {
-            SendErr(inst, 11, "Invalid PID channel");
+            SendErr(inst, 11, "Invalid channel");
             return;
         }
         ch = (uint8_t)(chArg - 1L);
         if ((PID_IsLogAllChannels() == 0U) && (ch != PID_GetLogChannel()))
         {
             SendErr(inst, 12, "That channel isn't the one currently armed -- "
-                               "see PID:LOG");
+                               "see LOG:ARM");
             return;
         }
     }
@@ -1939,7 +2523,7 @@ void cmd_pid_logdata(uart_instance_t *inst, char *args)
     output   = PID_GetLogOutput(ch);
     if ((setpoint == NULL) || (measured == NULL) || (output == NULL))
     {
-        SendErr(inst, 11, "Invalid PID channel");
+        SendErr(inst, 11, "Invalid channel");
         return;
     }
 
@@ -1959,7 +2543,7 @@ void cmd_pid_logdata(uart_instance_t *inst, char *args)
     uart_send(inst, "\r\n");
 }
 
-void cmd_pid_ramp(uart_instance_t *inst, char *args)
+void cmd_source_ramp(uart_instance_t *inst, char *args)
 {
     char *tok;
     long  chArg;
@@ -1971,7 +2555,7 @@ void cmd_pid_ramp(uart_instance_t *inst, char *args)
     tok = (args != NULL) ? strtok(args, " \r\n") : NULL;
     if (tok == NULL)
     {
-        SendErr(inst, 12, "PID:RAMP needs four arguments: channel startHz endHz durationMs");
+        SendErr(inst, 12, "SOURce:RAMP needs four arguments: channel startHz endHz durationMs");
         return;
     }
     chArg = atol(tok);
@@ -1979,7 +2563,7 @@ void cmd_pid_ramp(uart_instance_t *inst, char *args)
     tok = strtok(NULL, " \r\n");
     if (tok == NULL)
     {
-        SendErr(inst, 12, "PID:RAMP needs four arguments: channel startHz endHz durationMs");
+        SendErr(inst, 12, "SOURce:RAMP needs four arguments: channel startHz endHz durationMs");
         return;
     }
     startArg = atol(tok);
@@ -1987,7 +2571,7 @@ void cmd_pid_ramp(uart_instance_t *inst, char *args)
     tok = strtok(NULL, " \r\n");
     if (tok == NULL)
     {
-        SendErr(inst, 12, "PID:RAMP needs four arguments: channel startHz endHz durationMs");
+        SendErr(inst, 12, "SOURce:RAMP needs four arguments: channel startHz endHz durationMs");
         return;
     }
     endArg = atol(tok);
@@ -1995,14 +2579,14 @@ void cmd_pid_ramp(uart_instance_t *inst, char *args)
     tok = strtok(NULL, " \r\n");
     if (tok == NULL)
     {
-        SendErr(inst, 12, "PID:RAMP needs four arguments: channel startHz endHz durationMs");
+        SendErr(inst, 12, "SOURce:RAMP needs four arguments: channel startHz endHz durationMs");
         return;
     }
     durationArg = atol(tok);
 
     if ((chArg < 1L) || (chArg > (long)HRTIM_NUM_CHANNELS))
     {
-        SendErr(inst, 11, "Invalid PID channel");
+        SendErr(inst, 11, "Invalid channel");
         return;
     }
     ch = (uint8_t)(chArg - 1L);
@@ -2014,7 +2598,7 @@ void cmd_pid_ramp(uart_instance_t *inst, char *args)
     }
 
     /* PID_StartRamp() clamps startHz/endHz into [PID_OUTPUT_MIN_HZ,
-       PID_OUTPUT_MAX_HZ] itself -- matches PID:SETPOINT's own
+       PID_OUTPUT_MAX_HZ] itself -- matches SOURce:SETpoint's own
        clamp-don't-reject convention. */
     (void)PID_StartRamp(ch, (uint32_t)startArg, (uint32_t)endArg, (uint32_t)durationArg);
     uart_send(inst, "OK\r\n");
@@ -2029,7 +2613,7 @@ void cmd_pid_ramp(uart_instance_t *inst, char *args)
    direct request for a system-wide loop-mode convenience (originally
    asked for in service of the external-trigger feature, but not
    restricted to that use -- a plain global setter). Matches
-   PID:LOG's own existing "0 = all channels" convention (pid.h's own
+   LOG:ARM's own existing "0 = all channels" convention (pid.h's own
    PfmInput_ArmLogAll() precedent) rather than inventing a new command
    -- reuses this exact command/argument slot instead. Real channels
    are still 1..HRTIM_NUM_CHANNELS as always. */
@@ -2059,7 +2643,7 @@ void cmd_pid_loopmode(uart_instance_t *inst, char *args)
 
     if ((chArg < 0L) || (chArg > (long)HRTIM_NUM_CHANNELS))
     {
-        SendErr(inst, 11, "Invalid PID channel");
+        SendErr(inst, 11, "Invalid channel");
         return;
     }
     mode = (modeArg != 0L) ? 1U : 0U;
@@ -2098,7 +2682,7 @@ void cmd_pid_loopmode_query(uart_instance_t *inst, char *args)
 
     if ((chArg < 1L) || (chArg > (long)HRTIM_NUM_CHANNELS))
     {
-        SendErr(inst, 11, "Invalid PID channel");
+        SendErr(inst, 11, "Invalid channel");
         return;
     }
     ch = (uint8_t)(chArg - 1L);
@@ -2112,7 +2696,7 @@ void cmd_pid_loopmode_query(uart_instance_t *inst, char *args)
    PFM waveform at all" switch, distinct from PID:LOOPMODE). Takes
    effect immediately if the loop is already running -- see that
    function's own comment. */
-void cmd_pid_channel_enable(uart_instance_t *inst, char *args)
+void cmd_source_enable(uart_instance_t *inst, char *args)
 {
     char *tok;
     long  chArg;
@@ -2122,7 +2706,7 @@ void cmd_pid_channel_enable(uart_instance_t *inst, char *args)
     tok = (args != NULL) ? strtok(args, " \r\n") : NULL;
     if (tok == NULL)
     {
-        SendErr(inst, 12, "PID:CHANNEL:ENABLE needs two arguments: channel 0|1");
+        SendErr(inst, 12, "SOURce:ENAble needs two arguments: channel 0|1");
         return;
     }
     chArg = atol(tok);
@@ -2130,14 +2714,14 @@ void cmd_pid_channel_enable(uart_instance_t *inst, char *args)
     tok = strtok(NULL, " \r\n");
     if (tok == NULL)
     {
-        SendErr(inst, 12, "PID:CHANNEL:ENABLE needs two arguments: channel 0|1");
+        SendErr(inst, 12, "SOURce:ENAble needs two arguments: channel 0|1");
         return;
     }
     enableArg = atol(tok);
 
     if ((chArg < 1L) || (chArg > (long)HRTIM_NUM_CHANNELS))
     {
-        SendErr(inst, 11, "Invalid PID channel");
+        SendErr(inst, 11, "Invalid channel");
         return;
     }
     ch = (uint8_t)(chArg - 1L);
@@ -2146,7 +2730,7 @@ void cmd_pid_channel_enable(uart_instance_t *inst, char *args)
     uart_send(inst, "OK\r\n");
 }
 
-void cmd_pid_channel_enable_query(uart_instance_t *inst, char *args)
+void cmd_source_enable_query(uart_instance_t *inst, char *args)
 {
     char buf[32];
     char *tok;
@@ -2156,14 +2740,14 @@ void cmd_pid_channel_enable_query(uart_instance_t *inst, char *args)
     tok = (args != NULL) ? strtok(args, " \r\n") : NULL;
     if (tok == NULL)
     {
-        SendErr(inst, 12, "PID:CHANNEL:ENABLE? needs one argument: channel");
+        SendErr(inst, 12, "SOURce:ENAble? needs one argument: channel");
         return;
     }
     chArg = atol(tok);
 
     if ((chArg < 1L) || (chArg > (long)HRTIM_NUM_CHANNELS))
     {
-        SendErr(inst, 11, "Invalid PID channel");
+        SendErr(inst, 11, "Invalid channel");
         return;
     }
     ch = (uint8_t)(chArg - 1L);
@@ -2172,7 +2756,7 @@ void cmd_pid_channel_enable_query(uart_instance_t *inst, char *args)
     uart_send(inst, buf);
 }
 
-void cmd_pid_channel_nickname(uart_instance_t *inst, char *args)
+void cmd_chan_nickname(uart_instance_t *inst, char *args)
 {
     char *tok;
     long  chArg;
@@ -2181,7 +2765,7 @@ void cmd_pid_channel_nickname(uart_instance_t *inst, char *args)
     tok = (args != NULL) ? strtok(args, " \r\n") : NULL;
     if (tok == NULL)
     {
-        SendErr(inst, 12, "PID:CHANNEL:NICKNAME needs two arguments: channel name");
+        SendErr(inst, 12, "CHANnel:NICKname needs two arguments: channel name");
         return;
     }
     chArg = atol(tok);
@@ -2189,13 +2773,13 @@ void cmd_pid_channel_nickname(uart_instance_t *inst, char *args)
     tok = strtok(NULL, " \r\n");
     if (tok == NULL)
     {
-        SendErr(inst, 12, "PID:CHANNEL:NICKNAME needs two arguments: channel name");
+        SendErr(inst, 12, "CHANnel:NICKname needs two arguments: channel name");
         return;
     }
 
     if ((chArg < 1L) || (chArg > (long)HRTIM_NUM_CHANNELS))
     {
-        SendErr(inst, 11, "Invalid PID channel");
+        SendErr(inst, 11, "Invalid channel");
         return;
     }
     ch = (uint8_t)(chArg - 1L);
@@ -2209,7 +2793,7 @@ void cmd_pid_channel_nickname(uart_instance_t *inst, char *args)
     uart_send(inst, "OK\r\n");
 }
 
-void cmd_pid_channel_nickname_query(uart_instance_t *inst, char *args)
+void cmd_chan_nickname_query(uart_instance_t *inst, char *args)
 {
     char buf[24U + PID_CHANNEL_NICKNAME_MAX_LEN];
     char *tok;
@@ -2220,14 +2804,14 @@ void cmd_pid_channel_nickname_query(uart_instance_t *inst, char *args)
     tok = (args != NULL) ? strtok(args, " \r\n") : NULL;
     if (tok == NULL)
     {
-        SendErr(inst, 12, "PID:CHANNEL:NICKNAME? needs one argument: channel");
+        SendErr(inst, 12, "CHANnel:NICKname? needs one argument: channel");
         return;
     }
     chArg = atol(tok);
 
     if ((chArg < 1L) || (chArg > (long)HRTIM_NUM_CHANNELS))
     {
-        SendErr(inst, 11, "Invalid PID channel");
+        SendErr(inst, 11, "Invalid channel");
         return;
     }
     ch = (uint8_t)(chArg - 1L);
@@ -2247,73 +2831,96 @@ void cmd_pid_channel_nickname_query(uart_instance_t *inst, char *args)
     uart_send(inst, buf);
 }
 
-void cmd_pid_profile_timing(uart_instance_t *inst, char *args)
+void cmd_shot_timing(uart_instance_t *inst, char *args)
 {
     char *tok;
-    double rampTimeS;
+    double rampUpTimeS;
     double flatTopTimeS;
+    double rampDownTimeS;
 
+    /* Three arguments now -- rampUpTimeS/rampDownTimeS independently
+       configurable, added 2026-09-22 per direct request (was two
+       arguments, rampTimeS shared for both directions, before this).
+       A caller still sending the old two-argument form gets the
+       ordinary "needs three arguments" ERR 12 below, same as any
+       other malformed call -- no silent old-format fallback. */
     tok = (args != NULL) ? strtok(args, " \r\n") : NULL;
     if (tok == NULL)
     {
-        SendErr(inst, 12, "PID:PROFILE:TIMING needs two arguments: rampTimeS flatTopTimeS");
+        SendErr(inst, 12, "SHOT:TIMing needs three arguments: "
+                           "rampUpTimeS flatTopTimeS rampDownTimeS");
         return;
     }
-    rampTimeS = atof(tok);
+    rampUpTimeS = atof(tok);
 
     tok = strtok(NULL, " \r\n");
     if (tok == NULL)
     {
-        SendErr(inst, 12, "PID:PROFILE:TIMING needs two arguments: rampTimeS flatTopTimeS");
+        SendErr(inst, 12, "SHOT:TIMing needs three arguments: "
+                           "rampUpTimeS flatTopTimeS rampDownTimeS");
         return;
     }
     flatTopTimeS = atof(tok);
 
-    if ((rampTimeS <= 0.0) || (flatTopTimeS <= 0.0))
+    tok = strtok(NULL, " \r\n");
+    if (tok == NULL)
     {
-        SendErr(inst, 12, "rampTimeS/flatTopTimeS must be > 0");
+        SendErr(inst, 12, "SHOT:TIMing needs three arguments: "
+                           "rampUpTimeS flatTopTimeS rampDownTimeS");
+        return;
+    }
+    rampDownTimeS = atof(tok);
+
+    if ((rampUpTimeS <= 0.0) || (flatTopTimeS <= 0.0) || (rampDownTimeS <= 0.0))
+    {
+        SendErr(inst, 12, "rampUpTimeS/flatTopTimeS/rampDownTimeS must be > 0");
         return;
     }
 
     /* Operator-facing unit is seconds (5-15s ramp, 1-15s flat-top
        nominal, per the real shot profile) -- PID_SetProfileTiming()'s
-       own unit is milliseconds, matching PID:RAMP's durationMs. */
-    if (PID_SetProfileTiming((uint32_t)(rampTimeS * 1000.0), (uint32_t)(flatTopTimeS * 1000.0)) == 0U)
+       own unit is milliseconds, matching SOURce:RAMP's durationMs. */
+    if (PID_SetProfileTiming((uint32_t)(rampUpTimeS * 1000.0), (uint32_t)(flatTopTimeS * 1000.0),
+                              (uint32_t)(rampDownTimeS * 1000.0)) == 0U)
     {
-        SendErr(inst, 12, "rampTimeS/flatTopTimeS too small");
+        SendErr(inst, 12, "rampUpTimeS/flatTopTimeS/rampDownTimeS too small");
         return;
     }
     uart_send(inst, "OK\r\n");
 }
 
 /* Added 2026-09-10 -- see cmd_pid_gains_query()'s own comment on why
-   (PID:PROFILE:TIMING was write-only until now). ERR 12 (not just an
+   (SHOT:TIMing was write-only until now). ERR 12 (not just an
    empty/zero OK reply) if timing was never successfully set -- a real,
    meaningful "not configured yet" state (PID_ProfileStart() itself
    refuses to run in it), worth a distinct reply rather than silently
-   reporting 0 0 as if that were a real value. */
-void cmd_pid_profile_timing_query(uart_instance_t *inst, char *args)
+   reporting 0 0 0 as if that were a real value. Extended 2026-09-22 to
+   report rampDownTimeS as a third value, matching the setter's own
+   independently-configurable ramp-up/ramp-down. */
+void cmd_shot_timing_query(uart_instance_t *inst, char *args)
 {
-    char buf[48];
-    uint32_t rampTimeMs;
+    char buf[64];
+    uint32_t rampUpTimeMs;
     uint32_t flatTopTimeMs;
+    uint32_t rampDownTimeMs;
     (void)args;
 
-    if (PID_GetProfileTiming(&rampTimeMs, &flatTopTimeMs) == 0U)
+    if (PID_GetProfileTiming(&rampUpTimeMs, &flatTopTimeMs, &rampDownTimeMs) == 0U)
     {
-        SendErr(inst, 12, "Profile timing not set -- send PID:PROFILE:TIMING first");
+        SendErr(inst, 12, "Profile timing not set -- send SHOT:TIMing first");
         return;
     }
 
     /* ms -> seconds, the operator-facing unit (matches the setter's
        own convention) -- %g rather than integer division so a
        sub-second value (e.g. 500 ms -> "0.5") round-trips cleanly. */
-    snprintf(buf, sizeof(buf), "OK %g %g\r\n",
-             (double)rampTimeMs / 1000.0, (double)flatTopTimeMs / 1000.0);
+    snprintf(buf, sizeof(buf), "OK %g %g %g\r\n",
+             (double)rampUpTimeMs / 1000.0, (double)flatTopTimeMs / 1000.0,
+             (double)rampDownTimeMs / 1000.0);
     uart_send(inst, buf);
 }
 
-void cmd_pid_profile_current(uart_instance_t *inst, char *args)
+void cmd_shot_current(uart_instance_t *inst, char *args)
 {
     char *tok;
     long  chArg;
@@ -2323,7 +2930,7 @@ void cmd_pid_profile_current(uart_instance_t *inst, char *args)
     tok = (args != NULL) ? strtok(args, " \r\n") : NULL;
     if (tok == NULL)
     {
-        SendErr(inst, 12, "PID:PROFILE:CURRENT needs two arguments: channel demandCurrentA");
+        SendErr(inst, 12, "SHOT:CURRent needs two arguments: channel demandCurrentA");
         return;
     }
     chArg = atol(tok);
@@ -2331,14 +2938,14 @@ void cmd_pid_profile_current(uart_instance_t *inst, char *args)
     tok = strtok(NULL, " \r\n");
     if (tok == NULL)
     {
-        SendErr(inst, 12, "PID:PROFILE:CURRENT needs two arguments: channel demandCurrentA");
+        SendErr(inst, 12, "SHOT:CURRent needs two arguments: channel demandCurrentA");
         return;
     }
     currentA = atof(tok);
 
     if ((chArg < 1L) || (chArg > (long)HRTIM_NUM_CHANNELS))
     {
-        SendErr(inst, 11, "Invalid PID channel");
+        SendErr(inst, 11, "Invalid channel");
         return;
     }
     ch = (uint8_t)(chArg - 1L);
@@ -2351,17 +2958,17 @@ void cmd_pid_profile_current(uart_instance_t *inst, char *args)
 
     /* PID_SetProfileCurrent() clamps into [0, this channel's own
        PFM_MAX_CURRENT_A_PER_CHANNEL entry] itself -- matches
-       PID:SETPOINT's own clamp-don't-reject convention. */
+       SOURce:SETpoint's own clamp-don't-reject convention. */
     (void)PID_SetProfileCurrent(ch, (float)currentA);
     uart_send(inst, "OK\r\n");
 }
 
 /* Added 2026-09-10 -- see cmd_pid_gains_query()'s own comment on why
-   (PID:PROFILE:CURRENT was write-only until now). Always succeeds for
+   (SHOT:CURRent was write-only until now). Always succeeds for
    a valid channel (demandCurrentA defaults to 0.0f, a real value, not
    an "unset" sentinel -- unlike profile timing there's no distinct
    "never configured" state worth a separate ERR here). */
-void cmd_pid_profile_current_query(uart_instance_t *inst, char *args)
+void cmd_shot_current_query(uart_instance_t *inst, char *args)
 {
     char buf[32];
     char *tok;
@@ -2372,14 +2979,14 @@ void cmd_pid_profile_current_query(uart_instance_t *inst, char *args)
     tok = (args != NULL) ? strtok(args, " \r\n") : NULL;
     if (tok == NULL)
     {
-        SendErr(inst, 12, "PID:PROFILE:CURRENT? needs one argument: channel");
+        SendErr(inst, 12, "SHOT:CURRent? needs one argument: channel");
         return;
     }
     chArg = atol(tok);
 
     if ((chArg < 1L) || (chArg > (long)HRTIM_NUM_CHANNELS))
     {
-        SendErr(inst, 11, "Invalid PID channel");
+        SendErr(inst, 11, "Invalid channel");
         return;
     }
     ch = (uint8_t)(chArg - 1L);
@@ -2406,25 +3013,18 @@ void cmd_pid_profile_current_query(uart_instance_t *inst, char *args)
    anyway (a narrow race window between this check and the SM_Fire()
    call, and defense against any future caller that reaches SM_Fire()
    directly). */
-void cmd_pid_profile_start(uart_instance_t *inst, char *args)
+void cmd_shot_start(uart_instance_t *inst, char *args)
 {
     (void)args;
 
-    if (SM_GetState() != SM_STATE_ARMED)
+    if (RequireArmedAndEnabled(inst) == 0U)
     {
-        SendErr(inst, 13, "Must ARM first -- see the ARM command");
-        return;
-    }
-
-    if (SM_ExternalEnableOk() == 0U)
-    {
-        SendErr(inst, 15, "External enable interlock not satisfied -- PF13 reads LOW");
         return;
     }
 
     if (SM_Fire() == 0U)
     {
-        SendErr(inst, 12, "PID:PROFILE:TIMING must be set before PID:PROFILE:START");
+        SendErr(inst, 12, "SHOT:TIMing must be set before SHOT:STARt");
         return;
     }
     uart_send(inst, "OK\r\n");
@@ -2470,7 +3070,7 @@ void cmd_sim_fault_watertemp(uart_instance_t *inst, char *args)
     chArg = atol(tok);
     if ((chArg < 1L) || (chArg > (long)HRTIM_NUM_CHANNELS))
     {
-        SendErr(inst, 11, "Invalid PID channel");
+        SendErr(inst, 11, "Invalid channel");
         return;
     }
 
@@ -2501,7 +3101,7 @@ void cmd_sim_fault_watertemp_query(uart_instance_t *inst, char *args)
     chArg = atol(tok);
     if ((chArg < 1L) || (chArg > (long)HRTIM_NUM_CHANNELS))
     {
-        SendErr(inst, 11, "Invalid PID channel");
+        SendErr(inst, 11, "Invalid channel");
         return;
     }
 
@@ -2525,7 +3125,7 @@ void cmd_sim_fault_enerpro(uart_instance_t *inst, char *args)
     chArg = atol(tok);
     if ((chArg < 1L) || (chArg > (long)HRTIM_NUM_CHANNELS))
     {
-        SendErr(inst, 11, "Invalid PID channel");
+        SendErr(inst, 11, "Invalid channel");
         return;
     }
 
@@ -2556,7 +3156,7 @@ void cmd_sim_fault_enerpro_query(uart_instance_t *inst, char *args)
     chArg = atol(tok);
     if ((chArg < 1L) || (chArg > (long)HRTIM_NUM_CHANNELS))
     {
-        SendErr(inst, 11, "Invalid PID channel");
+        SendErr(inst, 11, "Invalid channel");
         return;
     }
 
@@ -2580,7 +3180,7 @@ void cmd_sim_fault_ocp(uart_instance_t *inst, char *args)
     chArg = atol(tok);
     if ((chArg < 1L) || (chArg > (long)HRTIM_NUM_CHANNELS))
     {
-        SendErr(inst, 11, "Invalid PID channel");
+        SendErr(inst, 11, "Invalid channel");
         return;
     }
 
@@ -2611,7 +3211,7 @@ void cmd_sim_fault_ocp_query(uart_instance_t *inst, char *args)
     chArg = atol(tok);
     if ((chArg < 1L) || (chArg > (long)HRTIM_NUM_CHANNELS))
     {
-        SendErr(inst, 11, "Invalid PID channel");
+        SendErr(inst, 11, "Invalid channel");
         return;
     }
 
@@ -2650,6 +3250,40 @@ void cmd_sim_model_tau_query(uart_instance_t *inst, char *args)
     uart_send(inst, buf);
 }
 
+/* SIM:DIAGnostic:IDLETONE <0|1> / ? -- added 2026-09-21, direct request:
+   board-wide diagnostic idle tone, see sim_transrex.h's own comment.
+   Not per-channel -- there's no real use case for lighting only some of
+   the 4 transmitters during a bench visual check. */
+void cmd_sim_diag_idletone(uart_instance_t *inst, char *args)
+{
+    char *tok;
+    long  val;
+
+    tok = (args != NULL) ? strtok(args, " \r\n") : NULL;
+    if (tok == NULL)
+    {
+        SendErr(inst, 12, "SIM:DIAGnostic:IDLETONE needs one argument: 0 or 1");
+        return;
+    }
+    val = atol(tok);
+    if ((val != 0L) && (val != 1L))
+    {
+        SendErr(inst, 11, "Invalid value -- must be 0 or 1");
+        return;
+    }
+    SimTransrex_SetIdleToneEnabled((uint8_t)val);
+    uart_send(inst, "OK\r\n");
+}
+
+void cmd_sim_diag_idletone_query(uart_instance_t *inst, char *args)
+{
+    char buf[16];
+    (void)args;
+
+    snprintf(buf, sizeof(buf), "OK %u\r\n", (unsigned)SimTransrex_GetIdleToneEnabled());
+    uart_send(inst, buf);
+}
+
 void cmd_sim_channel_status(uart_instance_t *inst, char *args)
 {
     char *tok;
@@ -2668,7 +3302,7 @@ void cmd_sim_channel_status(uart_instance_t *inst, char *args)
     chArg = atol(tok);
     if ((chArg < 1L) || (chArg > (long)HRTIM_NUM_CHANNELS))
     {
-        SendErr(inst, 11, "Invalid PID channel");
+        SendErr(inst, 11, "Invalid channel");
         return;
     }
 
@@ -2693,13 +3327,13 @@ void cmd_sim_channel_status(uart_instance_t *inst, char *args)
  * SIM:CHANnel:STATus? during a shot (the original
  * run_simulator_validation.py approach) was too coarse and added
  * serial round-trip jitter -- this is the simulator-side equivalent of
- * PID:LOG/PID:LOGDATA? (pid.h/commands.c), backed by
+ * LOG:ARM/LOG:DATA? (pid.h/commands.c), backed by
  * SimTransrex_ArmLog()/GetLogCount()/GetLogSample() (sim_transrex.h --
  * see that header's own comment for why each sample carries its own
- * timestamp instead of a single shared rate_hz like PID:LOGDATA? uses:
+ * timestamp instead of a single shared rate_hz like LOG:DATA? uses:
  * SimTransrex_Update() runs off the main loop, not a fixed hardware
  * tick). `ch` is 1-based on the wire, same convention as every other
- * XREX:CHANnel:/PID: command in this file. */
+ * XREX:CHANnel:/SOURce: command in this file. */
 void cmd_sim_log(uart_instance_t *inst, char *args)
 {
     char *tok;
@@ -2716,7 +3350,7 @@ void cmd_sim_log(uart_instance_t *inst, char *args)
     chArg = atol(tok);
     if ((chArg < 1L) || (chArg > (long)HRTIM_NUM_CHANNELS))
     {
-        SendErr(inst, 11, "Invalid PID channel");
+        SendErr(inst, 11, "Invalid channel");
         return;
     }
 
@@ -2763,7 +3397,7 @@ void cmd_sim_logdata(uart_instance_t *inst, char *args)
     chArg = atol(tok);
     if ((chArg < 1L) || (chArg > (long)HRTIM_NUM_CHANNELS))
     {
-        SendErr(inst, 11, "Invalid PID channel");
+        SendErr(inst, 11, "Invalid channel");
         return;
     }
     ch = (uint8_t)(chArg - 1L);

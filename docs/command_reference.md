@@ -26,11 +26,11 @@ Ported from the sibling PFM-STM32G474 project, per project decision:
 | 8 | Invalid `PFM_Input` channel (1-6) (also reused by `PFMIN:DEBUG:RAW?`/`PFMIN:DEBUG:REG?`) |
 | 9 | `M` out of range for `PFMIN:CAPTURE` (1-`PFM_INPUT_MAX_PERIODS`) |
 | 10 | `TABLE:STEP` `per` value implies a carrier frequency above `PFM_MAX_CARRIER_FREQ_HZ` |
-| 11 | Invalid `PID` channel (also reused by `OCP:TEST:FAULT`, `XREX:CHANnel:STATus?`, same channel-range check) |
-| 12 | Invalid `PID:*` argument count/value -- see the specific command's own usage (also reused by `OCP:TEST:FAULT`, `PFMIN:DEBUG:RAW?`/`PFMIN:DEBUG:REG?`, `XREX:CHANnel:STATus?`) |
-| 13 | Invalid state-machine transition for the current state (`ARM`/`DISARM`/`PID:PROFile:STARt`, see that section) |
-| 14 | Invalid `PID:CHANnel:NICKname` -- name must be 1-`PID_CHANNEL_NICKNAME_MAX_LEN` chars, no spaces, and not the reserved value `-` |
-| 15 | `PID:PROFile:STARt` refused -- `EXTernal:ENAble` is on and the external-enable pin (`PF13` as of 2026-09-17, was `PF15`) does not currently read `HIGH` (see `EXTernal:ENAble`) |
+| 11 | Invalid channel (also reused by `OCP:TEST:FAULT`, `XREX:CHANnel:STATus?`, same channel-range check) |
+| 12 | Invalid command arguments -- see the specific command's own usage (also reused by `OCP:TEST:FAULT`, `PFMIN:DEBUG:RAW?`/`PFMIN:DEBUG:REG?`, `XREX:CHANnel:STATus?`) |
+| 13 | Invalid state-machine transition for the current state (`ARM`/`DISARM`/`SHOT:STARt`, see that section) |
+| 14 | Invalid `CHANnel:NICKname` -- name must be 1-`PID_CHANNEL_NICKNAME_MAX_LEN` chars, no spaces, and not the reserved value `-` |
+| 15 | `ARM`/`SOURce:RUN`/`SHOT:STARt` refused -- `EXTernal:ENAble` is on and the external-enable pin (`PF13` as of 2026-09-17, was `PF15`) does not currently read `HIGH` (see `EXTernal:ENAble`). `ARM` reporting this distinctly is new 2026-09-22 -- previously collapsed into `ARM`'s own generic `ERR 13` |
 | 16 | **RETIRED 2026-09-17** -- previously `EXTernal:TRIGger 1` refused unless `EXTernal:ENAble` was already on, back when enable and trigger shared one pin (`PF15`). No longer generated: enable moved to `PF13`, trigger stayed on `PF15`, and the two are no longer coupled (see `EXTernal:TRIGger`). Kept here, not reassigned, per this table's own "never renumbered or reused" convention |
 
 Codes are never renumbered or reused once assigned, matching the
@@ -187,12 +187,15 @@ period boundary, once the last table entry has completed.
    or reply marks this; poll TABLE? or scope the outputs)
 ```
 
-- No `ARM`/state-machine interlock exists in this firmware — `FIRE`
-  always takes effect immediately, whether the controller was idle or
-  already mid-shot (re-firing mid-shot restarts from step 0). If a
-  fuller interlock/fault-gated firing sequence is ever needed, this is
-  the command to extend, not a design decision this entry documents as
-  final.
+- Gated on the state machine as of 2026-09-22: `FIRE` now requires
+  `ARM` first (`ERR 13`) and, when `EXTernal:ENAble` is on, the PF13
+  interlock to be satisfied (`ERR 15`) -- in addition to the existing
+  `ERR 6` (fault latched) and `ERR 5` (empty table) checks. The legacy
+  table path is deliberately **not** transitioned to `FIRING` (it isn't
+  part of the SM's IDLE/ARMED/FIRING lifecycle — see `state_machine.h`),
+  so `STATE?` stays `ARMED` during playback; a fault mid-playback safes
+  it via `EnterFault()` from `ARMED`. Re-firing mid-shot restarts from
+  step 0.
 - Rejects with `ERR 5` if the table is empty (`TABLE?` reports 0).
   Without this check, an empty-table `FIRE` would still briefly enable
   outputs at step 0's (garbage, never-written) register contents before
@@ -299,25 +302,53 @@ REVISIT" comments).
 - **`IDLE`** — the normal state: boot, after a shot completes, or
   after `FAULT:CLEAR`. Every channel's HRTIM output is disabled.
 - **`ARMED`** — entered via `ARM` (only from `IDLE`), gated by a
-  readiness check that is still mostly a **STUB** (profile timing
-  configured, at least one channel enabled, gains sane, etc. are not
-  checked yet) — with ONE real condition now populated, 2026-09-16: the
-  external-enable interlock (see `EXTernal:ENAble` below), if turned
-  on. Outputs are still disabled here, identically to `IDLE` — nothing
-  electrical changes on entry; `ARMED` exists purely as a
-  separately-confirmable "ready to fire" step before
-  `PID:PROFile:STARt` is allowed to do anything. Left via
-  `PID:PROFile:STARt` (→ `FIRING`), `DISARM` (→ `IDLE`, stand down
-  without firing), or `PID:STOP` (→ `IDLE`, abort).
-- **`FIRING`** — entered only from `ARMED`, via `PID:PROFile:STARt`
+  readiness check that is still partly a **STUB** (profile timing
+  configured, gains sane, etc. are not checked at `ARM` time — only at
+  `SHOT:STARt`, see `ERR 12` there) — with TWO real conditions
+  populated: the external-enable interlock (2026-09-16, see
+  `EXTernal:ENAble` below), if turned on, and (2026-09-17) every
+  currently-enabled channel's `ENA_OUT`/`CONTACT_OUT` both being
+  commanded `HIGH` (see `XREX:CHANnel:ENAOut`/`CONTactOut`). Outputs
+  are still disabled here, identically to `IDLE` — nothing electrical
+  changes on entry; `ARMED` exists purely as a separately-confirmable
+  "ready to fire" step before `SHOT:STARt` is allowed to do
+  anything. Left via `SHOT:STARt` (→ `FIRING`), `DISARM` (→
+  `IDLE`, stand down without firing), or `SOURce:STOP` (→ `IDLE`, abort).
+
+  **`ARM`'s failure reporting, reworked 2026-09-22** (direct request):
+  previously every reason `ARM` could refuse — wrong state, the
+  external-enable interlock, a specific channel's output not ready —
+  collapsed into one generic `ERR 13 "not currently IDLE, or arm
+  conditions not met"`, leaving an operator with one misconfigured
+  channel out of several no way to tell which from the wire protocol
+  alone. Each precondition is now checked explicitly and the first
+  failure reported distinctly, same "distinct failure reasons,
+  reported distinctly" pattern `SHOT:STARt`/`SOURce:RUN` already
+  used:
+  ```
+  > ARM
+  < ERR 13 Can't ARM -- not currently IDLE
+  > ARM
+  < ERR 15 External enable interlock not satisfied -- PF13 reads LOW
+  > ARM
+  < ERR 13 Channel 2's ENA_OUT/CONTACT_OUT not both set -- see
+    XREX:CHANnel:ENAOut/CONTactOut
+  ```
+  Only the FIRST failing precondition is reported per attempt — fix it
+  and re-send `ARM` to see the next one, if any. `SM_Arm()`'s own
+  internal re-check of the same conditions (state_machine.c) still
+  backs the actual transition as a last-line-of-defense against a
+  narrow race window between these checks and the call; its own
+  generic fallback message should never fire outside that race.
+- **`FIRING`** — entered only from `ARMED`, via `SHOT:STARt`
   (unchanged command, now gated: `ERR 13` if not currently `ARMED`).
-  Every currently-enabled channel (`PID:CHANnel:ENAble` — a separate,
+  Every currently-enabled channel (`SOURce:ENAble` — a separate,
   per-channel concern) begins its ramp profile. Returns to `IDLE`
-  automatically when the shot completes, or on a manual `PID:STOP`.
+  automatically when the shot completes, or on a manual `SOURce:STOP`.
 - **`FAULT`** — entered from ANY state the instant either fault source
   trips. Always stops the legacy (`TABLE:*`/`FIRE`) output path
   immediately (it isn't part of this state machine at all). The
-  current (`PID:*`) output path's own stop depends on the fault type:
+  current (`SOURce:*`) output path's own stop depends on the fault type:
   - **`GENERAL`** (`SM_FAULT_GENERAL`) — populated 2026-09-13, per
     direct instruction: if the fault hit while `FIRING`, every
     actively-outputting channel immediately begins an **open-loop**
@@ -358,7 +389,7 @@ REVISIT" comments).
     can tell "the external-enable interlock dropped" apart from "a real
     HRTIM/gate-driver fault." Only enters this while `FIRING` — see
     `EXTernal:ENAble` below for the full interlock design (also gates
-    `ARM` and `PID:PROFile:STARt`, separately from this continuous
+    `ARM` and `SHOT:STARt`, separately from this continuous
     FIRING-only check).
 
   Both of this project's existing system-wide fault sources (`PC10`/
@@ -374,14 +405,14 @@ REVISIT" comments).
 < OK
 > STATE?
 < OK ARMED
-> PID:PROFILE:START
+> SHOT:STARt
 < OK
 > STATE?
 < OK FIRING
   ... (shot runs, completes on its own) ...
 > STATE?
 < OK IDLE
-> PID:PROFILE:START
+> SHOT:STARt
 < ERR 13 Must ARM first -- see the ARM command
   ... (a fault trips, from any state) ...
 > STATE?
@@ -402,22 +433,148 @@ REVISIT" comments).
   error) if not currently `ARMED`.
 - **`STATE?`** — `OK <IDLE|ARMED|FIRING>`, or while faulted:
   `OK FAULT GENERAL` / `OK FAULT OVERCURRENT <ch>` (1-based) /
-  `OK FAULT EXTERNAL_ENABLE` / `OK FAULT EMERGENCY_STOP` /
+  `OK FAULT EXTERNAL_ENABLE` /
   `OK FAULT ENABLE_OUTPUT <ch>` (1-based) / `OK FAULT ENERPRO <ch>`
   (1-based — added 2026-09-18, reclassified out of `GENERAL`; see
   below).
 - New error code **13**: an invalid state-machine transition for the
-  current state (e.g. `PID:PROFile:STARt` sent while not `ARMED`;
+  current state (e.g. `SHOT:STARt` sent while not `ARMED`;
   `ARM` sent while not `IDLE`).
 
-**Known gap, flagged not fixed**: `PID:START` (the simpler, non-profile
-closed-loop start, distinct from `PID:PROFile:STARt`) is **not** gated
-by this state machine at all — it can start real output regardless of
-`STATE?`'s current value, and does not move the state machine out of
-`IDLE`/`ARMED`. Per direct instruction, only `PID:PROFile:STARt` was
-wired up as the "fire" trigger this round; `PID:START` bypassing the
-whole state machine is a known, real inconsistency worth resolving
-later, not an oversight to silently work around.
+**Resolved 2026-09-22**: `SOURce:RUN` (the simpler, non-profile
+closed-loop start, distinct from `SHOT:STARt`) is now gated by
+the state machine too — it requires `ARMED` (`ERR 13`) and the
+`EXTernal:ENAble` interlock (`ERR 15`), then transitions `ARMED` →
+`FIRING` via the new `SM_StartPlain()` (state_machine.c/.h). It has no
+shot clock, so `SOURce:STOP` (`SM_Stop()`) is what returns it to `IDLE`.
+
+**`ARM`'s failure reporting, reworked 2026-09-22**: see `ARM`'s own
+first bullet above and, in full, the `ARM`/`DISARM`/`STATE?` prose
+earlier in this section — every precondition (state, external-enable,
+a specific channel's `ENA_OUT`/`CONTACT_OUT`) is now checked and
+reported distinctly instead of one generic error.
+
+### `DEBUG:FAULT:BYPASS <0|1>` / `DEBUG:FAULT:BYPASS?`
+
+Added 2026-09-21, direct request: a **bench-only** override so a
+channel can be exercised with no real fault-detect signal present —
+e.g. a controller-target build with no simulator/Transrex physically
+connected to drive its Water/Temp/Enerpro/OCP inputs healthy. Those
+pins float with nothing wired to them, and a float reads as an instant
+fault the moment a channel is enabled, blocking any test of the
+DRIVE/FEEDBACK path itself in isolation.
+
+When ON, `EnterFault()` (`state_machine.c` — the single funnel every
+fault source already goes through: `SM_PollFaults()`,
+`SM_Report*Fault()`) returns immediately without transitioning state,
+so **nothing** behaves as faulted regardless of source —
+`GENERAL`/`OVERCURRENT`/`EXTERNAL_ENABLE`/`ENABLE_OUTPUT`/`ENERPRO` all
+pass through this same bypass uniformly.
+
+**Defaults OFF (`0`) at every boot** — RAM-only, never persisted, so it
+cannot silently stay enabled across a power cycle.
+
+**⚠ Never enable this against a real Transrex or any hardware where a
+real overcurrent/water/temperature condition is physically possible.**
+It exists purely so this project's own two-board bench rig can validate
+signal paths (like DRIVE/FEEDBACK capture) in isolation, without a
+full, correctly-wired fault loop present.
+
+```
+> DEBUG:FAULT:BYPASS 1
+< OK
+> DEBUG:FAULT:BYPASS?
+< OK 1
+> DEBUG:FAULT:BYPASS 0
+< OK
+```
+
+- **`DEBUG:FAULT:BYPASS <0|1>`** — `OK`. `ERR 12` if the argument is
+  missing, `ERR 11` if it's neither `0` nor `1`.
+- **`DEBUG:FAULT:BYPASS?`** — `OK <0|1>`, current state.
+
+### `DIAGnostic:OPTBytes?`
+
+**TEMPORARY diagnostic**, added while investigating whether `PB8`/`PG10`
+are safe to repurpose as GPIO (see `DIAGnostic:RSTCause?` below for the
+related investigation that grew out of the same question). Reports the
+three option-byte-derived boot-configuration bits from `FLASH->OPTR`
+(CMSIS header bit definitions, not assumed from "what the G4 family
+usually does"):
+
+```
+> DIAGnostic:OPTBytes?
+< OK OPTR=XXXXXXXX nBOOT0=<0|1> nSWBOOT0=<0|1> nBOOT1=<0|1>
+```
+
+- `nSWBOOT0` — `1` means boot0 is read from the physical `BOOT0`/`PB8`
+  pin; `0` means boot0 is taken entirely from the `nBOOT0` option-byte
+  value below and the physical pin is never sampled at boot, meaning
+  `PB8` is free for GPIO use regardless of any `BOOT0`/`PB8` remap
+  question.
+- `nBOOT0` — the option-byte-supplied boot0 value, used only when
+  `nSWBOOT0` is `0`.
+- `nBOOT1` — combines with the effective boot0 value (whichever source)
+  to select the final boot target (main flash / system memory / SRAM).
+
+Does **not** itself answer whether `PB8` is safe to repurpose — that
+still depends on `nSWBOOT0`'s real value once read back, and separately
+on what `PG10` (this board's own `NRST`-labeled net) is actually wired
+to on the schematic, which no register on this chip can reveal — only
+the schematic can. Remove once the `PB8`/`PG10` GPIO-reuse question is
+settled.
+
+### Unsolicited telemetry events (`!EVT`) and `SYS:*` — added 2026-09-22
+
+Phase 1 of `docs/telemetry.md`. The controller now emits **unsolicited**
+event lines (device-initiated, not in response to a command) prefixed with
+`!EVT` — a prefix that can never collide with an `OK`/`ERR` reply:
+
+```
+!EVT <tick_ms> STATE <IDLE|ARMED|FIRING|FAULT>
+!EVT <tick_ms> FAULT <GENERAL|OVERCURRENT|EXTERNAL_ENABLE|ENABLE_OUTPUT|ENERPRO> [ch]
+!EVT <tick_ms> FAULT CLEAR
+!EVT <tick_ms> TRIGGER FIRING
+```
+
+`<tick_ms>` is the monotonic millisecond clock (`SYS:TIME?`); `[ch]` is
+1-based and only present for the per-channel fault types (`OVERCURRENT`,
+`ENABLE_OUTPUT`, `ENERPRO`). `TRIGGER FIRING` is emitted when the external
+trigger (rising edge on PF15 while `ARMED`) successfully starts a shot --
+distinct from the `STATE FIRING` line so a host can tell a trigger-initiated
+shot from a command-initiated one. A host should treat any line not starting
+with `OK`/`ERR` as an event, and fall back to polling `STATE?`/`FAULT?` if it
+reconnects mid-session (the stream is not buffered across reconnect).
+
+- **`SYS:TIME?`** — `OK <ms-since-boot>` — monotonic 1 ms counter
+  (`HAL_GetTick()`); wraps at ~49.7 days.
+- **`SYS:TELEM?`** — `OK <schema_version>` — the telemetry data-contract
+  version (`TELEMETRY_SCHEMA_VERSION`, currently `3`); bumped on any
+  wire-format change so a host can detect/adapt.
+- **`SYS:EVENT <0|1>`** — `OK` — gate the *live* `!EVT` stream (`1` = on, the
+  default; `0` = off). Gating only silences the live stream — the flight
+  recorder (below) keeps recording, so nothing is lost for post-mortem.
+- **`SYS:EVENT?`** — `OK <0|1>`.
+- **`SYS:EVLOG?`** — the **flight recorder** (docs/telemetry.md Phase 4):
+  replays the retained event history since boot, oldest first, as a header
+  `OK <n>` followed by `n` one-line `!EVT` packets (same text format as the
+  live stream). RAM-only, so it clears on reset. Example:
+
+  ```
+  > SYS:EVLOG?
+  < OK 4
+  < !EVT 141151 STATE ARMED
+  < !EVT 141473 STATE FIRING
+  < !EVT 141784 FAULT GENERAL
+  < !EVT 142097 FAULT CLEAR
+  ```
+
+  Unlike the live stream, this is always recorded — `SYS:EVENT 0` does not
+  empty it.
+
+The `!EVT` lines are emitted from the main loop (`Telemetry_PollEmit()`),
+bounded to a few per iteration, and never from ISR context — they cannot
+disturb the PID loop or fault handling (see `docs/telemetry.md` §6).
 
 ### `EXTernal:ENAble` / `EXTernal:ENAble?` / `EXTernal:INPut?`
 
@@ -433,15 +590,25 @@ otherwise unchanged from the original design; only the pin moved.
 rejected — it's documented `GPO`, `STM_Enable_Pin`, meaning the STM32
 drives that one outward, the opposite direction needed here.)
 
-**Opt-in, OFF by default** — existing shots/tests are completely
-unaffected unless explicitly turned on. RAM-only config (like
-`PID:PROFILE:CURRENT`/`PID:LOOPMODE`/etc.) — resets to OFF on every
-reboot, not persisted.
+**ON by default as of 2026-09-22** (direct instruction — these are
+meant to be usable-by-default features, not something an operator has
+to remember to opt into every session; was opt-in/OFF by default from
+2026-09-16 through 2026-09-21). RAM-only config (like
+`SHOT:CURRent`/`PID:LOOPMODE`/etc.) — resets to ON on every
+reboot, not persisted; send `EXTernal:ENAble 0` to opt back out for a
+session, e.g. bench testing with nothing physically wired to PF13.
+
+**Real consequence of the ON default, not a paper change**: PF13 is
+`GPIO_PULLDOWN` (see below), so a floating/unwired PF13 now reads LOW
+= "not satisfied" out of the box — `ARM` and `SHOT:STARt` will
+both refuse (`ERR 13`/`ERR 15`) on any bench setup that doesn't have
+the real interlock wired, looped back (`DIAGnostic:GPOut11` → PF13,
+below), or `EXTernal:ENAble 0` sent first.
 
 When ON:
 1. **`ARM`** refuses (folded into its existing generic `ERR 13`) unless
    PF13 currently reads HIGH.
-2. **`PID:PROFile:STARt`** ALSO re-checks PF13 immediately before firing
+2. **`SHOT:STARt`** ALSO re-checks PF13 immediately before firing
    — closes the real gap where PF13 could drop in the window between a
    successful `ARM` and the eventual `START` (`ARM` alone does not
    guarantee this at the moment of firing). `ERR 15` if refused. This
@@ -453,7 +620,7 @@ When ON:
    entry above for the identical-to-`GENERAL` ramp-down response).
    Deliberately **not** actively monitored while merely `IDLE`/`ARMED`
    (nothing outputting yet to protect) — losing PF13 there just means
-   the next `PID:PROFile:STARt` attempt fails its own re-check (item 2)
+   the next `SHOT:STARt` attempt fails its own re-check (item 2)
    instead of entering `FAULT`. Not decided either way whether `ARMED`
    should also actively fault on loss — not asked for, flagged rather
    than silently added.
@@ -482,7 +649,7 @@ floating-reads-as-fault is already the safe outcome.
   ... (PF13 goes HIGH) ...
 > ARM
 < OK
-> PID:PROFILE:START
+> SHOT:STARt
 < OK
   ... (PF13 drops while FIRING) ...
 > STATE?
@@ -502,14 +669,14 @@ floating-reads-as-fault is already the safe outcome.
   operator confirm real wiring/signal presence before relying on it,
   the same diagnostic role `PFMIN:DEBUG:RAW?`/`PFMIN:DEBUG:REG?` played
   for the `PFM_Input` fiber-patching investigation below.
-- New error code **15**: `PID:PROFile:STARt` refused because the
+- New error code **15**: `SHOT:STARt` refused because the
   interlock is on and PF13 currently reads LOW.
 
 ### `EXTernal:TRIGger` / `EXTernal:TRIGger?` / `EXTernal:TRIGger:INPut?`
 
 Added 2026-09-16, per direct follow-up request: a **rising edge on
 PF15** (`Fiber_Enable`) fires a shot while `ARMED` — and *only* from
-`ARMED` — exactly as if `PID:PROFile:STARt` had been sent manually.
+`ARMED` — exactly as if `SHOT:STARt` had been sent manually.
 **RESTRUCTURED 2026-09-17**, per direct instruction: PF15 previously
 also carried the `EXTernal:ENAble` role (above); that role moved to
 its own separate pin (PF13), so PF15 now backs trigger exclusively.
@@ -517,14 +684,23 @@ The old structural dependency — `EXTernal:TRIGger 1` refusing unless
 `EXTernal:ENAble` was already on — is **gone**: the two features are
 independently configurable now that they're separate physical signals.
 The real safety guarantee is unaffected either way — `SM_Fire()` (the
-same function both `PID:PROFile:STARt` and this trigger call)
+same function both `SHOT:STARt` and this trigger call)
 unconditionally re-checks the enable interlock (PF13) every time,
 regardless of how or when trigger was turned on.
 
+**ON by default as of 2026-09-22** (direct instruction, same reasoning
+and same date as `EXTernal:ENAble` above; was opt-in/OFF 2026-09-16
+through 2026-09-21). Lower practical impact than the enable default
+above: this only means a PF15 rising edge fires an already-`ARMED`
+shot — it never blocks anything by itself. A floating/unwired PF15 (also
+`GPIO_PULLDOWN`) just never produces a rising edge, so a bench setup
+with nothing physically wired to PF15 sees no behavior change from this
+default alone. Send `EXTernal:TRIGger 0` to opt back out for a session.
+
 There is no separate "open-loop start call" to invoke here: open- vs.
 closed-loop has always been the **per-channel** `PID:LOOPMODE` flag,
-checked inside the same control loop both `PID:START` and
-`PID:PROFile:STARt` already share — not a different start mechanism.
+checked inside the same control loop both `SOURce:RUN` and
+`SHOT:STARt` already share — not a different start mechanism.
 `PID:LOOPMODE 0 <0|1>` (above, also added 2026-09-16) is a plain
 convenience for setting every channel's mode at once before an
 externally-triggered shot, not something this feature reads or
@@ -567,7 +743,7 @@ rising edge is needed to try again, not just PF15 remaining HIGH.
 
 **CONFIRMED ON REAL HARDWARE, 2026-09-16** (original PF15-for-both
 design, full writeup and exact numbers in `docs/changelog.txt` — `ARM`
-gating, `PID:PROFile:STARt`'s own re-check, a real FIRING-time drop
+gating, `SHOT:STARt`'s own re-check, a real FIRING-time drop
 entering `FAULT EXTERNAL_ENABLE` with a clean ramp-down (16400 Hz →
 floor over ~1.0s), and `FAULT:CLEAR` correctly refusing then
 succeeding). **Re-confirmed 2026-09-17, post-split, for TRIGGER
@@ -577,7 +753,7 @@ rising edge, and firing succeeding with the enable interlock
 (`EXTernal:ENAble`) never turned on at all — direct confirmation the
 decoupling works end-to-end, not just at the command-response level.
 **Not yet re-verified against PF13 specifically post-split**: the
-`ARM`/`PID:PROFile:STARt` gating, the FIRING-time fault entry, and
+`ARM`/`SHOT:STARt` gating, the FIRING-time fault entry, and
 `FAULT:CLEAR`'s re-validation — only `EXTernal:INPut?`'s raw-read
 default (floating, reads `0`) has been checked on PF13 so far, since
 nothing is wired to it on the bench yet. See
@@ -773,7 +949,7 @@ own (not-yet-written) interrupt handler will eventually call.
 < OK
 > STATE?
 < OK FAULT OVERCURRENT 2
-> PID:CHANNEL:ENABLE? 2
+> SOURce:ENAble? 2
 < OK 0
 > FAULT:CLEAR
 < OK
@@ -786,7 +962,7 @@ own (not-yet-written) interrupt handler will eventually call.
   out-of-range channel, `ERR 12` for a missing argument. Not gated by
   the operator consoles' dangerous-command confirmation — triggering a
   fault only ever stops/reduces output, the same "safe direction, never
-  gated" treatment `FAULT:CLEAR`/`PID:STOP` already get. Remove once
+  gated" treatment `FAULT:CLEAR`/`SOURce:STOP` already get. Remove once
   real OCP hardware detection exists and has its own real trigger path.
 
 ### `GENERAL:TEST:FAULT`
@@ -819,7 +995,7 @@ channel argument — General Fault is system-wide.
 ### `PFMIN:DEBUG:RAW?` / `PFMIN:DEBUG:REG?`
 
 Added 2026-09-15 — **TEMPORARY**, diagnostic-only, built while tracking
-down why `measuredHz` (`PID:STATus?`) read 0 (or, later, a swapped
+down why `measuredHz` (`SOURce:STATus?`) read 0 (or, later, a swapped
 channel's frequency) for some WHAM channels despite confirmed-correct
 real HRTIM output. Root cause turned out to be a physical fiber-optic
 patching mix-up on the bench (which physical `PFM_Input_0X` receiver
@@ -834,7 +1010,7 @@ normally associates with which port.
   ports, not just the 4 WHAM channels) — `OK cont=<0|1> run=<0|1>
   firstRise=<0|1> avgCount=<n> lastPeriod=<ticks> overcap=<n>` — a
   non-destructive read of `pfm_input.c`'s internal continuous-mode
-  accumulator state (unlike `PID:STATus?`'s own consumption of the same
+  accumulator state (unlike `SOURce:STATus?`'s own consumption of the same
   data, this does NOT reset `avgCount` — repeated polling can watch it
   accumulate, or not, live during a shot). `lastPeriod` in raw 170 MHz
   ticks — convert to Hz as `170000000 / lastPeriod`.
@@ -869,6 +1045,87 @@ channel count.
 Not modifiable at runtime — there is no corresponding `SET` command,
 by design. Changing it means editing `ctrlr_config.h`, rebuilding, and
 reflashing.
+
+### `CONFig:*` runtime-configurable calibration/limits (added 2026-09-22)
+
+Direct request: eight `ctrlr_config.h` compile-time constants made
+runtime-configurable. **None of these persist** — every one resets to
+its `ctrlr_config.h` compile-time default on the next reboot/reflash,
+same session-only convention as `PID:GAINS`/`SHOT:TIMing`/etc.
+Available on both build targets unless noted otherwise.
+
+- **`CONFig:PIDRate <hz>` / `?`** — `PID_LOOP_RATE_HZ`. Live-reprograms
+  the real HRTIM Master timebase register (`HRTIM1_SetPidHeartbeatRate()`,
+  `hrtim.c`). Range-checked to `[500, 10000]` Hz and **refuses while a
+  shot is running** (`ERR 12`) — unlike every other setting here, a
+  mid-shot change would corrupt every running channel's integral/slew/
+  profile-tick state, which all implicitly assume a constant `dt`.
+- **`CONFig:TURNONHz <hz>` / `?`**, **`CONFig:MAXFREQHz <hz>` / `?`** —
+  `PFM_TURNON_FREQ_HZ`/`PFM_MAX_FREQ_HZ`, the Amps↔Hz calibration
+  endpoints (`AmpsToHz()`, `pid.c`). Cross-validated against each other
+  (turnon strictly below max) and against `[PID_OUTPUT_MIN_HZ,
+  PID_OUTPUT_MAX_HZ]`.
+- **`CONFig:MAXCURRent <ch> <amps>` / `<ch>`** — per-channel
+  `PFM_MAX_CURRENT_A_PER_CHANNEL[ch]`, 1-based channel. This is the
+  real per-channel calibration `ctrlr_config.h`'s own "MUST BE
+  CALIBRATED BEFORE FINAL DEPLOYMENT" comment describes — now settable
+  over serial instead of requiring a rebuild+reflash. `amps` must be
+  `> 0`.
+- **`CONFig:SLEWRate <hzPerTick>` / `?`** — `PID_OUTPUT_MAX_SLEW_HZ_PER_TICK`,
+  the hard per-tick output-glitch clamp (`ClampOutputSlew()`, `pid.c`).
+  Only enforced `> 0` — no upper bound, so it's the operator's own
+  responsibility not to configure this so loose it stops meaningfully
+  protecting downstream hardware.
+- **`CONFig:FaultRampTime <s>` / `?`** — `FAULT_RAMP_DOWN_TIME_S`. Must
+  be `> 0`. Only takes effect on the **next** fault, not one already in
+  progress.
+- **`CONFig:FaultPolarity:WATER <0|1>` / `?`**,
+  **`:TEMP`**, **`:ENERPRO`**, **`:OCP`** — the four independent
+  `XR_*_FLT_POLARITY` constants (`xrex_io.c`'s fault-detection logic).
+  `0` = `FAULT_POLARITY_NORMALLY_HIGH`, `1` = `FAULT_POLARITY_NORMALLY_LOW`
+  (same encoding as the constants themselves) — any other value is
+  `ERR 12`. Four separate commands, not one with a category argument,
+  matching `SIM:FAULT:*`'s existing per-category convention and the
+  fact these really are four independent settings on real hardware.
+- **`CONFig:MaxCarrierHz <hz>` / `?`** — `PFM_MAX_CARRIER_FREQ_HZ`, the
+  legacy `TABle:STEP` carrier ceiling (`ERR 10`'s own trigger). Only
+  affects the legacy `TABle:*`/`FIRE` path (Section reference:
+  `docs/sop/wham_xrex_pfmg474_sop.tex`'s Section 8) — has no effect on
+  the modern `SHOT:*` path, which has its own separate,
+  already-configurable output bounds above. Rejected (`ERR 12`) if
+  `hz` would over/underflow the 16-bit HRTIM `PER` register at this
+  board's fixed clock (roughly `hz >= 2595`).
+
+```
+> CONFig:PIDRate?
+< OK 1000
+> CONFig:TURNONHz 4800
+< OK
+> CONFig:FaultPolarity:OCP 1
+< OK
+> CONFig:FaultPolarity:OCP?
+< OK 1
+```
+
+**Host-side staleness, RESOLVED 2026-09-22:** `python/wham_console.py`
+and `python/run_simulator_validation.py` used to hardcode their own
+Python copies of `PFM_TURNON_FREQ_HZ`/`PFM_MAX_FREQ_HZ`/
+`PFM_MAX_CURRENT_A` for host-side Amps↔Hz plotting conversions
+(`hz_to_amps()`/the new `amps_to_hz()`), with no way to notice a live
+change made via the commands above. `wham_console.py` now has
+`sync_calibration(link)`, which queries `CONFig:TURNONHz?`/
+`MAXFREQHz?`/`MAXCURRent? 1` and refreshes those globals — called
+automatically on every connect and after any raw `CONFig:TURNONHz`/
+`MAXFREQHz`/`MAXCURRent` typed directly in the console.
+`run_simulator_validation.py` imports the module (`import wham_console
+as wc`) rather than freezing a copy at import time, so it tracks the
+same live sync. Still a flat, single scalar per value (not per
+channel, even though `CONFig:MAXCURRent` really is per-channel on the
+firmware side) — a pre-existing simplification this fix didn't change,
+only the staleness. `PID_LOOP_RATE_HZ` in `run_simulator_validation.py`
+has the same kind of gap now that `CONFig:PIDRate` exists (used for
+`LOG:ARM`/`LOG:DATA?` sample-rate math) — flagged in that file's own
+comment, not yet fixed.
 
 ### `GDS?`
 
@@ -921,8 +1178,8 @@ config, not "healthy.")
 1-based channel argument (`1`-`HRTIM_NUM_CHANNELS`, matching this
 project's universal wire convention), `ERR 12` if missing, `ERR 11` if
 out of range. Reports raw `HIGH`/`LOW` pin levels only, **polarity-
-agnostic** — same convention as `GDS?`/`EXTernal:INPut?`/
-`EMERGency:INPut?` — `ctrlr_config.h`'s `XR_WATER_FLT_POLARITY`/
+agnostic** — same convention as `GDS?`/`EXTernal:INPut?` —
+`ctrlr_config.h`'s `XR_WATER_FLT_POLARITY`/
 `XR_TMP_FLT_POLARITY`/`XR_ENERPRO_FLT_POLARITY`/`XR_OCP_FLT_POLARITY`
 (below) are what decide which level actually means "faulted," not this
 command. `WATER`/`TMP`/`ENERPRO` come from `GateDriver_Read()`'s
@@ -979,7 +1236,7 @@ categories, added per direct request against `pin_mapping_v4.csv`'s new
   EXTI) keeps one consistent mechanism instead of mixing two.
 - **Per-channel gating, the core new behavior**: a channel's own
   Water/Temp/Enerpro/OCP pins only count toward a fault when
-  `PID_GetChannelEnable(channel)` is currently true (`PID:CHANnel:
+  `PID_GetChannelEnable(channel)` is currently true (`SOURce:
   ENAble?`) — e.g. with only `XR1` enabled, a LOW (faulted) reading on
   `XR2`/`XR3`/`XR4`'s pins neither stops nor blocks output. **Verified
   on real hardware**: with all 4 channels disabled, `FAULT:CLEAR`
@@ -993,8 +1250,10 @@ categories, added per direct request against `pin_mapping_v4.csv`'s new
   `XR_TMP_FLT_POLARITY`/`XR_ENERPRO_FLT_POLARITY`/`XR_OCP_FLT_POLARITY`**
   (each independently `FAULT_POLARITY_NORMALLY_HIGH` or `_NORMALLY_LOW`
   -- renamed from the XREX-scoped `XREX_POLARITY_*` spelling later the
-  same day, once `EMERGENCY_STOP_POLARITY` became a second, unrelated
-  consumer of the same generic concept; pure rename, same values --
+  same day, once a second, unrelated consumer of the same generic
+  concept appeared (that consumer, `EMERGENCY_STOP_POLARITY`, was
+  REMOVED 2026-09-22 with the E-stop feature itself); pure rename, same
+  values --
   all four default to `NORMALLY_HIGH`) — **replaces** the old single
   shared `GDS_FAULT_POLARITY = GDS_NORMALLY_LOW`, which had itself been
   set from a real hardware snapshot on 2026-09-08 (11/12 pins LOW, 1
@@ -1056,7 +1315,7 @@ to the ARM state i[f] these are not output." Two confirmed design
 choices (asked directly, not assumed):
 
 - **Per-channel gated** — only currently-*enabled* channels
-  (`PID:CHANnel:ENAble?`) are checked, matching the exact same
+  (`SOURce:ENAble?`) are checked, matching the exact same
   per-channel-gating philosophy as Water/Temp/Enerpro/OCP above. A
   channel's own `ENA_OUT`+`CONTACT_OUT` must both read `HIGH` to count
   as "outputting" — treated as one combined condition, not two
@@ -1133,7 +1392,8 @@ correct value, not random noise) and fix.
 
 Bounded-count period/duty capture on the 6 `PFM_Input_01`..`_06` pins
 (`Core/Src/pfm_input.c`) -- distinct from the continuous/free-running
-capture mode `PID:*` uses internally (`PfmInput_StartContinuous()`),
+capture mode the closed-loop control path uses internally
+(`PfmInput_StartContinuous()`),
 which has no wire command of its own; these four are for standalone
 bench capture. Present only when `PFM_INPUT_FEATURE_ENABLED` is
 nonzero (the default).
@@ -1154,11 +1414,15 @@ nonzero (the default).
   last `HAL_TIM_IC_Start_DMA()` return code per channel.
 - `ERR 8` invalid channel, `ERR 9` `M` out of range.
 
-### `PID:*` -- closed-loop control
+### `SOURce:` / `SHOT:` / `LOG:` / `CHANnel:` -- output, shots, logging, channels
 
 This project's whole point (`Core/Inc/pid.h`/`Core/Src/pid.c` --
 Possibility 3 + fixed-rate Master heartbeat, see `docs/changelog.txt`'s
 2026-09-09 design-decision entry). Not gated on a feature-enable flag.
+`PID:` now means only the genuine PID-loop parameters `PID:GAINS`/
+`PID:LOOPMODE` (below); the output/demand commands formerly under `PID:`
+moved here on 2026-09-22 -- a clean cut, no aliases (see
+`docs/changelog.txt`).
 Channel numbering matches `PFMIN:DATA?`'s own convention: `1..N` on the
 wire (`N` = `HRTIM_NUM_CHANNELS`, `CONFig:CHANnels?` reports it),
 `0..N-1` internally. `ERR 11` invalid channel, `ERR 12` invalid
@@ -1166,32 +1430,41 @@ argument count/value throughout.
 
 `python/wham_console.py` is the reference host-side front end for all
 of the below -- an interactive operator console with a guided
-shot-profile wizard, live status, and automatic plotting. Use it
-rather than hand-typing these for routine bench work; the raw commands
-below remain available for scripting or anything the console doesn't
-cover yet.
+shot-profile wizard (`shot`), a low-friction re-fire of whatever's
+currently programmed (`refire`, e.g. after `gains <ch> <kp> <ki> <kd>`
+-- no wizard prompts), live status, and automatic plotting after every
+fire (`shot`, `refire`, or a raw `SHOT:STARt` typed directly all
+trigger it) -- including a 4-row (channel 1-4) x 2-column output/FFT
+plot showing each channel's commanded output next to its own frequency
+spectrum, added 2026-09-22. Use it rather than hand-typing these for
+routine bench work; the raw commands below remain available for
+scripting or anything the console doesn't cover yet.
 
-- **`PID:START`** -- begins closed-loop operation on every channel
+- **`SOURce:RUN`** -- begins closed-loop operation on every channel
   (starts free-running `PFM_Input` capture + PWM output together).
-- **`PID:STOP`** -- stops output + feedback capture on every channel,
-  also ends any profile in progress (see `PID:PROFILE:STARt` below).
-- **`PID:SETPOINT <ch> <hz>`** -- sets channel `ch`'s target output
+  Gated on the state machine as of 2026-09-22: requires `ARMED`
+  (`ERR 13`) and the `EXTernal:ENAble` interlock (`ERR 15`), then
+  transitions `ARMED` → `FIRING` via `SM_StartPlain()`. No shot clock --
+  `SOURce:STOP` (`SM_Stop()`) returns it to `IDLE`.
+- **`SOURce:STOP`** -- stops output + feedback capture on every channel,
+  also ends any profile in progress (see `SHOT:STARt` below).
+- **`SOURce:SETpoint <ch> <hz>`** -- sets channel `ch`'s target output
   frequency (clamped into `[PID_OUTPUT_MIN_HZ, PID_OUTPUT_MAX_HZ]`,
-  `ctrlr_config.h`). Cancels any in-progress `PID:RAMP` on that channel.
+  `ctrlr_config.h`). Cancels any in-progress `SOURce:RAMP` on that channel.
 - **`PID:GAINS <ch> <kp> <ki> <kd>`** -- sets channel `ch`'s PID gains
   and resets its integrator (avoids a discontinuous output jump from
   an integral accumulated under the old gains).
 - **`PID:GAINS? <ch>`** -- `OK <kp> <ki> <kd>` -- added 2026-09-10 (see
   `PID_GetGains()`); `wham_console.py`'s `config` command uses this for
   a live readback rather than only remembering what it itself last sent.
-- **`PID:STATus? <ch>`** -- `OK <running> <setpointHz> <measuredHz>
+- **`SOURce:STATus? <ch>`** -- `OK <running> <setpointHz> <measuredHz>
   <outputHz>`. `running` reflects the whole loop (`PID_IsRunning()`),
   not just this channel.
-- **`PID:RAMP <ch> <startHz> <endHz> <durationMs>`** -- begins a linear
+- **`SOURce:RAMP <ch> <startHz> <endHz> <durationMs>`** -- begins a linear
   setpoint ramp on channel `ch`, interpolated fresh each tick (exact
   landing on `endHz`, no rounding drift). Superseded outright by an
   active shot profile (below) while one is running.
-- **`PID:LOG <ch(0=all)> <maxSamples> <decim>`** -- arms waveform
+- **`LOG:ARM <ch(0=all)> <maxSamples> <decim>`** -- arms waveform
   logging: every `decim`-th REAL `PID_Update()` tick (`maxSamples`
   clamped to `PID_LOG_MAX_SAMPLES`=1000) appends one
   `{setpointHz, measuredHz, outputHz}` sample per logged channel,
@@ -1202,9 +1475,9 @@ cover yet.
   cross-channel comparison, not N separate runs; `python/
   wham_console.py`'s `shot` wizard's `all` logging option uses this
   for its one-PNG-per-shot, one-row-per-channel plot.
-- **`PID:LOGDATA? [ch]`** -- `OK <count> <rateHz> s1 m1 o1 s2 m2 o2 ...`,
+- **`LOG:DATA? [ch]`** -- `OK <count> <rateHz> s1 m1 o1 s2 m2 o2 ...`,
   channel `ch`'s log so far. `rateHz` = `PID_LOOP_RATE_HZ / decim` --
-  sample `i` occurred at `i / rateHz` seconds after `PID:LOG` was sent
+  sample `i` occurred at `i / rateHz` seconds after `LOG:ARM` was sent
   (the SAME for every channel when `ch=0` was used to arm -- that's
   the whole point). `[ch]` is optional and its own value defaults to
   whichever single channel is armed (unchanged, original behavior)
@@ -1220,24 +1493,24 @@ cover yet.
   value written straight to HRTIM, no PID correction; feedback still
   read/reported for comparison), `1` = closed-loop (default). `ch = 0`
   (added 2026-09-16) means "every channel at once" -- matches
-  `PID:LOG`'s own existing `ch=0` convention rather than a new command;
+  `LOG:ARM`'s own existing `ch=0` convention rather than a new command;
   real channels are still `1..HRTIM_NUM_CHANNELS` as always. Added
   originally in service of the external-trigger feature below (a
   single system-wide mode setting, not a new control-loop behavior),
   but usable standalone any time.
 - **`PID:LOOPMODE? <ch>`** -- `OK <0|1>` -- added 2026-09-10 (see
   `PID_GetLoopMode()`).
-- **`PID:CHANnel:ENAble <ch> <0|1>`** -- added 2026-09-11, per direct
+- **`SOURce:ENAble <ch> <0|1>`** -- added 2026-09-11, per direct
   request: a genuine "this channel outputs no PFM waveform at all"
   switch, distinct from `PID:LOOPMODE` (open-loop still drives a real,
-  uncorrected PFM waveform) or a 0A `PID:PROFile:CURRent` (still drives
+  uncorrected PFM waveform) or a 0A `SHOT:CURRent` (still drives
   a real PFM waveform, at the turn-on floor). `0` = fully disabled --
   the channel's HRTIM output pins are physically disconnected
   (`HRTIM1_SetChannelOutputEnable()`, `hrtim.c`) and `PID_Update()`
   skips this channel completely (no setpoint, no feedback consumption,
   no PID math, no log entry). `1` = enabled (default -- every channel
   always output, unchanged unless a channel is explicitly disabled).
-  Takes effect on the NEXT `PID:START`/`PID:PROFile:STARt` if the loop
+  Takes effect on the NEXT `SOURce:RUN`/`SHOT:STARt` if the loop
   isn't currently running; takes effect **immediately, live**, if it
   is -- an operator can kill (or restore) one channel's real output
   mid-shot without touching any other channel or stopping the loop.
@@ -1245,8 +1518,8 @@ cover yet.
   synchronized for an instant, clean re-enable) and does NOT reset its
   PID state (integral, setpoint, gains) -- re-enabling resumes exactly
   where it left off, not from a fresh reset.
-- **`PID:CHANnel:ENAble? <ch>`** -- `OK <0|1>` -- see `PID_GetChannelEnable()`.
-- **`PID:CHANnel:NICKname <ch> <name>`** -- added 2026-09-13, per direct
+- **`SOURce:ENAble? <ch>`** -- `OK <0|1>` -- see `PID_GetChannelEnable()`.
+- **`CHANnel:NICKname <ch> <name>`** -- added 2026-09-13, per direct
   request: assigns a purely cosmetic, human-readable name to a channel
   (e.g. `TINKYWINKY`) -- no effect whatsoever on control behavior. This
   is separate from the `Ch1`..`Ch4` numbering used everywhere else on
@@ -1262,79 +1535,83 @@ cover yet.
   model as gains/demand current -- no flash/EEPROM persistence anywhere
   in this firmware) -- cleared back to "no nickname" only by a reboot,
   survives across multiple shots.
-- **`PID:CHANnel:NICKname? <ch>`** -- `OK <name>`, or literally `OK -`
+- **`CHANnel:NICKname? <ch>`** -- `OK <name>`, or literally `OK -`
   if no nickname has been assigned to this channel yet -- see
   `PID_GetChannelNickname()`.
 
 ```
-> PID:CHANNEL:ENABLE 3 0
+> SOURce:ENAble 3 0
 < OK
   (channel 3's output pins disconnect immediately if the loop is
    running; channel 3's own PID state/HRTIM counter keep running
    untouched, just disconnected from the pins)
-> PID:CHANNEL:ENABLE? 3
+> SOURce:ENAble? 3
 < OK 0
-> PID:CHANNEL:ENABLE 3 1
+> SOURce:ENAble 3 1
 < OK
   (channel 3 resumes output immediately, from where its own PID state
    left off -- not a fresh start)
-> PID:CHANNEL:NICKNAME? 1
+> CHANnel:NICKname? 1
 < OK -
   (no nickname assigned yet)
-> PID:CHANNEL:NICKNAME 1 TINKYWINKY
+> CHANnel:NICKname 1 TINKYWINKY
 < OK
-> PID:CHANNEL:NICKNAME? 1
+> CHANnel:NICKname? 1
 < OK TINKYWINKY
-> PID:CHANNEL:NICKNAME 1 -
+> CHANnel:NICKname 1 -
 < ERR 14 Invalid nickname -- 1-PID_CHANNEL_NICKNAME_MAX_LEN chars, no spaces, and not the reserved value '-'
 ```
 
-- **`PID:PROFile:TIMing <rampTimeS> <flatTopTimeS>`** -- sets the
-  SHARED ramp/flat-top durations (seconds) for the next
-  `PID:PROFile:STARt`, applied to every channel at once (each channel
-  keeps its own peak current, below). Both must be `> 0`.
-- **`PID:PROFile:TIMing?`** -- `OK <rampTimeS> <flatTopTimeS>` -- added
-  2026-09-10 (see `PID_GetProfileTiming()`). `ERR 12` if never
-  successfully set this boot -- a real, distinct "not configured" state
-  (`PID:PROFile:STARt` itself refuses to run in it), not reported as a
-  bogus `0 0`.
-- **`PID:PROFile:CURRent <ch> <demandCurrentA>`** -- sets channel
+- **`SHOT:TIMing <rampUpTimeS> <flatTopTimeS> <rampDownTimeS>`**
+  -- sets the SHARED ramp-up/flat-top/ramp-down durations (seconds) for
+  the next `SHOT:STARt`, applied to every channel at once (each
+  channel keeps its own peak current, below). All three must be `> 0`.
+  Ramp up and ramp down are independently configurable (added
+  2026-09-22 -- was two arguments, `<rampTimeS> <flatTopTimeS>`, one
+  shared ramp duration for both directions, before this).
+- **`SHOT:TIMing?`** -- `OK <rampUpTimeS> <flatTopTimeS>
+  <rampDownTimeS>` -- added 2026-09-10 (see `PID_GetProfileTiming()`),
+  extended to a third value 2026-09-22. `ERR 12` if never successfully
+  set this boot -- a real, distinct "not configured" state
+  (`SHOT:STARt` itself refuses to run in it), not reported as a
+  bogus `0 0 0`.
+- **`SHOT:CURRent <ch> <demandCurrentA>`** -- sets channel
   `ch`'s peak demand current (Amps, clamped to `[0, PFM_MAX_CURRENT_A]`)
   for the next shot.
-- **`PID:PROFile:CURRent? <ch>`** -- `OK <demandCurrentA>` -- added
+- **`SHOT:CURRent? <ch>`** -- `OK <demandCurrentA>` -- added
   2026-09-10 (see `PID_GetProfileCurrent()`).
-- **`PID:PROFile:STARt`** -- begins a profiled shot on every channel at
+- **`SHOT:STARt`** -- begins a profiled shot on every channel at
   once, from the same synchronized instant: 0A -> linear ramp up ->
   `demandCurrentA` -> flat-top -> linear ramp down -> 0A, per channel's
   own timing-shared/current-independent trapezoid (see `pid.h`'s
   "DEMAND PROFILE" section). Amps -> Hz is a LINEAR PLACEHOLDER mapping
   (`ctrlr_config.h`'s `PFM_TURNON_FREQ_HZ`/`PFM_MAX_FREQ_HZ`/
   `PFM_MAX_CURRENT_A`) pending real hardware characterization. Ends
-  automatically (full `PID:STOP`-equivalent, not hold-at-floor) when
+  automatically (full `SOURce:STOP`-equivalent, not hold-at-floor) when
   the shared clock reaches the shot's total duration -- send
-  `PID:PROFile:STARt` again for another shot, nothing resumes on its
-  own. `ERR 12` if `PID:PROFile:TIMing` was never (successfully) sent.
+  `SHOT:STARt` again for another shot, nothing resumes on its
+  own. `ERR 12` if `SHOT:TIMing` was never (successfully) sent.
 
 ```
 > PID:LOOPMODE 1 1
 < OK
 > PID:GAINS 1 1.0 10.0 0.0
 < OK
-> PID:PROFILE:CURRENT 1 3000
+> SHOT:CURRent 1 3000
 < OK
-> PID:LOG 1 1000 3
+> LOG:ARM 1 1000 3
 < OK
-> PID:PROFILE:TIMING 1.0 1.0
+> SHOT:TIMing 1.0 1.0 1.0
 < OK
-> PID:PROFILE:START
+> SHOT:STARt
 < OK
-> PID:STATus? 1
+> SOURce:STATus? 1
 < OK 1 40568 34700 34774
   ... (shot runs -- 1.0s ramp up, 1.0s flat-top, 1.0s ramp down) ...
-> PID:STATus? 1
+> SOURce:STATus? 1
 < OK 0 5056 11114 11013
-  (running=0 -- shot auto-stopped, no PID:STOP needed)
-> PID:LOGDATA?
+  (running=0 -- shot auto-stopped, no SOURce:STOP needed)
+> LOG:DATA?
 < OK 1000 333 5741 3000 3000 6653 3000 3000 ...
 ```
 
@@ -1430,6 +1707,31 @@ placeholder status as several `ctrlr_config.h` calibration constants).
   not a meaningful "instant response" request).
 - **`SIM:MODEL:TAU?`** — `OK <ms>`.
 
+### `SIM:DIAGnostic:IDLETONE` / `SIM:DIAGnostic:IDLETONE?`
+
+Board-wide (all 4 channels at once, not per-channel) diagnostic idle
+tone, added 2026-09-21 for visually confirming the fiber transmitters
+are alive on the bench independent of any real shot. Default `0` (OFF)
+— an ungated channel's output stays physically DISCONNECTED, this
+module's normal, realistic "not responding" behavior. `1` (ON): an
+UNGATED channel's output instead stays CONNECTED and holds a steady
+`SIM_TRANSREX_IDLE_TONE_HZ` tone (3000 Hz). A GATED channel (real shot
+in progress) is unaffected either way — this only changes the idle
+state.
+
+```
+> SIM:DIAGnostic:IDLETONE 1
+< OK
+> SIM:DIAGnostic:IDLETONE?
+< OK 1
+> SIM:CHANnel:STATus? 1
+< OK DRIVE_HZ=0 FEEDBACK_HZ=3000 ENA_OUT=LOW CONTACT_OUT=LOW WATERTEMP_FAULT=0 ENERPRO_FAULT=0 OCP_FAULT=0
+```
+
+- **`SIM:DIAGnostic:IDLETONE <0|1>`** — `OK`. `ERR 11` if the value
+  isn't `0` or `1`.
+- **`SIM:DIAGnostic:IDLETONE?`** — `OK <0|1>`.
+
 ### `SIM:CHANnel:STATus?`
 
 One-shot diagnostic snapshot for a channel: the last measured `DRIVE`
@@ -1453,11 +1755,11 @@ Added 2026-09-18, per direct correction: `python/run_simulator_validation.py`
 originally polled `SIM:CHANnel:STATus?` at a fixed host-side interval
 during a shot to build a waveform log — coarse (~10 samples/sec) and
 adds serial round-trip jitter. This is the simulator-side equivalent
-of the controller's `PID:LOG`/`PID:LOGDATA?` (below): arm before a
+of the controller's `LOG:ARM`/`LOG:DATA?` (below): arm before a
 shot, let `sim_transrex.c`'s `SimTransrex_Update()` log every real
 main-loop tick with no host involvement, retrieve after.
 
-**Differs from `PID:LOG`/`PID:LOGDATA?` in one way**: `PID:LOG` decimates
+**Differs from `LOG:ARM`/`LOG:DATA?` in one way**: `LOG:ARM` decimates
 against a REAL fixed hardware tick (`PID_Update()` runs on the HRTIM
 Master's 1kHz interrupt, so "every Nth tick" is precise) and reports one
 shared `rate_hz` for the whole log. `SimTransrex_Update()` runs off the
@@ -1466,8 +1768,8 @@ minimum-time-between-samples throttle (milliseconds) rather than a tick
 decimation, and `SIM:LOGDATA?` reports each sample's own elapsed-time-
 since-armed timestamp explicitly instead of a shared rate.
 
-Single-channel-at-a-time (like `PID:LOG`'s single-channel mode, not
-`PID:LOG 0 ...`'s all-channels mode) — arming a new channel discards
+Single-channel-at-a-time (like `LOG:ARM`'s single-channel mode, not
+`LOG:ARM 0 ...`'s all-channels mode) — arming a new channel discards
 whatever was previously logged.
 
 ```

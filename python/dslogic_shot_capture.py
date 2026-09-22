@@ -24,14 +24,14 @@ function is itself safe to call unconditionally.
 
 Once a DSLogic IS connected, though, a plot always gets generated for
 every shot, with one row per WHAM channel regardless of whether that
-channel is enabled this shot -- a disabled (PID:CHANnel:ENAble 0) or
+channel is enabled this shot -- a disabled (SOURce:ENAble 0) or
 idle (0A demand) channel still gets a row, labeled as such, rather than
 being silently dropped. This is deliberate: confirming a disabled
 channel's HRTIM output really did stay low for the whole shot (no
 switching at all, not just 0A) is exactly the kind of thing this
 cross-check should be able to show at a glance.
 
-Each row's title also shows that channel's PID:CHANnel:NICKname, if one
+Each row's title also shows that channel's CHANnel:NICKname, if one
 has been assigned (e.g. "Ch1 (TINKYWINKY)") -- see _channel_label()
 below. The bare Ch<N> label is never dropped even when a nickname is
 set; the nickname is purely an extra, human-friendly label alongside
@@ -190,7 +190,7 @@ class ShotCapture:
 
         cap = ShotCapture()
         if cap.arm(per_channel, shot_total_s):
-            ... send PID:PROFILE:START, poll status, etc ...
+            ... send SHOT:STARt, poll status, etc ...
             cap.finish_and_plot(fw_log, out_path)
 
     Every method is safe to call even if arm() returned False or was
@@ -266,7 +266,7 @@ class ShotCapture:
         dicts, each {"t_s": <float, seconds since shot start>,
         <wham_channel_int>: {"setpoint": .., "measured": ..}, ...} --
         see wham_console.py's do_shot() for how this gets built (it
-        already polls PID:STATus? per channel during the shot for its
+        already polls SOURce:STATus? per channel during the shot for its
         own console output; this just also keeps every row instead of
         discarding them). If the DSLogic capture itself failed or timed
         out, the plot still gets produced from fw_log alone (each panel
@@ -319,7 +319,7 @@ class ShotCapture:
 
     def _plot(self, fw_log, out_path):
         """One row per WHAM channel, two columns: left = firmware's own
-        demand (setpoint) and measured feedback (PID:STATus?), right =
+        demand (setpoint) and measured feedback (SOURce:STATus?), right =
         this same channel's independently-captured DSLogic frequency --
         side by side rather than overlaid, per direct request, so each
         source's own shape is legible on its own axes rather than
@@ -391,6 +391,15 @@ class ShotCapture:
                 status = "enabled, idle (0A)"
             else:
                 status = f"{demand_a:g}A"
+                kp, ki, kd = cfg.get("kp"), cfg.get("ki"), cfg.get("kd")
+                # Gains -- direct request, 2026-09-22: every console-
+                # generated plot should show what was actually tested,
+                # matching generate_plot()/generate_multi_channel_plot()/
+                # generate_output_fft_plot()'s own convention (only
+                # meaningful for an enabled, driven channel -- an
+                # idle/disabled one has no gains worth showing).
+                if kp is not None:
+                    status += f", Kp={kp:g} Ki={ki:g} Kd={kd:g}"
             label = f"{_channel_label(ch, nickname)} -- {status}"
             ax_fw.set_title(f"{label}  (firmware self-report)", fontsize=10, loc="left")
             ax_dsl.set_title(f"{label}  (DSLogic)", fontsize=10, loc="left")

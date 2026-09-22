@@ -68,7 +68,7 @@ extern "C" {
  * as ENA_OUT/CONTACT_OUT gating input, are ALSO the simulator's own
  * XR1..4_WATER_FLT/_TMP_FLT fault-detection inputs under its own,
  * unmodified gate_driver.c). This is harmless AS LONG AS the
- * simulator's own PID channels are never PID:CHANnel:ENAble'd on --
+ * simulator's own PID channels are never SOURce:ENAble'd on --
  * gate_driver.c's fault evaluation is gated per-channel-enabled
  * (xrex_io.h), so a disabled channel's pins are never evaluated as a
  * real fault regardless of what's actually being received on them.
@@ -85,6 +85,45 @@ extern "C" {
  * status as ctrlr_config.h's own Amps<->Hz calibration constants. */
 #define SIM_TRANSREX_DEFAULT_TAU_MS   (100U)
 
+/* Real Transrex current-output ripple, added 2026-09-21 per direct
+ * instruction: the actual (non-simulated) Transrex current output has a
+ * 720Hz fundamental ripple with a secondary 1440Hz (2nd harmonic)
+ * component, on the order of 1% of full-scale current combined. Applied
+ * as an additive sine-wave modulation on top of the low-pass-filtered
+ * target current, expressed directly as a percentage of the
+ * [PFM_TURNON_FREQ_HZ, PFM_MAX_FREQ_HZ] frequency span (ctrlr_config.h).
+ * "X% of full-scale current" and "X% of the full frequency span" are the
+ * SAME thing here for any channel, regardless of that channel's own
+ * PFM_MAX_CURRENT_A_PER_CHANNEL[ch] entry -- the Amps<->Hz mapping is
+ * linear with shared/global Hz endpoints, so a channel's own Amps
+ * calibration only changes the slope, never the span (see
+ * SimTransrex_Update()'s own comment at this ripple's actual computation
+ * for the algebra) -- no per-channel lookup needed, and if
+ * PFM_MAX_CURRENT_A_PER_CHANNEL is later recalibrated (its own "MUST BE
+ * CALIBRATED" warning, ctrlr_config.h), this ripple's percentage-based
+ * sizing is already correct with no update needed.
+ *
+ * *** ASSUMPTION, not independently confirmed, flagged for the user to
+ * correct if wrong: the direct instruction described the ripple as
+ * "~1% of the full 20kA output" -- this simulator's own per-channel
+ * calibration (ctrlr_config.h's PFM_MAX_CURRENT_A_PER_CHANNEL) is
+ * currently 6kA per channel, not 20kA (that figure may describe the
+ * real system's total/combined rating across channels, or 6kA may
+ * itself be the outdated placeholder -- both already flagged as
+ * unresolved calibration questions elsewhere in this project). Applied
+ * here as 1% of THIS channel's OWN configured full-scale current, split
+ * 0.8%(fundamental)/0.2%(2nd harmonic) -- a reasonable-sounding
+ * harmonic-falloff assumption, not a specified split -- so the total
+ * ripple swing is "on the order of 1%" as instructed. Only applied
+ * while genuinely gated (real simulated current flowing) -- not during
+ * SIM:DIAGnostic:IDLETONE's own diagnostic floor, which represents no
+ * current at all. Revisit both the base percentage and the harmonic
+ * split if real Transrex ripple data becomes available. */
+#define SIM_TRANSREX_RIPPLE_FUNDAMENTAL_HZ            (720.0f)
+#define SIM_TRANSREX_RIPPLE_SECOND_HARMONIC_HZ         (1440.0f)
+#define SIM_TRANSREX_RIPPLE_FUNDAMENTAL_PERCENT        (0.8f)
+#define SIM_TRANSREX_RIPPLE_SECOND_HARMONIC_PERCENT    (0.2f)
+
 /* Called once at boot (main.c, BUILD_TARGET_SIMULATOR only) after
  * HRTIM1_FullInit()/HRTIM1_EnableMasterInterrupt() and PfmInput_Init()
  * have already run (both are unconditional, shared boot steps -- see
@@ -94,13 +133,17 @@ extern "C" {
  * ARM/FIRE state (see this file's own top comment: a real Transrex's
  * response is gated by ENA_OUT/CONTACT_OUT, not by its own internal
  * "shot" concept, which doesn't apply to a simulator playing that
- * role) -- but every channel's actual OUTPUT starts DISCONNECTED
- * (stays LOW), per direct instruction: a channel with no ENA_OUT
- * asserted, or no CONTACT_OUT asserted (independently, either one
- * alone), must produce no PFM output at all, not a floored idle
- * frequency -- see SimTransrex_Update()'s own comment for where the
- * live per-channel connect/disconnect actually happens. Also drives
- * every fault-injection transmitter pin to its HEALTHY level (HIGH,
+ * role) -- every channel's actual OUTPUT starts CONNECTED at the
+ * SIM_TRANSREX_IDLE_TONE_HZ idle tone (3kHz), since idle tone now
+ * defaults ON (2026-09-22 -- see s_idleToneEnabled's own comment,
+ * sim_transrex.c): a channel with no ENA_OUT and/or no CONTACT_OUT
+ * asserted holds that idle tone rather than going silent, so the whole
+ * board is passively "alive" with zero serial setup. Send
+ * `SIM:DIAGnostic:IDLETONE 0` for the original stricter behavior (no
+ * PFM output at all while ungated) instead -- see
+ * SimTransrex_Update()'s own comment for where the live per-channel
+ * connect/disconnect actually happens either way. Also drives every
+ * fault-injection transmitter pin to its HEALTHY level (HIGH,
  * FAULT_POLARITY_NORMALLY_HIGH).
  *
  * *** DELIBERATE EXCEPTION to this project's usual "every new output
@@ -127,19 +170,31 @@ void SimTransrex_Init(void);
  *   - reads ENA_OUT+CONTACT_OUT gating (GateDriver_Read(), PE0..PE7);
  *   - on a gating EDGE, connects/disconnects that channel's actual
  *     HRTIM output pins (HRTIM1_SetChannelOutputEnable()) to match --
- *     gated off means the pin physically stays LOW (this channel's
- *     configured HRTIM idle level), not a floored idle frequency, per
- *     direct instruction; gated on reconnects it;
- *   - if gated on: consumes the latest averaged DRIVE measurement
- *     (PfmInput_ConsumeAveragePeriod()), converts to Hz
- *     (HRTIM_TIMER_CLK_HZ / avgPeriodTicks, same formula pid.c uses),
- *     low-pass filters it, and writes the result out via
- *     HRTIM1_SetChannelPeriod();
+ *     gated off means the pin holds the idle tone (SIM_TRANSREX_IDLE_TONE_HZ,
+ *     default ON -- s_idleToneEnabled) or, with idle tone turned off,
+ *     physically stays LOW (this channel's configured HRTIM idle
+ *     level) instead; gated on reconnects it either way;
+ *   - EVERY tick, regardless of gating: consumes the latest averaged
+ *     DRIVE measurement (PfmInput_ConsumeAveragePeriod()), converts to
+ *     Hz (HRTIM_TIMER_CLK_HZ / avgPeriodTicks, same formula pid.c
+ *     uses) -- this is DRIVE_HZ (SimTransrex_GetChannelStatus()), a
+ *     true live measurement of whatever is actually arriving on this
+ *     channel's receive pin, intentionally decoupled from gating
+ *     (2026-09-21 CORRECTED -- see sim_transrex.c's own comment at this
+ *     call site for the real bug this fixes: DRIVE_HZ used to be forced
+ *     to 0 every tick while ungated, hiding a perfectly healthy
+ *     reception path behind a misleading "nothing arriving" reading);
+ *   - if gated on: low-pass filters the measured value and writes the
+ *     result out via HRTIM1_SetChannelPeriod() -- this is the
+ *     SIMULATED RESPONSE, genuinely gated (a real Transrex's response
+ *     is gated by ENA_OUT/CONTACT_OUT, its receiver being able to see
+ *     light is not);
  *   - if gated off: the filter's own internal target still floors
- *     toward PFM_TURNON_FREQ_HZ (0 A) even though the output is
- *     physically disconnected -- purely so a later re-gate resumes
- *     from near the floor instead of some stale mid-shot value, not
- *     because anything reaches the pin while disconnected. */
+ *     toward PFM_TURNON_FREQ_HZ (0 A), or the diagnostic idle tone
+ *     frequency if SIM:DIAGnostic:IDLETONE is enabled, even though the
+ *     output is physically disconnected (idle tone aside) -- purely so
+ *     a later re-gate resumes from near the floor instead of some
+ *     stale mid-shot value. */
 void SimTransrex_Update(void);
 
 /* Water+Temp fault injection for `channel` (0..HRTIM_NUM_CHANNELS-1),
@@ -178,14 +233,37 @@ uint8_t SimTransrex_GetFaultOcp(uint8_t channel);
 uint8_t SimTransrex_SetTauMs(uint32_t ms);
 uint32_t SimTransrex_GetTauMs(void);
 
+/* Idle tone, added 2026-09-21 -- SIM:DIAGnostic:IDLETONE (commands.c).
+ * Defaults ON (2026-09-22, direct instruction: the simulator should be
+ * passive out of the box, 3kHz on every ungated channel with no serial
+ * setup needed) -- an UNGATED channel's output stays CONNECTED and
+ * holds a steady SIM_TRANSREX_IDLE_TONE_HZ tone. Send `SIM:DIAGnostic:
+ * IDLETONE 0` to go back to the original stricter realism instead (an
+ * ungated channel's output physically DISCONNECTED, mimicking a real
+ * Transrex not responding at all) -- board-wide, all 4 channels
+ * together either way. A GATED channel (real shot in progress) is
+ * completely unaffected by this setting either way -- gating itself
+ * (ENA_OUT+CONTACT_OUT, see SimTransrex_Update()) already requires no
+ * serial commands, only real signals from the controller. */
+#define SIM_TRANSREX_IDLE_TONE_HZ   (3000U)
+void SimTransrex_SetIdleToneEnabled(uint8_t enabled);
+uint8_t SimTransrex_GetIdleToneEnabled(void);
+
 /* Diagnostic snapshot for `channel` (0..HRTIM_NUM_CHANNELS-1) -- backs
  * SIM:CHANnel:STATus? (commands.c). Returns 1 and fills every output on
  * success; returns 0 (outputs left untouched) for an out-of-range
  * channel. `measuredDriveHz` is the last value SimTransrex_Update()
- * actually consumed from PFM_Input (0 if never yet measured or the
- * channel is gated off); `filteredFeedbackHz` is this module's own
- * current filter state (what it's actually driving out via HRTIM,
- * PFM_TURNON_FREQ_HZ while gated off); `enaOutGated`/`contactOutGated`
+ * actually consumed from PFM_Input, live EVERY tick regardless of
+ * gating (2026-09-21 CORRECTED -- this used to read 0 whenever the
+ * channel was gated off, even with a perfectly real signal arriving,
+ * a real bug found via a self-loopback diagnostic; now a true always-
+ * on measurement of whatever is actually being received, 0 only if
+ * genuinely nothing has ever arrived); `filteredFeedbackHz` is EXACTLY
+ * what this module last actually wrote to HRTIM (2026-09-21: now
+ * includes the 720Hz/1440Hz ripple modulation while gated -- see
+ * SIM_TRANSREX_RIPPLE_FUNDAMENTAL_HZ's own comment -- not just the
+ * clean low-pass-filtered average; PFM_TURNON_FREQ_HZ, no ripple, while
+ * gated off); `enaOutGated`/`contactOutGated`
  * are the live, raw ENA_OUT/CONTACT_OUT gating bits (not latched -- a
  * fresh GateDriver_Read() each call); the three fault outputs are this
  * module's own INJECTED state (SimTransrex_SetFault*()'s last-set
@@ -206,7 +284,7 @@ uint8_t SimTransrex_GetChannelStatus(uint8_t channel,
  * samples/sec, serial round-trip jitter) and doesn't match this
  * project's own established "arm a log, run the shot, retrieve and
  * plot afterward" pattern already used for the CONTROLLER side
- * (pid.h's PID_ArmLog()/PID:LOGDATA?). This is that same pattern for
+ * (pid.h's PID_ArmLog()/LOG:DATA?). This is that same pattern for
  * the simulator: SimTransrex_Update() itself appends a sample every
  * time it actually runs (main-loop cadence, no polling from the host
  * at all), so resolution is limited only by how fast the main loop
@@ -255,7 +333,7 @@ uint16_t SimTransrex_GetLogCount(uint8_t channel);
  * `timeMs` is elapsed milliseconds since SimTransrex_ArmLog() was
  * called (NOT since the channel was gated on, or since sample 0 --
  * always since the arm call itself, so a host-side plotter's time
- * axis starts at 0 the instant logging was armed, matching PID:LOG's
+ * axis starts at 0 the instant logging was armed, matching LOG:ARM's
  * own "time axis starts when armed" convention); `driveHz`/`feedbackHz`
  * are that sample's DRIVE_HZ/FEEDBACK_HZ, same values
  * SimTransrex_GetChannelStatus() would have reported at that instant.

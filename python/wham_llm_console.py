@@ -32,12 +32,12 @@ How it works
         "actions": ["<console command line>", ...]}
    Each action is a command line EXACTLY as a human would type it into
    wham_console.py ("status", "gains 1 1.0 10.0 0.0", "FAULT?",
-   "PID:PROFILE:TIMING 5 2", "plot all", ...). Actions run in order and
+   "SHOT:TIMing 5 2 5", "plot all", ...). Actions run in order and
    their captured output is sent back to the model, which may then act
    again (multi-step turns, e.g. program -> ARM -> START -> wait -> plot)
    or finish with empty actions.
 4. SAFETY GATE: any action that can start real PWM output or reflash
-   firmware (FIRE, BOOT, PID:START, PID:PROFile:STARt in any SCPI short/long
+   firmware (FIRE, BOOT, SOURce:RUN, SHOT:STARt in any SCPI short/long
    form, plus the `start`, `shot`, `reflash`, and `enable <ch> on` wrappers)
    is confirmed with the OPERATOR in the terminal before it runs -- the LLM
    cannot bypass this, it can only propose. `--auto` / `/auto on` disables
@@ -88,7 +88,7 @@ noticeably more cavalier tone than 4b's equivalent replies (which said
 "Confirm to proceed?"). This is NOT an actual safety gap -- the real gate
 (Executor.is_dangerous()) is enforced in code, completely independent of
 what the model's own text claims, and it still asked for real y/N
-confirmation before PID:PROFile:STARt regardless -- but it means reading
+confirmation before SHOT:STARt regardless -- but it means reading
 every confirm prompt on its own merits matters even more with this
 model, not less. Switch back with `--model qwen3:4b` (or `/model
 qwen3:4b` live) if that tradeoff doesn't sit right -- both are
@@ -237,7 +237,7 @@ HISTORY_KEEP = 20         # messages kept (small models have small contexts --
                           # context window is only 4096, see header docstring)
 WAIT_CAP_S = 60.0         # ceiling on the LLM's `wait <seconds>` pseudo-action
 MAX_RESULT_CHARS = 1500   # cap on one command's captured output before it goes
-                          # into LLM history -- raw `PID:LOGDATA? <ch>` (up to
+                          # into LLM history -- raw `LOG:DATA? <ch>` (up to
                           # 1000 samples on one line) can otherwise blow straight
                           # through a small local model's whole context window in
                           # a single command result; `plot`/`log` print file paths,
@@ -411,7 +411,7 @@ def truncate_for_llm(text, limit=MAX_RESULT_CHARS):
         return text
     return (text[:limit] +
             f"\n... (truncated, {len(text) - limit} more chars -- use `plot`/`log` "
-            "to see the full data rather than raw PID:LOGDATA?)")
+            "to see the full data rather than raw LOG:DATA?)")
 
 
 def extract_json(text):
@@ -470,9 +470,9 @@ class Executor:
         """Console wrappers that start real output / reflash, PLUS
         wham_console._is_dangerous() for everything else -- including raw
         SCPI. That function is the single shared source of truth (FIRE,
-        BOOT, PID:*:STAR*, and PID:CHANnel:ENAble turning a channel ON) so
+        BOOT, SOURce:RUN, SHOT:STARt, and SOURce:ENAble turning a channel ON) so
         that an LLM proposing raw SCPI instead of a console wrapper (e.g.
-        `PID:CHANnel:ENAble 1 1` instead of `enable 1 on`) can't slip past
+        `SOURce:ENAble 1 1` instead of `enable 1 on`) can't slip past
         this gate just by phrasing it differently -- see that function's own
         docstring. Only `start`/`shot`/`reflash` (console-only wrappers with
         no raw-SCPI equivalent) and the `enable` wrapper's English on/off
@@ -619,13 +619,13 @@ WHAT THIS PROJECT IS:
   down, full stop. Timing SHARED across channels (one shot clock); Demand
   Current per-channel. Duration = 2*Ramp + FlatTop; runs once, then stops.
 - State machine: IDLE (no output possible) -> ARM (readiness gate, still no
-  output) -> PID:PROFile:STARt -> FIRING -> IDLE at shot end. FAULT is
+  output) -> SHOT:STARt -> FIRING -> IDLE at shot end. FAULT is
   reachable from ANY state (PC10/HRTIM fault pin; 12 GateDriverStatus pins,
   HIGH = fault). A General Fault while FIRING ramps every outputting channel
   down open-loop to 0A over ~1s, then stops. Only FAULT:CLEAR (operator-
   approved) returns to IDLE; a fresh ARM is always required after a fault.
-- Quirks: PID:START bypasses the state machine (known gap -- prefer ARM +
-  PID:PROFile:STARt). The legacy TABLE:*/FIRE table path exists but is NOT
+- Quirks: SOURce:RUN bypasses the state machine (known gap -- prefer ARM +
+  SHOT:STARt). The legacy TABLE:*/FIRE table path exists but is NOT
   how this controller is meant to be driven -- don't use it unless asked.
   BOOT resets into the ROM bootloader and DROPS this serial link (reflash
   only; the `reflash` wrapper handles the flow).
@@ -678,7 +678,7 @@ OUTPUT CONTRACT (strict):
 
 SAFETY (non-negotiable):
 - Actions that start real PWM output or reflash firmware -- FIRE, BOOT,
-  PID:START, PID:PROFile:STARt (any SCPI short/long spelling), and the `start`,
+  SOURce:RUN, SHOT:STARt (any SCPI short/long spelling), and the `start`,
   `shot`, `reflash`, and `enable <ch> on` wrappers -- are GATED: the operator
   is asked y/N in the terminal before each one runs. Propose them only when
   the operator clearly asked for output or a shot; if intent is ambiguous,
@@ -688,8 +688,8 @@ SAFETY (non-negotiable):
   ERR 6), STOP proposing output commands, explain the fault, and wait for the
   operator's instruction (clearing it with FAULT:CLEAR is also theirs to approve).
 - On an ERR reply: explain it using the error table, fix the cause if there is
-  an obvious one (e.g. ERR 13 -> send ARM first; ERR 12 on PROFILE:START -> set
-  PID:PROFILE:TIMING first), and don't blindly repeat the identical command.
+  an obvious one (e.g. ERR 13 -> send ARM first; ERR 12 on SHOT:STARt -> set
+  SHOT:TIMing first), and don't blindly repeat the identical command.
 
 CONSOLE COMMANDS (you drive the wham_console.py console; anything NOT in this
 list goes to the controller VERBATIM as raw SCPI):
@@ -703,17 +703,21 @@ list goes to the controller VERBATIM as raw SCPI):
   idn | channels | ports       *IDN? | CONFig:CHANnels? | list serial ports
   gains <ch> <kp> <ki> <kd> | loopmode <ch> open|closed | enable <ch> on|off
   nickname <ch> [name] | setpoint <ch> <hz> | ramp <ch> <startHz> <endHz> <ms>
-  timing [<rampS> <flatS>] | demand <ch> [<amps>]   USE THESE, not raw SCPI,
-                      for profile timing/demand current -- wrappers for
-                      PID:PROFile:TIMing / PID:PROFile:CURRent; no args =
-                      query. A real session got this exact pair wrong
-                      twice in a row by inventing plausible-but-nonexistent
-                      syntax ("profile timing 1 1 2") instead of falling
-                      back to the raw SCPI form -- these wrappers exist
-                      SPECIFICALLY so a natural word-based guess works.
-  start | stop        PID:START (DANGEROUS) | PID:STOP (always safe)
+  timing [<rampUpS> <flatS> <rampDownS>] | demand <ch> [<amps>]   USE THESE,
+                      not raw SCPI, for profile timing/demand current --
+                      wrappers for SHOT:TIMing / SHOT:CURRent;
+                      no args = query. Ramp up and ramp down are
+                      independently configurable (2026-09-22) -- pass the
+                      SAME value twice for a symmetric profile. A real
+                      session got this exact pair wrong twice in a row (back
+                      when it took only two arguments) by inventing
+                      plausible-but-nonexistent syntax ("profile timing 1 1
+                      2") instead of falling back to the raw SCPI form --
+                      these wrappers exist SPECIFICALLY so a natural
+                      word-based guess works.
+  start | stop        SOURce:RUN (DANGEROUS) | SOURce:STOP (always safe)
   log <ch|all> <maxSamples> <decim>    arm waveform logging (all = same ticks)
-  plot [ch|all]       fetch PID:LOGDATA?, save CSV+JSON+PNG under shots/
+  plot [ch|all]       fetch LOG:DATA?, save CSV+JSON+PNG under shots/
   report [ch|all]     SHOT PERFORMANCE analysis -- like `plot` (CSV+JSON+PNG)
                       PLUS a written summary (shots/<ts>..._report.md) with
                       THREE separate numbers: (1) output-vs-commanded (output
@@ -744,7 +748,7 @@ list goes to the controller VERBATIM as raw SCPI):
                       (both interactive, both DANGEROUS-adjacent; reflash gated)
   connect [port] [baud] | disconnect
   wait <seconds>      LOCAL pseudo-action, never sent to hardware (max 60) --
-                      use after PID:PROFILE:START to let a shot finish before plot
+                      use after SHOT:STARt to let a shot finish before plot
 
 RAW SCPI (replies `OK` / `OK <value>` / `ERR <n> <msg>`; 115200 8N1; SCPI
 short/long form + case-insensitive; channels 1..{n} on the wire):
@@ -753,21 +757,21 @@ short/long form + case-insensitive; channels 1..{n} on the wire):
   CONFig:CHANnels? -> N | GDS? raw 12 gate-driver pins | QSPI:ID? flash chip id
   PFMIN:CAPTURE <M> | PFMIN:STATus? | PFMIN:DATA? <ch>   bench period capture
   TABLE:BEGIN/STEP/END/? + FIRE    legacy table path, FIRE DANGEROUS, avoid
-  PID:START (DANGEROUS, bypasses state machine) | PID:STOP
-  PID:SETPOINT <ch> <hz> | PID:GAINS <ch> <kp> <ki> <kd> | PID:GAINS? <ch>
-  PID:LOOPMODE <ch> <0|1> / ? | PID:CHANnel:ENAble <ch> <0|1> / ?
-  PID:CHANnel:NICKname <ch> <name> / ? | PID:RAMP <ch> <start> <end> <ms>
-  PID:STATus? <ch> -> OK <running> <setpointHz> <measuredHz> <outputHz>
-  PID:LOG <ch(0=all)> <maxSamples> <decim> (max 1000 samples)
-  PID:LOGDATA? <ch> -> OK <count> <rateHz> then <setpoint measured output>...
-  PID:PROFile:TIMing <rampS> <flatS> / ? | PID:PROFile:CURRent <ch> <amps> / ?
-  PID:PROFile:STARt   DANGEROUS; needs ARM first (ERR 13) + TIMing set (ERR 12);
+  SOURce:RUN (DANGEROUS, bypasses state machine) | SOURce:STOP
+  SOURce:SETpoint <ch> <hz> | PID:GAINS <ch> <kp> <ki> <kd> | PID:GAINS? <ch>
+  PID:LOOPMODE <ch> <0|1> / ? | SOURce:ENAble <ch> <0|1> / ?
+  CHANnel:NICKname <ch> <name> / ? | SOURce:RAMP <ch> <start> <end> <ms>
+  SOURce:STATus? <ch> -> OK <running> <setpointHz> <measuredHz> <outputHz>
+  LOG:ARM <ch(0=all)> <maxSamples> <decim> (max 1000 samples)
+  LOG:DATA? <ch> -> OK <count> <rateHz> then <setpoint measured output>...
+  SHOT:TIMing <rampUpS> <flatS> <rampDownS> / ? | SHOT:CURRent <ch> <amps> / ?
+  SHOT:STARt   DANGEROUS; needs ARM first (ERR 13) + TIMing set (ERR 12);
                       trapezoid shot on all enabled channels, auto-stops to IDLE
 
 ERROR CODES: 1 unknown cmd | 2 no TABLE:BEGIN | 3 table full | 4 bad TABLE:STEP
 | 5 empty table | 6 fault latched, FAULT:CLEAR first | 7 QSPI fail | 8 bad
-PFMIN ch | 9 PFMIN M range | 10 TABLE:STEP too fast | 11 bad PID ch | 12 bad
-PID args / profile timing never set | 13 bad state transition (ARM first)
+PFMIN ch | 9 PFMIN M range | 10 TABLE:STEP too fast | 11 bad channel | 12 bad
+command args / profile timing never set | 13 bad state transition (ARM first)
 | 14 bad nickname.
 
 KEY NUMBERS:
@@ -797,13 +801,13 @@ RECIPES:
   "how did that go?" about: `report` (or `report all` if it was a multi-
   channel/`shot all` run). Tell the operator the .md path it prints and read
   them the one-line-per-channel summary yourself -- don't re-derive the same
-  numbers by hand from `plot`/PID:LOGDATA?, `report` already computed them.
+  numbers by hand from `plot`/LOG:DATA?, `report` already computed them.
 - Shot WITHOUT the wizard (operator gave exact numbers): stop ; enable <ch>
   on|off for EVERY channel (state the plan in "say" first) ; loopmode <ch>
   open|closed ; demand <ch> <amps> ; gains ... only if asked ; log <ch|all>
   1000 <decim=ceil(total_s)> ; timing <rampS> <flatS> ; ARM ;
-  PID:PROFile:STARt (NOT the `start` wrapper -- that's PID:START, which
-  bypasses the state machine; ARM + PID:PROFile:STARt is the correct pair,
+  SHOT:STARt (NOT the `start` wrapper -- that's SOURce:RUN, which
+  bypasses the state machine; ARM + SHOT:STARt is the correct pair,
   see the RAW SCPI section below) ; wait <2*ramp+flat+1> ; `report all`
   (or `report <ch>`) -- prefer `report` over bare `plot` here unless the
   operator only wants the picture. USE THE WRAPPERS (stop/enable/loopmode/

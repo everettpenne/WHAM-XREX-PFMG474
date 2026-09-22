@@ -80,6 +80,11 @@ static const command_t command_table[] = {
     { "TABle:END",           cmd_table_end    },
     { "TABle?",              cmd_table_query  },
 
+    /* Runtime-configurable PFM_MAX_CARRIER_FREQ_HZ -- see commands.c's
+       own header comment on cmd_config_max_carrier_hz(). */
+    { "CONFig:MaxCarrierHz",   cmd_config_max_carrier_hz       },
+    { "CONFig:MaxCarrierHz?",  cmd_config_max_carrier_hz_query },
+
     /* Begins PWM output -- see commands.c's own header comment on
        cmd_fire(). */
     { "FIRE",                cmd_fire         },
@@ -96,6 +101,41 @@ static const command_t command_table[] = {
        own header comment on cmd_config_channels(). */
     { "CONFig:CHANnels?",    cmd_config_channels },
 
+    /* Runtime-configurable PID_LOOP_RATE_HZ -- see commands.c's own
+       header comment on cmd_config_pid_rate(). */
+    { "CONFig:PIDRate",      cmd_config_pid_rate       },
+    { "CONFig:PIDRate?",     cmd_config_pid_rate_query },
+
+    /* Runtime-configurable PFM_TURNON_FREQ_HZ/PFM_MAX_FREQ_HZ/
+       PFM_MAX_CURRENT_A_PER_CHANNEL -- see commands.c's own header
+       comments on cmd_config_turnon_hz()/cmd_config_max_freq_hz()/
+       cmd_config_max_current(). */
+    { "CONFig:TURNONHz",     cmd_config_turnon_hz        },
+    { "CONFig:TURNONHz?",    cmd_config_turnon_hz_query  },
+    { "CONFig:MAXFREQHz",    cmd_config_max_freq_hz       },
+    { "CONFig:MAXFREQHz?",   cmd_config_max_freq_hz_query },
+    { "CONFig:MAXCURRent",   cmd_config_max_current       },
+    { "CONFig:MAXCURRent?",  cmd_config_max_current_query },
+
+    /* Runtime-configurable PID_OUTPUT_MAX_SLEW_HZ_PER_TICK/
+       FAULT_RAMP_DOWN_TIME_S -- see commands.c's own header comments
+       on cmd_config_slew_rate()/cmd_config_fault_ramp_time(). */
+    { "CONFig:SLEWRate",        cmd_config_slew_rate             },
+    { "CONFig:SLEWRate?",       cmd_config_slew_rate_query       },
+    { "CONFig:FaultRampTime",   cmd_config_fault_ramp_time       },
+    { "CONFig:FaultRampTime?",  cmd_config_fault_ramp_time_query },
+
+    /* Runtime-configurable fault-pin polarities -- see commands.c's
+       own header comment on ConfigFaultPolaritySet(). */
+    { "CONFig:FaultPolarity:WATER",    cmd_config_fault_polarity_water          },
+    { "CONFig:FaultPolarity:WATER?",   cmd_config_fault_polarity_water_query    },
+    { "CONFig:FaultPolarity:TEMP",     cmd_config_fault_polarity_temp           },
+    { "CONFig:FaultPolarity:TEMP?",    cmd_config_fault_polarity_temp_query     },
+    { "CONFig:FaultPolarity:ENERPRO",  cmd_config_fault_polarity_enerpro        },
+    { "CONFig:FaultPolarity:ENERPRO?", cmd_config_fault_polarity_enerpro_query  },
+    { "CONFig:FaultPolarity:OCP",      cmd_config_fault_polarity_ocp            },
+    { "CONFig:FaultPolarity:OCP?",     cmd_config_fault_polarity_ocp_query      },
+
     /* PC10/HRTIM1_FLT6 hardware fault status/clear -- see commands.c's
        own header comment on cmd_fault_query()/cmd_fault_clear(). */
     { "FAULT?",              cmd_fault_query  },
@@ -108,10 +148,26 @@ static const command_t command_table[] = {
     { "DISARM",              cmd_disarm       },
     { "STATE?",              cmd_state_query  },
 
+    /* Telemetry contract (docs/telemetry.md, Phase 1) -- see commands.c's
+       own header comment on cmd_sys_*(). */
+    { "SYS:TIME?",           cmd_sys_time         },
+    { "SYS:TELEM?",          cmd_sys_telem        },
+    { "SYS:EVENT",           cmd_sys_event        },
+    { "SYS:EVENT?",          cmd_sys_event_query  },
+    { "SYS:EVLOG?",          cmd_sys_evlog        },
+
+    /* Bench-only debug override, added 2026-09-21 -- see commands.c's
+       own header comment on cmd_debug_fault_bypass() and
+       state_machine.h's SM_SetFaultBypassEnabled() for the full
+       reasoning/safety warning. NOT BUILD_TARGET-guarded -- available
+       on both controller and simulator builds. */
+    { "DEBUG:FAULT:BYPASS",  cmd_debug_fault_bypass       },
+    { "DEBUG:FAULT:BYPASS?", cmd_debug_fault_bypass_query },
+
     /* External-enable interlock (PF13, MOVED 2026-09-17 from PF15) --
        see commands.h's own comment on cmd_ext_enable(). Added
        2026-09-16. Two-level namespace (mandatory "EXT"/"ENA"/"INP",
-       matching this project's existing PID:CHANnel:ENAble-style
+       matching this project's existing SOURce:ENAble-style
        abbreviation convention) rather than one compound word -- a
        single "EXTEnable" token would only let "EXTE" (an
        unrecognizable fragment) be typed as its short form, since
@@ -130,11 +186,8 @@ static const command_t command_table[] = {
     { "EXTernal:TRIGger?",      cmd_ext_trigger_query       },
     { "EXTernal:TRIGger:INPut?", cmd_ext_trigger_input_query },
 
-    /* Emergency stop (PG10, fiber-optic input) -- see commands.h's own
-       comment on cmd_emerg_enable(). Added 2026-09-17. */
-    { "EMERGency:ENAble",    cmd_emerg_enable       },
-    { "EMERGency:ENAble?",   cmd_emerg_enable_query },
-    { "EMERGency:INPut?",    cmd_emerg_input_query  },
+    /* Emergency-stop commands REMOVED 2026-09-21 (PG10 was NRST, not a
+       usable GPIO -- see state_machine.h / docs/changelog.txt). */
 
     /* Generic diagnostic output (PD1, "GPOut_12") -- see commands.h's
        own comment on cmd_diag_gpout12(). Added 2026-09-16. */
@@ -228,35 +281,42 @@ static const command_t command_table[] = {
     { "PFMIN:DATA?",         cmd_pfmin_data    },
 #endif
 
-    /* Closed-loop PID control -- this project's whole point, see
-       commands.c's own header comment on the cmd_pid_*() handlers and
-       pid.h for the architecture. Not gated on a feature-enable flag,
-       unlike the modules above. */
-    { "PID:START",           cmd_pid_start     },
-    { "PID:STOP",            cmd_pid_stop      },
-    { "PID:SETPOINT",        cmd_pid_setpoint  },
-    { "PID:GAINS",           cmd_pid_gains     },
-    { "PID:GAINS?",          cmd_pid_gains_query },
-    { "PID:STATus?",         cmd_pid_status    },
-    { "PID:LOG",             cmd_pid_log       },
-    { "PID:LOGDATA?",        cmd_pid_logdata   },
-    { "PID:RAMP",            cmd_pid_ramp      },
+    /* Closed-loop PID control + the demand-output / shot-profile / log /
+       channel namespaces, this project's whole point -- see commands.c's
+       own header comments on the cmd_*() handlers and pid.h for the
+       architecture. Not gated on a feature-enable flag, unlike the
+       modules above.
+
+       RENAMED 2026-09-22: the output/demand commands moved OUT of PID:
+       into SOURce:/SHOT:/LOG:/CHANnel:, leaving PID: to mean only the
+       actual PID-loop parameters (PID:GAINS/PID:LOOPMODE below). Clean
+       cut -- the old PID:START/PID:SETPOINT/... mnemonics are gone, not
+       aliased. */
+    { "SOURce:RUN",           cmd_source_run     },
+    { "SOURce:STOP",          cmd_source_stop    },
+    { "SOURce:SETpoint",      cmd_source_setpoint },
+    { "PID:GAINS",            cmd_pid_gains     },
+    { "PID:GAINS?",           cmd_pid_gains_query },
+    { "SOURce:STATus?",       cmd_source_status  },
+    { "LOG:ARM",              cmd_log_arm       },
+    { "LOG:DATA?",            cmd_log_data      },
+    { "SOURce:RAMP",          cmd_source_ramp    },
 
     /* Production shot profile + open/closed-loop mode, added
        2026-09-10 -- see commands.h's own header comment on these
        handlers and pid.h's "DEMAND PROFILE"/"OPEN-LOOP MODE" doc
        sections for the full design. */
-    { "PID:LOOPMODE",        cmd_pid_loopmode        },
-    { "PID:LOOPMODE?",       cmd_pid_loopmode_query        },
-    { "PID:CHANnel:ENAble",  cmd_pid_channel_enable        },
-    { "PID:CHANnel:ENAble?", cmd_pid_channel_enable_query  },
-    { "PID:CHANnel:NICKname",  cmd_pid_channel_nickname        },
-    { "PID:CHANnel:NICKname?", cmd_pid_channel_nickname_query  },
-    { "PID:PROFile:TIMing",  cmd_pid_profile_timing  },
-    { "PID:PROFile:TIMing?", cmd_pid_profile_timing_query  },
-    { "PID:PROFile:CURRent", cmd_pid_profile_current },
-    { "PID:PROFile:CURRent?", cmd_pid_profile_current_query },
-    { "PID:PROFile:STARt",   cmd_pid_profile_start   },
+    { "PID:LOOPMODE",         cmd_pid_loopmode        },
+    { "PID:LOOPMODE?",        cmd_pid_loopmode_query  },
+    { "SOURce:ENAble",        cmd_source_enable       },
+    { "SOURce:ENAble?",       cmd_source_enable_query },
+    { "CHANnel:NICKname",     cmd_chan_nickname       },
+    { "CHANnel:NICKname?",    cmd_chan_nickname_query },
+    { "SHOT:TIMing",          cmd_shot_timing         },
+    { "SHOT:TIMing?",         cmd_shot_timing_query   },
+    { "SHOT:CURRent",         cmd_shot_current        },
+    { "SHOT:CURRent?",        cmd_shot_current_query  },
+    { "SHOT:STARt",           cmd_shot_start          },
 
     /* SIM: namespace -- sim_transrex.h backed, SIMULATOR-ONLY, added
        2026-09-18. See commands.c's own header comment on
@@ -272,6 +332,8 @@ static const command_t command_table[] = {
     { "SIM:FAULT:OCP?",       cmd_sim_fault_ocp_query        },
     { "SIM:MODEL:TAU",        cmd_sim_model_tau              },
     { "SIM:MODEL:TAU?",       cmd_sim_model_tau_query        },
+    { "SIM:DIAGnostic:IDLETONE",  cmd_sim_diag_idletone          },
+    { "SIM:DIAGnostic:IDLETONE?", cmd_sim_diag_idletone_query    },
     { "SIM:CHANnel:STATus?",  cmd_sim_channel_status         },
     { "SIM:LOG",              cmd_sim_log                    },
     { "SIM:LOGDATA?",         cmd_sim_logdata                },

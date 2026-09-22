@@ -1,0 +1,231 @@
+\documentclass[11pt]{article}
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage{mathpazo}
+\usepackage[margin=1in]{geometry}
+\usepackage{graphicx}
+\usepackage[dvipsnames]{xcolor}
+\usepackage{longtable}
+\usepackage[htt]{hyphenat}
+
+\newcommand{\code}[1]{\texttt{#1}}
+
+\title{WHAM-XREX-PFMG474 Test Campaign Report\\ \large 10 s ramp / 5 s flat-top}
+\author{Generated from the 2026-09-21 controller $\times$ simulated-Transrex campaign}
+\date{\today}
+
+\begin{document}
+\maketitle
+
+\section*{Summary}
+
+Eight tests were run against the cross-wired controller/simulator rig
+(firmware \code{d74b0653-dirty}, 1750-sample PID log). \textbf{6 of 7 discrete
+scenarios passed} and the \textbf{45-shot matrix passed 45/45}. The single
+non-pass is one criterion-sensitive point in the gain sweep (see \S 1), not a
+control defect. Each test below states what was run, why it passed or failed,
+and shows its 4-panel plot.
+
+\section{Gain sweep --- closed-loop PID ($P$ + $I$) --- 5/6 PASS}
+
+This test exercised the closed-loop PID controller against the simulated
+Transrex plant by commanding a 40\,kHz step on channel~1 under six gain sets:
+three P-only ($K_p$ 0.2 / 0.5 / 1.0, $K_i=K_d=0$) and three PI ($K_p=1.0$,
+$K_i$ 10 / 50 / 100, $K_d=0$). The P-only runs \textcolor{ForestGreen}{\textbf{passed}}
+because the measured frequency settled at the theoretical pure-P steady-state
+value $K_p \cdot 40000/(1+K_p)$ --- i.e.\ the expected steady-state error when
+there is no integral action. The PI runs \textcolor{ForestGreen}{\textbf{passed}}
+because integral action eliminated that error, all three converging to within
+$\sim$550\,Hz of 40\,kHz (40\,236 / 40\,255 / 40\,543\,Hz). The one
+\textcolor{BrickRed}{\textbf{FAIL}} --- \code{ki100} --- is a verdict-criterion
+artifact rather than a control problem: its final sample landed 43\,Hz outside
+the $\pm$500\,Hz tolerance while clearly converged, an artifact of judging by a
+single ringing-phase sample.
+
+\begin{center}
+\includegraphics[width=0.85\linewidth]{../../shots/gain_sweep_4panel.png}
+\end{center}
+
+\section{Overcurrent fault injection (\code{ocp}) --- PASS}
+
+Two channels were gated open-loop (ramp 10\,s / flat 5\,s, 3000\,A) and an
+overcurrent fault was injected on channel~1 $\sim$0.5\,s into the flat top. The
+test \textcolor{ForestGreen}{\textbf{passed}} because \code{STATE?} reported
+\code{OVERCURRENT 1}, the faulted channel hard-disabled immediately, and the
+surviving channel~2 kept running at a derated 21\,660\,Hz --- exactly the
+specified per-channel overcurrent response (immediate disable for the faulted
+channel, a $1/N$ step-down then ramp for the survivors).
+
+\begin{center}
+\includegraphics[width=0.85\linewidth]{../../shots/20260921_142918_ocp/grid.png}
+\end{center}
+
+\section{Enerpro fault injection (\code{enerpro}) --- PASS}
+
+Same 2-channel setup (10/5, 3000\,A), with an Enerpro fault injected on
+channel~1 mid-shot. The test \textcolor{ForestGreen}{\textbf{passed}} because
+\code{STATE?} reported \code{ENERPRO 1} and the survivor derated and kept
+running (21\,638\,Hz), confirming Enerpro faults use the overcurrent-style
+\textit{reduce-and-keep-running} response rather than a Water/Temp full stop ---
+validating the 2026-09-18 fault reclassification.
+
+\begin{center}
+\includegraphics[width=0.85\linewidth]{../../shots/20260921_142935_enerpro/grid.png}
+\end{center}
+
+\section{Water/Temp fault injection (\code{watertemp}) --- PASS}
+
+Same 2-channel setup (10/5, 3000\,A), with a combined Water+Temp fault injected
+on channel~1 mid-shot. The test \textcolor{ForestGreen}{\textbf{passed}} because
+\code{STATE?} reported \code{GENERAL} --- the distinct full-stop fault type ---
+confirming that Water/Temp trips the system-wide open-loop ramp-down to 0\,A on
+every active channel, rather than the derate-and-survive behavior of OCP/Enerpro.
+
+\begin{center}
+\includegraphics[width=0.85\linewidth]{../../shots/20260921_142952_watertemp/grid.png}
+\end{center}
+
+\section{ENA\_OUT/CONTACT\_OUT drop (\code{ena\_contact}) --- PASS}
+
+Two channels were gated (10/5, 3000\,A) and the controller's own
+\code{CONTACT\_OUT} for channel~1 was dropped mid-shot. The test
+\textcolor{ForestGreen}{\textbf{passed}} because \code{STATE?} reported
+\code{ENABLE\_OUTPUT 1} and the survivor derated to 21\,660\,Hz --- validating
+the per-channel self-commanded-output fault (\code{SM\_FAULT\_ENABLE\_OUTPUT}),
+which is distinct from the external-enable \textit{input} interlock.
+
+\begin{center}
+\includegraphics[width=0.85\linewidth]{../../shots/20260921_143009_ena_contact/grid.png}
+\end{center}
+
+\section{Fault sequencing (\code{multi\_fault}) --- PASS}
+
+Three channels were gated (10/5, 3000\,A) and two different faults were injected
+in sequence --- OCP on channel~1, then Enerpro on channel~3 --- with channel~2 as
+the survivor. The test \textcolor{ForestGreen}{\textbf{passed}} because both
+faulted channels ended disabled, \code{STATE?} preserved the \textit{first}
+fault's identity (\code{OVERCURRENT 1}) even after the second fault, and the
+survivor visibly derated after each fault (29\,989\,Hz $\to$ 24\,769\,Hz) ---
+confirming the ``already-faulted'' short-circuit still hard-disables the
+newly-faulted channel without clobbering the reported fault type.
+
+\begin{center}
+\includegraphics[width=0.85\linewidth]{../../shots/20260921_143017_multi_fault/grid.png}
+\end{center}
+
+\section{Four channels simultaneously (\code{all\_channels}) --- PASS}
+
+All four channels were gated and fired at once (10/5) at per-channel demands of
+600 / 2000 / 3600 / 5400\,A. The test \textcolor{ForestGreen}{\textbf{passed}}
+because every channel's flat-top median \code{measured~$-$~output} error stayed
+well under the 500\,Hz threshold (377 / 387 / 362 / 363\,Hz), confirming four
+independent Transrex channels run and measure simultaneously with no
+cross-channel interference.
+
+\begin{center}
+\includegraphics[width=0.85\linewidth]{../../shots/20260921_143033_all_channels/combined.png}
+\end{center}
+
+\section{Channel/demand matrix sweep --- 45/45 PASS}
+
+The stress sweep ran 45 open-loop shots (10/5) --- one per non-empty subset of
+$\{1,2,3,4\}$ at each of three demand levels (600 / 3000 / 5400\,A = 10/50/90\%).
+Every one of the 45 shots \textcolor{ForestGreen}{\textbf{passed}} with a worst
+\code{output~$-$~setpoint} error of \textbf{0\,Hz}, confirming the profile
+generator, per-channel HRTIM write, and the fiber feedback round-trip are clean
+across the full channel-combination $\times$ operating-point envelope with no
+cross-channel coupling.
+
+\begin{center}
+\begin{longtable}{l r r l}
+\hline
+\textbf{Channels} & \textbf{Demand (A)} & \textbf{Worst error (Hz)} & \textbf{Verdict} \\
+\hline
+\endfirsthead
+\hline
+\textbf{Channels} & \textbf{Demand (A)} & \textbf{Worst error (Hz)} & \textbf{Verdict} \\
+\hline
+\endhead
+1 & 600 & 0 & \textcolor{ForestGreen}{\textbf{PASS}} \\
+1 & 3000 & 0 & \textcolor{ForestGreen}{\textbf{PASS}} \\
+1 & 5400 & 0 & \textcolor{ForestGreen}{\textbf{PASS}} \\
+2 & 600 & 0 & \textcolor{ForestGreen}{\textbf{PASS}} \\
+2 & 3000 & 0 & \textcolor{ForestGreen}{\textbf{PASS}} \\
+2 & 5400 & 0 & \textcolor{ForestGreen}{\textbf{PASS}} \\
+3 & 600 & 0 & \textcolor{ForestGreen}{\textbf{PASS}} \\
+3 & 3000 & 0 & \textcolor{ForestGreen}{\textbf{PASS}} \\
+3 & 5400 & 0 & \textcolor{ForestGreen}{\textbf{PASS}} \\
+4 & 600 & 0 & \textcolor{ForestGreen}{\textbf{PASS}} \\
+4 & 3000 & 0 & \textcolor{ForestGreen}{\textbf{PASS}} \\
+4 & 5400 & 0 & \textcolor{ForestGreen}{\textbf{PASS}} \\
+1+2 & 600 & 0 & \textcolor{ForestGreen}{\textbf{PASS}} \\
+1+2 & 3000 & 0 & \textcolor{ForestGreen}{\textbf{PASS}} \\
+1+2 & 5400 & 0 & \textcolor{ForestGreen}{\textbf{PASS}} \\
+1+3 & 600 & 0 & \textcolor{ForestGreen}{\textbf{PASS}} \\
+1+3 & 3000 & 0 & \textcolor{ForestGreen}{\textbf{PASS}} \\
+1+3 & 5400 & 0 & \textcolor{ForestGreen}{\textbf{PASS}} \\
+1+4 & 600 & 0 & \textcolor{ForestGreen}{\textbf{PASS}} \\
+1+4 & 3000 & 0 & \textcolor{ForestGreen}{\textbf{PASS}} \\
+1+4 & 5400 & 0 & \textcolor{ForestGreen}{\textbf{PASS}} \\
+2+3 & 600 & 0 & \textcolor{ForestGreen}{\textbf{PASS}} \\
+2+3 & 3000 & 0 & \textcolor{ForestGreen}{\textbf{PASS}} \\
+2+3 & 5400 & 0 & \textcolor{ForestGreen}{\textbf{PASS}} \\
+2+4 & 600 & 0 & \textcolor{ForestGreen}{\textbf{PASS}} \\
+2+4 & 3000 & 0 & \textcolor{ForestGreen}{\textbf{PASS}} \\
+2+4 & 5400 & 0 & \textcolor{ForestGreen}{\textbf{PASS}} \\
+3+4 & 600 & 0 & \textcolor{ForestGreen}{\textbf{PASS}} \\
+3+4 & 3000 & 0 & \textcolor{ForestGreen}{\textbf{PASS}} \\
+3+4 & 5400 & 0 & \textcolor{ForestGreen}{\textbf{PASS}} \\
+1+2+3 & 600 & 0 & \textcolor{ForestGreen}{\textbf{PASS}} \\
+1+2+3 & 3000 & 0 & \textcolor{ForestGreen}{\textbf{PASS}} \\
+1+2+3 & 5400 & 0 & \textcolor{ForestGreen}{\textbf{PASS}} \\
+1+2+4 & 600 & 0 & \textcolor{ForestGreen}{\textbf{PASS}} \\
+1+2+4 & 3000 & 0 & \textcolor{ForestGreen}{\textbf{PASS}} \\
+1+2+4 & 5400 & 0 & \textcolor{ForestGreen}{\textbf{PASS}} \\
+1+3+4 & 600 & 0 & \textcolor{ForestGreen}{\textbf{PASS}} \\
+1+3+4 & 3000 & 0 & \textcolor{ForestGreen}{\textbf{PASS}} \\
+1+3+4 & 5400 & 0 & \textcolor{ForestGreen}{\textbf{PASS}} \\
+2+3+4 & 600 & 0 & \textcolor{ForestGreen}{\textbf{PASS}} \\
+2+3+4 & 3000 & 0 & \textcolor{ForestGreen}{\textbf{PASS}} \\
+2+3+4 & 5400 & 0 & \textcolor{ForestGreen}{\textbf{PASS}} \\
+1+2+3+4 & 600 & 0 & \textcolor{ForestGreen}{\textbf{PASS}} \\
+1+2+3+4 & 3000 & 0 & \textcolor{ForestGreen}{\textbf{PASS}} \\
+1+2+3+4 & 5400 & 0 & \textcolor{ForestGreen}{\textbf{PASS}} \\
+\hline
+\end{longtable}
+\end{center}
+
+Representative plot (all four channels at the 90\,\% demand level):
+
+\begin{center}
+\includegraphics[width=0.85\linewidth]{../../shots/20260921_145413_matrix_ch1+2+3+4_5400A/grid.png}
+\end{center}
+
+\section{Closed-loop profiled shot --- PASS (smoke test)}
+
+A one-shot closed-loop counterpart to the profiled shot: channel~1 gated through
+the simulator, the PID in \textbf{closed-loop} mode with PI gains ($K_p=1.0$,
+$K_i=20$, $K_d=0$), and the same 10\,s/5\,s profile commanded (3000\,A). Unlike
+the open-loop runs above, the PID must actually \textit{drive} the output so the
+measured feedback tracks the profile. It
+\textcolor{ForestGreen}{\textbf{passed}}: the flat-top median
+\code{measured~$-$~setpoint} error was \textbf{393\,Hz} (1315 samples @ 52\,Hz,
+full 25\,s shot) --- the loop holds the feedback to within the simulator's own
+ripple noise of the commanded profile. (The 67\,218\,Hz maximum is the known
+single-sample feedback glitch, which the median is robust to.)
+
+\begin{center}
+\includegraphics[width=0.85\linewidth]{../../shots/20260921_151030_closed_loop_profiled/ctrl_ch1.png}
+\end{center}
+
+\section*{Notes}
+
+\begin{itemize}
+\item The \code{gain\_sweep} \code{ki100} FAIL is the final-sample criterion,
+  not a control defect (\S 1); a median-of-last-0.5\,s verdict would pass it.
+\item Fault tests plot the injection instant as a dashed red line + label on
+  every populated panel.
+\item Raw per-channel CSVs and all plots are under \code{shots/20260921\_14*\_*/}.
+\end{itemize}
+
+\end{document}

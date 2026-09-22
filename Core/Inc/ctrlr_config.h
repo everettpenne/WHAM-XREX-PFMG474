@@ -254,7 +254,7 @@
  * some channels -- DO NOT ship/commission with these values unverified.
  *
  * REQUIRED BEFORE FINAL DEPLOYMENT: for EACH of the 4 Transrexes,
- * independently -- drive that channel (PID:PROFILE:CURRENT/PID:LOOPMODE
+ * independently -- drive that channel (SHOT:CURRent/PID:LOOPMODE
  * open-loop is the simplest way to command a known, repeatable
  * frequency directly, e.g. via python/wham_console.py) at
  * PFM_MAX_FREQ_HZ (or as close to it as is safe to actually run) and
@@ -273,7 +273,7 @@
  *
  * Indexed 0..HRTIM_NUM_CHANNELS-1 (0-based, internal convention --
  * matches every other per-channel array in this codebase), NOT the
- * 1-based wire numbering PID:PROFILE:CURRENT/etc. use -- channel 1 on
+ * 1-based wire numbering SHOT:CURRent/etc. use -- channel 1 on
  * the wire is index [0] here. Entry count MUST equal HRTIM_NUM_CHANNELS
  * exactly -- pid.c _Static_assert()s this at compile time so a
  * mismatched edit (e.g. after ever changing HRTIM_NUM_CHANNELS above)
@@ -396,10 +396,12 @@
  *
  * Added 2026-09-17 (as XREX_POLARITY_*, scoped to the section just below);
  * RENAMED same day, later, to this generic FAULT_POLARITY_* form once a
- * second, unrelated consumer showed up (EMERGENCY_STOP_POLARITY, further
- * down this file) -- this is a plain "which raw level means healthy"
- * concept with nothing XREX-specific about it, so a generic name is the
- * honest one now that it's shared. Pure rename, no value/behavior change;
+ * second, unrelated consumer showed up -- this is a plain "which raw
+ * level means healthy" concept with nothing XREX-specific about it, so
+ * a generic name is the honest one now that it's shared. (That second
+ * consumer, EMERGENCY_STOP_POLARITY, was REMOVED 2026-09-21 with the
+ * E-stop feature itself -- see docs/changelog.txt.) Pure rename, no
+ * value/behavior change;
  * xrex_io.c's BitIsFault() and every XR_*_POLARITY setting below were
  * updated to match.
  *
@@ -457,42 +459,11 @@
 #define XR_ENERPRO_FLT_POLARITY   FAULT_POLARITY_NORMALLY_HIGH
 #define XR_OCP_FLT_POLARITY       FAULT_POLARITY_NORMALLY_HIGH
 
-/* --------------------------------------------------------------------------
- * Emergency-stop (PG10) input polarity (compile-time)
- *
- * Added 2026-09-17; INVERTED same day, later, per direct instruction: a
- * hardware inverter was added between the fiber-optic receiver and PG10
- * itself, so the logic level this pin now presents is the OPPOSITE of
- * what it was when this feature was first built (see state_machine.h's
- * emergency-stop section for that original, now-superseded design).
- *
- * NORMALLY_LOW: with the inverter in place, "no input" -- an idle,
- * non-tripped E-stop loop, and also PG10's own GPIO_PULLDOWN default
- * when genuinely floating (main.c) -- now reads LOW, and that is
- * defined as the GOOD/OK state, per direct instruction ("When PG10 has
- * no input, we take that as 'good' and no E-stop is registered"). A
- * HIGH reading is the fault (E-stop asserted).
- *
- * *** SAFETY NOTE, flagged directly rather than silently implemented:
- * this REVERSES the original fail-safe assumption this feature was
- * built under *** -- previously, an unconnected/floating PG10 (e.g. a
- * broken fiber, or the inverter unpowered/unpopulated) read as FAULT
- * (asserted), so a lost signal path defaulted to "stop." Under this
- * new polarity, that same floating/no-signal condition reads as GOOD --
- * a broken wire or an unpowered inverter would NOT be caught as a
- * fault by this pin alone. This is a deliberate, explicit hardware/
- * firmware co-decision (the inverter was added specifically to produce
- * this behavior), not an oversight -- recorded here so it's never
- * mistaken for one. GPIO_PULLDOWN (main.c) itself did NOT need to
- * change to support this -- floating still reads LOW at the pin either
- * way; only the MEANING assigned to that level, here, flipped.
- *
- * The PD1 diagnostic loopback (DIAGnostic:GPOut12, commands.c) used to
- * test this feature is wired DIRECTLY to PG10 (bypassing the real
- * inverter on the fiber path) -- so driving PD1 LOW during a test now
- * simulates "OK," and driving it HIGH now simulates "asserted," the
- * exact opposite of this feature's original test convention. */
-#define EMERGENCY_STOP_POLARITY   FAULT_POLARITY_NORMALLY_LOW
+/* Emergency-stop (PG10) input polarity -- REMOVED 2026-09-21 with the
+ * E-stop feature itself: PG10 turned out to be electrically tied to
+ * NRST, not a usable GPIO (see main.c's MX_GPIO_Init() comment and
+ * docs/changelog.txt). A future E-stop must use a genuinely free input
+ * pin and re-settle the fail-safe polarity question afresh. */
 
 /* --------------------------------------------------------------------------
  * PFM carrier frequency ceiling (compile-time, hard limit)

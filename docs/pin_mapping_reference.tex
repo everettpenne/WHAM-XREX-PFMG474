@@ -174,7 +174,7 @@ project-wide, one GPIO port per line via \code{SYSCFG\_EXTICR}).}
 \textbf{Per-channel gating} (the core architectural rule): a channel's
 own \code{\_WATER\_FLT}/\code{\_TMP\_FLT}/\code{\_ENERPRO\_FLT}/\code{\_OCP}
 pins only count toward a fault when that channel is currently enabled
-(\code{PID:CHANnel:ENAble?}) -- confirmed on real hardware: with only
+(\code{SOURce:ENAble?}) -- confirmed on real hardware: with only
 channel~3 enabled, an otherwise-faulted board correctly and
 exclusively reported \code{STATE?} $\to$ \code{OK FAULT OVERCURRENT 3}.
 
@@ -224,14 +224,14 @@ Enerpro/OCP signal sources are connected.}
   \hline
   \endhead
   \code{GPInput\_12} & PF13 & GPI & External-enable interlock. \code{ARM}/
-    \code{PID:PROFile:STARt} refuse unless HIGH; continuously monitored
+    \code{SHOT:STARt} refuse unless HIGH; continuously monitored
     while \code{ARMED}/\code{FIRING}. Commands: \code{EXTernal:ENAble},
     \code{EXTernal:ENAble?}, \code{EXTernal:INPut?}. \code{GPIO\_PULLDOWN}
     fail-safe (floating = LOW = no permission). Moved here 2026-09-17
     from PF15. \\
   \code{Fiber\_Enable} & PF15 & GPI & External trigger. A rising edge
     while \code{ARMED} fires a shot (calls the same \code{SM\_Fire()}
-    \code{PID:PROFile:STARt} uses). Independent of the interlock above
+    \code{SHOT:STARt} uses). Independent of the interlock above
     as of 2026-09-17 -- no longer requires \code{EXTernal:ENAble} on
     first. Commands: \code{EXTernal:TRIGger}, \code{EXTernal:TRIGger?},
     \code{EXTernal:TRIGger:INPut?}. \code{GPIO\_PULLDOWN}. \\

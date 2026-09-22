@@ -142,6 +142,51 @@ extern "C" {
  * preserving across a re-init). */
 void PID_Init(void);
 
+/* PID_LOOP_RATE_HZ (ctrlr_config.h) -- RUNTIME-CONFIGURABLE as of
+ * 2026-09-22, direct request. Backs CONFig:PIDRate (commands.c).
+ * Range-checked (500-10000 Hz, see PID_LOOP_RATE_HZ_MIN/_MAX, pid.c)
+ * and refuses to change while running (returns 0) -- see
+ * PID_SetLoopRateHz()'s own doc comment in pid.c for why a mid-shot
+ * change is refused outright rather than merely discouraged, unlike
+ * every other runtime-configurable SOURce:* or CONFig:* setting added
+ * the same day. Reprograms the real HRTIM Master timebase register live
+ * (HRTIM1_SetPidHeartbeatRate(), hrtim.c) on success. */
+uint8_t PID_SetLoopRateHz(uint32_t hz);
+uint32_t PID_GetLoopRateHz(void);
+
+/* PFM_TURNON_FREQ_HZ/PFM_MAX_FREQ_HZ (ctrlr_config.h) -- RUNTIME-
+ * CONFIGURABLE as of 2026-09-22, direct request. Back
+ * CONFig:TURNONHz/CONFig:MAXFREQHz (commands.c). See pid.c's own doc
+ * comment for the cross-validation each applies (turnon strictly
+ * below max, both within [PID_OUTPUT_MIN_HZ, PID_OUTPUT_MAX_HZ]). */
+uint8_t PID_SetTurnonFreqHz(uint32_t hz);
+uint32_t PID_GetTurnonFreqHz(void);
+uint8_t PID_SetMaxFreqHz(uint32_t hz);
+uint32_t PID_GetMaxFreqHz(void);
+
+/* PFM_MAX_CURRENT_A_PER_CHANNEL[channel] (ctrlr_config.h) -- RUNTIME-
+ * CONFIGURABLE as of 2026-09-22, direct request -- the real per-
+ * channel calibration ctrlr_config.h's own "MUST BE CALIBRATED BEFORE
+ * FINAL DEPLOYMENT" comment describes, now settable over serial
+ * instead of requiring a rebuild+reflash. Backs CONFig:MAXCURRent
+ * (commands.c). `amps` must be > 0. */
+uint8_t PID_SetMaxCurrentA(uint8_t channel, float amps);
+uint8_t PID_GetMaxCurrentA(uint8_t channel, float *amps);
+
+/* PID_OUTPUT_MAX_SLEW_HZ_PER_TICK (ctrlr_config.h) -- RUNTIME-
+ * CONFIGURABLE as of 2026-09-22, direct request. Backs
+ * CONFig:SLEWRate (commands.c). Must be > 0; no upper bound enforced
+ * -- see ClampOutputSlew()'s own doc comment in pid.c for why. */
+uint8_t PID_SetSlewRateHzPerTick(float hzPerTick);
+float PID_GetSlewRateHzPerTick(void);
+
+/* FAULT_RAMP_DOWN_TIME_S (ctrlr_config.h) -- RUNTIME-CONFIGURABLE as
+ * of 2026-09-22, direct request. Backs CONFig:FaultRampTime
+ * (commands.c). Must be > 0. Only takes effect on the NEXT fault --
+ * see PID_SetFaultRampDownTimeS()'s own doc comment in pid.c. */
+uint8_t PID_SetFaultRampDownTimeS(float s);
+float PID_GetFaultRampDownTimeS(void);
+
 /* Begins closed-loop operation: starts free-running PFM_Input capture
  * (PfmInput_StartContinuous()) on channels 0..HRTIM_NUM_CHANNELS-1 for
  * feedback, resets every channel's integrator/derivative history, and
@@ -215,7 +260,7 @@ uint8_t PID_StartRamp(uint8_t channel, uint32_t startHz, uint32_t endHz, uint32_
  * integrator value accumulated under the OLD gains suddenly being
  * multiplied by new ones. Returns 1 on success, 0 if `channel` is out
  * of range. No sign/range validation on kp/ki/kd -- a badly-chosen
- * gain is an operator/tuning error to observe via PID:STATus?, not
+ * gain is an operator/tuning error to observe via SOURce:STATus?, not
  * something this function tries to guess is wrong. */
 uint8_t PID_SetGains(uint8_t channel, float kp, float ki, float kd);
 
@@ -298,12 +343,12 @@ uint8_t PID_GetChannelEnable(uint8_t channel);
  * cleared only by a reboot -- there is no flash/EEPROM persistence
  * anywhere in this firmware, and this doesn't add any).
  *
- * The wire protocol (commands.c's cmd_pid_channel_nickname*()) is
+ * The wire protocol (commands.c's cmd_chan_nickname*()) is
  * whitespace-tokenized, so a nickname literally cannot contain spaces
  * (the parser would just see it as extra arguments) -- not separately
  * enforced here beyond the length check, since the parser already
  * can't hand this function a multi-word string. The literal string "-"
- * is reserved (PID:CHANnel:NICKname? uses it to mean "no nickname set"
+ * is reserved (CHANnel:NICKname? uses it to mean "no nickname set"
  * on the wire) and rejected as a nickname value.
  *
  * PID_SetChannelNickname() returns 1 on success, 0 if `channel` is out
@@ -398,31 +443,36 @@ void PID_BeginOvercurrentRampDown(uint8_t faultedChannel);
 
 /* --------------------------------------------------------------------------
  * Demand profile -- added 2026-09-10, the real production shot shape.
- * See this file's own header comment for the full picture. Ramp Time/
- * Flat Top Time are SHARED (one synchronized clock for all
- * HRTIM_NUM_CHANNELS channels); Demand Current is per-channel.
+ * See this file's own header comment for the full picture. Ramp Up
+ * Time/Flat Top Time/Ramp Down Time are SHARED (one synchronized clock
+ * for all HRTIM_NUM_CHANNELS channels); Demand Current is per-channel.
+ * Ramp Up and Ramp Down are independently configurable (added
+ * 2026-09-22, direct request -- previously one shared ramp duration
+ * used for both).
  * -------------------------------------------------------------------------- */
 
-/* Sets the SHARED ramp/flat-top durations, in milliseconds (matching
- * PID_StartRamp()'s existing convention) -- an operator-facing wire
- * command converts from the natural operator unit (seconds) before
- * calling this. Applies to every channel's NEXT PID_ProfileStart(),
- * not retroactively to a shot already in progress. Returns 1 on
- * success, 0 if either duration is 0. */
-uint8_t PID_SetProfileTiming(uint32_t rampTimeMs, uint32_t flatTopTimeMs);
+/* Sets the SHARED ramp-up/flat-top/ramp-down durations, in
+ * milliseconds (matching PID_StartRamp()'s existing convention) -- an
+ * operator-facing wire command converts from the natural operator
+ * unit (seconds) before calling this. Applies to every channel's NEXT
+ * PID_ProfileStart(), not retroactively to a shot already in
+ * progress. Returns 1 on success, 0 if any of the three durations is
+ * 0. */
+uint8_t PID_SetProfileTiming(uint32_t rampUpTimeMs, uint32_t flatTopTimeMs, uint32_t rampDownTimeMs);
 
-/* Reads back the SHARED ramp/flat-top durations, in milliseconds
- * (same unit as the setter -- an operator-facing wire command
- * converts to/from seconds), via `*rampTimeMs`/`*flatTopTimeMs` (either
- * may be NULL to skip). Added 2026-09-10 alongside PID:PROFile:TIMing?
- * -- same host-tool-readback motivation as PID_GetGains() above.
- * Returns 1 if timing has ever been successfully set this boot
- * (both outputs written), 0 if PID_SetProfileTiming() was never
- * called or was last rejected (both would-be durations are 0,
- * outputs left unwritten) -- distinct from PID_GetGains()'s always-
- * succeeds behavior because "never configured" is a real, meaningful
- * state here (PID_ProfileStart() itself refuses to run in it). */
-uint8_t PID_GetProfileTiming(uint32_t *rampTimeMs, uint32_t *flatTopTimeMs);
+/* Reads back the SHARED ramp-up/flat-top/ramp-down durations, in
+ * milliseconds (same unit as the setter -- an operator-facing wire
+ * command converts to/from seconds), via `*rampUpTimeMs`/
+ * `*flatTopTimeMs`/`*rampDownTimeMs` (any may be NULL to skip). Added
+ * 2026-09-10 alongside SHOT:TIMing? -- same host-tool-readback
+ * motivation as PID_GetGains() above. Returns 1 if timing has ever
+ * been successfully set this boot (all three outputs written), 0 if
+ * PID_SetProfileTiming() was never called or was last rejected (all
+ * three would-be durations are 0, outputs left unwritten) -- distinct
+ * from PID_GetGains()'s always-succeeds behavior because "never
+ * configured" is a real, meaningful state here (PID_ProfileStart()
+ * itself refuses to run in it). */
+uint8_t PID_GetProfileTiming(uint32_t *rampUpTimeMs, uint32_t *flatTopTimeMs, uint32_t *rampDownTimeMs);
 
 /* Sets channel `channel`'s peak demand current for the profile, in
  * Amps -- clamped to [0, PFM_MAX_CURRENT_A_PER_CHANNEL[channel]]
@@ -453,10 +503,10 @@ uint8_t PID_GetProfileCurrent(uint8_t channel, float *demandCurrentA);
  * follow the same profile, just without error correction. When the
  * shared clock reaches the end of the down-ramp, the shot ends
  * automatically: PID_Stop() (full stop, PFM output off entirely, per
- * direct instruction) -- an operator must send PID:PROFILE:START
+ * direct instruction) -- an operator must send SHOT:STARt
  * again for another shot, nothing resumes on its own. Returns 1 on
- * success, 0 if PID_SetProfileTiming() was never called (rampTimeMs/
- * flatTopTimeMs both 0). */
+ * success, 0 if PID_SetProfileTiming() was never called (rampUpTimeMs/
+ * flatTopTimeMs/rampDownTimeMs all 0). */
 uint8_t PID_ProfileStart(void);
 
 uint8_t PID_IsProfileActive(void);
@@ -464,7 +514,7 @@ uint8_t PID_IsProfileActive(void);
 /* --------------------------------------------------------------------------
  * Waveform logging -- added 2026-09-10, so "demanded vs. closed-loop
  * output" can actually be PLOTTED, not just sampled a few times a
- * second over a serial round-trip (PID:STATus? polling, as used for
+ * second over a serial round-trip (SOURce:STATus? polling, as used for
  * the first bench convergence test -- far too coarse to show the real
  * waveform shape at PID_LOOP_RATE_HZ). Logs either ONE channel
  * (PID_ArmLog()) or EVERY channel at once, from the same real ticks
@@ -482,16 +532,17 @@ uint8_t PID_IsProfileActive(void);
  * output) x HRTIM_NUM_CHANNELS x this many x 4 bytes for the log
  * storage itself (pid.c), since PID_ArmLogAll() (added 2026-09-10)
  * needs a row per channel even though PID_ArmLog() only ever uses one
- * of them -- at today's 4 channels that's 48000 bytes, a real,
- * deliberate chunk of this MCU's 128 KiB (see pid.c's own comment on
- * those arrays). 1000 chosen to still cover several real seconds of a
- * control-loop transient at a sane decimation (see PID_ArmLog()'s own
- * `decim` parameter) -- e.g. decim=4 covers 4 seconds at
- * PID_LOOP_RATE_HZ=1000 with 1000 samples, an effective 250 Hz log
- * rate, plenty to see a convergence curve's real shape. Revisit
- * downward if a future RAM-hungry feature needs the headroom back --
- * see docs/memory_report.html for current utilization. */
-#define PID_LOG_MAX_SAMPLES  (1000U)
+ * of them -- at today's 4 channels that's 12 x this many bytes (48,000 B
+ * at 1000, 84,000 B at 1750), a real, deliberate chunk of this MCU's
+ * 128 KiB. RAISED 2026-09-21 from 1000 to 1750 per direct decision, to
+ * keep time-resolution usable over the longer (10 s ramp / 5 s flat-top =
+ * 25 s) shot profiles -- funded by shrinking PFM_TABLE_SIZE (pfm.h) from
+ * 5000 to 1000 entries. 1750 covers a 25 s shot at decim=18 (an effective
+ * ~56 Hz log rate). Do NOT raise this further without re-checking the
+ * simulator build's own RAM budget (sim_transrex.c's SIM_LOG_MAX_SAMPLES
+ * arrays sit on top of these same 128 KiB) -- see docs/memory_report.html
+ * for current utilization. */
+#define PID_LOG_MAX_SAMPLES  (1750U)
 
 /* Arms logging for `channel` (0..HRTIM_NUM_CHANNELS-1): clears any
  * previous log, starts fresh. Every `decim`-th REAL PID_Update() tick
@@ -562,7 +613,7 @@ uint32_t PID_GetLogSampleRateHz(void);
 
 /* 1 if PID_ArmLogAll() is the currently-armed mode, 0 if PID_ArmLog()
  * (a single channel) is, or if nothing is armed at all -- added
- * 2026-09-10 so a host tool (or cmd_pid_logdata(), commands.c) can
+ * 2026-09-10 so a host tool (or cmd_log_data(), commands.c) can
  * tell which validation rule applies to a channel argument: under
  * PID_ArmLogAll(), any channel 0..HRTIM_NUM_CHANNELS-1 has real data;
  * under PID_ArmLog(), only PID_GetLogChannel()'s one channel does. */

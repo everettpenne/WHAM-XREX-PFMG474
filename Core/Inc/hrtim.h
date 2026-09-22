@@ -112,6 +112,16 @@ void HRTIM1_FullInit(void);
  * priority-inversion window this ordering avoids. */
 void HRTIM1_EnableMasterInterrupt(void);
 
+/* Live-reprograms the Master timebase's Period register to a new PID
+ * heartbeat rate -- added 2026-09-22, backs PID_SetLoopRateHz() (pid.c)/
+ * CONFig:PIDRate (commands.c). Same fixed /4 prescale HRTIM1_FullInit()
+ * already configured, never changed here. Returns 1 on success, 0 if
+ * `hz` would over/underflow the 16-bit PER register (roughly
+ * 649 Hz-42.5 MHz at this prescale, though PID_SetLoopRateHz() applies
+ * its own, much tighter, sane operating range on top of this). See
+ * hrtim.c's own doc comment for the full reasoning. */
+uint8_t HRTIM1_SetPidHeartbeatRate(uint32_t hz);
+
 /* Starts HRTIM outputs, selectively enabling only the channels
  * requested. `channelEnabled` must point to exactly HRTIM_NUM_CHANNELS
  * uint8_t flags (index 0..N-1, matching PFM_Step_t's `cmp[]` ordering).
@@ -123,7 +133,7 @@ void HRTIM1_PWM_Start(const uint8_t *channelEnabled);
 void HRTIM1_PWM_Stop(void);
 
 /* Connects or disconnects ONE channel's output pins LIVE -- added
- * 2026-09-11 for PID:CHANnel:ENAble (commands.c/pid.c), so an operator
+ * 2026-09-11 for SOURce:ENAble (commands.c/pid.c), so an operator
  * can enable/disable a single Transrex channel's actual output at any
  * time, including mid-shot, without touching any other channel or
  * needing a fresh HRTIM1_PWM_Start() call. `channel` is

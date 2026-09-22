@@ -15,6 +15,7 @@
 "./Core/Src/syscalls.o"
 "./Core/Src/sysmem.o"
 "./Core/Src/system_stm32g4xx.o"
+"./Core/Src/telemetry.o"
 "./Core/Src/uart.o"
 "./Core/Src/xrex_io.o"
 "./Core/Startup/startup_stm32g474qetx.o"

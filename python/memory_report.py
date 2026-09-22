@@ -55,7 +55,7 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_ELF = REPO_ROOT / "Debug" / "WHAM-XREX-PFMG474.elf"
-HISTORY_CSV = REPO_ROOT / "docs" / "memory_history.csv"
+HISTORY_CSV = REPO_ROOT / "docs" / "reports" / "memory_history.csv"
 
 # STM32G474QETX_FLASH.ld MEMORY block -- kept as plain constants here
 # rather than parsed from the .ld file, since they've been fixed since
@@ -391,7 +391,7 @@ def backfill_history():
 # per-bar tooltips on the breakdown charts) -- no build step, no CDN.
 # --------------------------------------------------------------------------
 REPORT_TEMPLATE = Path(__file__).resolve().parent / "memory_report_template.html"
-REPORT_HTML = REPO_ROOT / "docs" / "memory_report.html"
+REPORT_HTML = REPO_ROOT / "docs" / "reports" / "memory_report.html"
 
 
 def _module_breakdown_from_row(row, prefix):

@@ -77,17 +77,17 @@ extern "C" {
  * Table size. The sibling project derives this from its own supply_config.h
  * (SUPPLY_PFM_TABLE_SIZE, currently 5000 there, chosen for a specific RAM
  * budget history tied to features not present here) -- defined directly
- * here instead, at the same value, since there's no equivalent config
- * source yet. Revisit if/when this project grows its own RAM-budget
- * pressure worth tracking. PFM_Step_t's size now depends on
- * HRTIM_NUM_CHANNELS (2 + 2*N bytes -- see ctrlr_config.h), so total
- * static RAM for the table is PFM_TABLE_SIZE * (2 + 2*HRTIM_NUM_CHANNELS)
+ * here instead. SHRUNK 2026-09-21 from 5000 to 1000 per direct decision,
+ * to free ~39 KiB of SRAM for a larger PID waveform log (see
+ * PID_LOG_MAX_SAMPLES, pid.h): this is the legacy TABLE:* / FIRE playback
+ * buffer, kept only as a bench fallback, and 1000 entries (~10 ms of
+ * playback at 100 kHz) is ample for that role. PFM_Step_t's size now
+ * depends on HRTIM_NUM_CHANNELS (2 + 2*N bytes -- see ctrlr_config.h), so
+ * total static RAM for the table is PFM_TABLE_SIZE * (2 + 2*HRTIM_NUM_CHANNELS)
  * bytes, not a fixed 8 bytes/entry regardless of channel count anymore.
- * At N=5 and PFM_TABLE_SIZE=5000 that's 60,000 B -- confirmed against a
- * real .map file to comfortably fit this MCU's 128 KiB SRAM alongside
- * everything else (see docs/changelog.txt, 2026-09-08).
+ * At N=4 and PFM_TABLE_SIZE=1000 that's 10,000 B.
  * -------------------------------------------------------------------------- */
-#define PFM_TABLE_SIZE                           (5000U)
+#define PFM_TABLE_SIZE                           (1000U)
 
 /* --------------------------------------------------------------------------
  * PFM_Step_t -- one playback entry. `cmp[]` holds one compare value per

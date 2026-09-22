@@ -12,6 +12,7 @@
 #include "pfm.h"
 #include "main.h"
 #include "xrex_io.h"
+#include "telemetry.h"
 
 static SM_State_t     g_state         = SM_STATE_IDLE;
 static SM_FaultType_t g_faultType     = SM_FAULT_NONE;
@@ -19,23 +20,41 @@ static SM_FaultType_t g_faultType     = SM_FAULT_NONE;
 /* External-enable interlock -- PF13, MOVED here 2026-09-17 from PF15
    (Fiber_Enable), per direct instruction: enable and trigger are now
    two independent physical signals on separate pins, not one shared
-   wire. See this file's own header comment for the full design. OFF by
-   default -- existing shots/tests are unaffected unless explicitly
-   turned on. */
-static uint8_t g_externalEnableRequired = 0U;
+   wire. See this file's own header comment for the full design.
+
+   ON by default as of 2026-09-22, direct instruction: these are meant
+   to be usable-by-default features, not something an operator has to
+   remember to opt into every session. REAL CONSEQUENCE, not a paper
+   change: PF13 is GPIO_PULLDOWN (main.c), so a floating/unwired PF13
+   now reads LOW = "not satisfied" by default -- ARM (ArmConditionsMet())
+   and SHOT:STARt will both refuse (ERR 13/15) on any bench setup
+   that doesn't have the real interlock wired or looped back
+   (DIAGnostic:GPOut11 -> PF13, see that command's own doc). Was OFF by
+   default 2026-09-16 through 2026-09-21 -- see docs/changelog.txt for
+   both entries if reconciling behavior against an older build. */
+static uint8_t g_externalEnableRequired = 1U;
 
 /* External trigger (rising edge on PF15 fires a shot while ARMED) --
-   see this file's own header comment for the full design. OFF by
-   default. UNCOUPLED from g_externalEnableRequired 2026-09-17, the
-   same day enable moved to PF13 -- previously turning enable off also
-   forced this off (SM_SetExternalEnableRequired()'s old comment), a
-   rule that existed only because both features read the SAME physical
-   wire; now that they're on separate pins, per direct instruction, the
-   two config flags are fully independent. The real safety guarantee is
-   unaffected either way: SM_Fire() itself (below) still unconditionally
-   re-checks SM_ExternalEnableOk() before ever actually firing,
-   regardless of how or when trigger was turned on. */
-static uint8_t g_externalTriggerRequired = 0U;
+   see this file's own header comment for the full design.
+
+   ON by default as of 2026-09-22, same direct instruction and same
+   reasoning as g_externalEnableRequired above -- these are meant to be
+   usable-by-default features. Lower practical impact than the enable
+   flag above: this only means a PF15 rising edge will fire an ARMED
+   shot; it never BLOCKS anything by itself (SM_Fire() still always
+   re-checks the enable interlock regardless of how it's called), and a
+   floating/unwired PF15 (also GPIO_PULLDOWN) just never produces a
+   rising edge, so an unwired bench setup sees no behavior change from
+   this flag alone. UNCOUPLED from g_externalEnableRequired 2026-09-17,
+   the same day enable moved to PF13 -- previously turning enable off
+   also forced this off (SM_SetExternalEnableRequired()'s old comment),
+   a rule that existed only because both features read the SAME
+   physical wire; now that they're on separate pins, per direct
+   instruction, the two config flags are fully independent. The real
+   safety guarantee is unaffected either way: SM_Fire() itself (below)
+   still unconditionally re-checks SM_ExternalEnableOk() before ever
+   actually firing, regardless of how or when trigger was turned on. */
+static uint8_t g_externalTriggerRequired = 1U;
 
 /* Baseline PF15 level for edge detection, meaningful only while
    g_state == SM_STATE_ARMED and g_externalTriggerRequired != 0 --
@@ -73,43 +92,10 @@ static uint8_t ExternalTriggerInputIsHigh(void)
     return (HAL_GPIO_ReadPin(GPIOF, GPIO_PIN_15) == GPIO_PIN_SET) ? 1U : 0U;
 }
 
-/* Emergency stop (PG10, a fiber-optic input -- NOT PF15) -- see this
-   file's own header comment for the full design. OFF by default --
-   "acts as though it does not exist" when off, per direct instruction. */
-static uint8_t g_emergencyStopRequired = 0U;
-
-/* Pure raw read -- 1 if PG10 is electrically HIGH right now, 0 if LOW.
-   Deliberately polarity-agnostic (matches ExternalEnableInputIsHigh()'s
-   own convention just above, and SM_GetEmergencyStopInputRaw()'s own
-   doc comment in state_machine.h) -- what this LEVEL actually means
-   ("asserted" vs "OK") is EMERGENCY_STOP_POLARITY's job
-   (ctrlr_config.h), applied by EmergencyStopAsserted() below, not this
-   function. GPIO_PULLDOWN in main.c's MX_GPIO_Init() means an
-   unconnected/floating PG10 reads LOW here. */
-static uint8_t EmergencyStopInputIsHigh(void)
-{
-    return (HAL_GPIO_ReadPin(GPIOG, GPIO_PIN_10) == GPIO_PIN_SET) ? 1U : 0U;
-}
-
-/* Applies EMERGENCY_STOP_POLARITY (ctrlr_config.h) to the raw PG10
-   level -- 1 if this represents the E-stop being ASSERTED right now,
-   0 if OK. INVERTED 2026-09-17, later the same day it was first added:
-   a hardware inverter was placed between the fiber-optic receiver and
-   PG10, so EMERGENCY_STOP_POLARITY now defaults NORMALLY_LOW ("no
-   input" -- including a genuinely floating pin -- reads as OK, a HIGH
-   reading is the fault), the OPPOSITE of this feature's original
-   NORMALLY_HIGH assumption. See ctrlr_config.h's own extensive comment
-   on EMERGENCY_STOP_POLARITY for the full reasoning and the safety
-   trade-off this reversal carries. Same one-line shape as xrex_io.c's
-   own BitIsFault() helper -- not shared/reused across modules (this
-   file has no xrex_io.h dependency), matching this file's own existing
-   per-concern-local-helper style (ExternalEnableInputIsHigh(),
-   EmergencyStopInputIsHigh(), just above). */
-static uint8_t EmergencyStopAsserted(void)
-{
-    uint8_t bit = EmergencyStopInputIsHigh();
-    return (EMERGENCY_STOP_POLARITY == FAULT_POLARITY_NORMALLY_HIGH) ? (bit == 0U) : (bit != 0U);
-}
+/* Emergency-stop feature REMOVED 2026-09-21 (PG10 was NRST, not a usable
+   GPIO) -- g_emergencyStopRequired/EmergencyStopInputIsHigh()/
+   EmergencyStopAsserted() and SM_FAULT_EMERGENCY_STOP are gone. See
+   state_machine.h and docs/changelog.txt. */
 
 /* Meaningful only when g_faultType is one of the PER-CHANNEL fault
    types (SM_FAULT_OVERCURRENT/SM_FAULT_ENABLE_OUTPUT/SM_FAULT_ENERPRO
@@ -125,6 +111,37 @@ static uint8_t g_faultChannel = 0xFFU;
    is already SM_STATE_FAULT by the time either handler runs) to carry
    that information. */
 static SM_State_t g_stateBeforeFault = SM_STATE_IDLE;
+
+/* DEBUG:FAULT:BYPASS -- added 2026-09-21, direct request: a bench-only
+   debug override to run a channel with no real fault-detect signal
+   feeding its Water/Temp/Enerpro/OCP inputs (e.g. a controller-target
+   build running with no simulator/Transrex physically connected to
+   drive those inputs healthy -- they float, and float-as-unhealthy
+   trips an instant fault the moment the channel is enabled, blocking
+   ANY test of the DRIVE/FEEDBACK path itself). Defaults OFF (0) at
+   every boot -- this is a RAM-only flag, never persisted, so it cannot
+   silently stay enabled across a power cycle. When ON, EnterFault()
+   below (the single funnel every SM_Report*Fault()/SM_PollFaults()
+   call already goes through) returns immediately without transitioning
+   state, so NOTHING behaves as faulted regardless of source -- Water/
+   Temp/Enerpro/OCP/ENABLE_OUTPUT/GENERAL/EXTERNAL_ENABLE
+   all pass through this same bypass. *** NEVER enable this against a
+   real Transrex or any hardware where a real overcurrent/water/temp
+   condition is physically possible -- it exists purely so this bench's
+   own two-board test rig can validate signal paths (like DRIVE/
+   FEEDBACK capture) in isolation, without a full, correctly-wired fault
+   loop present. *** */
+static uint8_t g_faultBypassEnabled = 0U;
+
+void SM_SetFaultBypassEnabled(uint8_t enabled)
+{
+    g_faultBypassEnabled = (enabled != 0U) ? 1U : 0U;
+}
+
+uint8_t SM_GetFaultBypassEnabled(void)
+{
+    return g_faultBypassEnabled;
+}
 
 /* -- fault-type handlers -- */
 
@@ -196,21 +213,6 @@ static void HandleOvercurrentFault(uint8_t channel)
     }
 }
 
-/* Called on entering SM_STATE_FAULT with g_faultType ==
-   SM_FAULT_EMERGENCY_STOP -- added 2026-09-17, per direct instruction.
-   Deliberately NOT branching on g_stateBeforeFault at all, unlike
-   every other handler above -- an emergency stop means an immediate,
-   unconditional hard cutoff regardless of whether the fault hit while
-   FIRING or not; there is no ramp path for this fault type under any
-   circumstance. PID_Stop() itself is already idempotent/safe to call
-   when nothing was actually running (see its own comment, pid.c), so
-   no separate "nothing to stop" branch is needed here either -- this
-   is intentionally the simplest handler in this file. */
-static void HandleEmergencyStopFault(void)
-{
-    PID_Stop();
-}
-
 /* Readiness gate for SM_Arm() -- STUB, per direct instruction: always
    allows arming today. Real interlock conditions (no fault active --
    already implicitly guaranteed, since IDLE and FAULT are mutually
@@ -253,12 +255,27 @@ static uint8_t ArmConditionsMet(void)
    previously SM_FAULT_GENERAL was this function's only real caller. */
 static void EnterFault(SM_FaultType_t type, uint8_t channel)
 {
+    if (g_faultBypassEnabled != 0U)
+    {
+        return;   /* DEBUG:FAULT:BYPASS active -- see g_faultBypassEnabled's
+                      own comment above. Bail out before touching ANY
+                      state -- every fault type funnels through here, so
+                      this one check covers all of them uniformly. */
+    }
+
     g_stateBeforeFault = g_state;   /* captured BEFORE transitioning --
                                         see this variable's own comment
                                         above for why the handlers need it */
     g_state        = SM_STATE_FAULT;
     g_faultType    = type;
     g_faultChannel = channel;
+
+    /* Telemetry event (telemetry.h) -- emitted as "!EVT ... FAULT ..." by
+       the main loop. We are already inside the caller's __disable_irq()
+       critical section (SM_PollFaults()/SM_Report*Fault()), and PushEvent's
+       own PRIMASK save/restore nests cleanly under it, so this stays a fixed
+       few stores with no interrupt-enable side effects. */
+    Telemetry_PushFault(type, channel);
 
     /* Legacy (pfm.c TABLE:STEP/FIRE) output path -- always safed here,
        regardless of fault type or which state pid.c's own state
@@ -267,7 +284,7 @@ static void EnterFault(SM_FaultType_t type, uint8_t channel)
        SM_Fire()), so it has no ramp-down concept to preserve -- an
        instant stop is correct for it either way. Idempotent/safe to
        call when nothing was running (matching HRTIM1_FaultClear()'s
-       own established pattern). The CURRENT (pid.c PID:*) output
+       own established pattern). The CURRENT (pid.c SOURce:*) output
        path's own stop is now each fault type's OWN responsibility (see
        HandleGeneralFault()/HandleOvercurrentFault(), below) --
        General/Overcurrent Fault's whole point is NOT stopping it
@@ -322,13 +339,6 @@ static void EnterFault(SM_FaultType_t type, uint8_t channel)
                                             SAME response as Overcurrent,
                                             not Water/Temp's full stop) */
             HandleOvercurrentFault(channel);
-            break;
-        case SM_FAULT_EMERGENCY_STOP:   /* deliberately its OWN handler, NOT
-                                            grouped with GENERAL below -- see
-                                            HandleEmergencyStopFault()'s own
-                                            comment: no ramp, ever, unlike
-                                            every other fault type here */
-            HandleEmergencyStopFault();
             break;
         case SM_FAULT_GENERAL:
         case SM_FAULT_EXTERNAL_ENABLE:   /* identical response to GENERAL,
@@ -404,6 +414,8 @@ uint8_t SM_Arm(void)
        enable are separate pins. */
     g_lastExternalTriggerLevelWhileArmed = ExternalTriggerInputIsHigh();
 
+    Telemetry_PushState(SM_STATE_ARMED);
+
     return 1U;
 }
 
@@ -412,6 +424,7 @@ void SM_Disarm(void)
     if (g_state == SM_STATE_ARMED)
     {
         g_state = SM_STATE_IDLE;
+        Telemetry_PushState(SM_STATE_IDLE);
     }
 }
 
@@ -423,7 +436,7 @@ uint8_t SM_Fire(void)
     }
 
     /* Redundant last-line-of-defense re-check, 2026-09-16 -- the
-       command layer (cmd_pid_profile_start(), commands.c) already
+       command layer (cmd_shot_start(), commands.c) already
        checks SM_ExternalEnableOk() itself first, for a precise error
        message; this catches PF13 (the enable pin, MOVED here 2026-09-17
        from PF15) dropping in the narrow window between that check and
@@ -445,6 +458,36 @@ uint8_t SM_Fire(void)
     }
 
     g_state = SM_STATE_FIRING;
+    Telemetry_PushState(SM_STATE_FIRING);
+    return 1U;
+}
+
+/* ARMED -> FIRING for the PLAIN (non-profile) start path -- added
+   2026-09-21 alongside gating SOURce:RUN behind ARM. Same shape as
+   SM_Fire() above, but calls PID_Start() (the open-ended, non-profile
+   loop -- no shot clock, no auto-completion) instead of
+   PID_ProfileStart(). SOURce:STOP (SM_Stop(), below) is what brings it
+   back to IDLE. Kept a separate entry point rather than overloading
+   SM_Fire() with a mode flag because the two call different pid.c start
+   functions and have different completion semantics. */
+uint8_t SM_StartPlain(void)
+{
+    if (g_state != SM_STATE_ARMED)
+    {
+        return 0U;
+    }
+
+    /* Same redundant last-line-of-defense re-check as SM_Fire(): the
+       command layer checks this first for a precise error message; this
+       catches any future caller that reaches here directly. */
+    if (SM_ExternalEnableOk() == 0U)
+    {
+        return 0U;   /* stays ARMED */
+    }
+
+    PID_Start();   /* always succeeds or is already running (idempotent) */
+    g_state = SM_STATE_FIRING;
+    Telemetry_PushState(SM_STATE_FIRING);
     return 1U;
 }
 
@@ -455,6 +498,7 @@ void SM_Stop(void)
     if ((g_state == SM_STATE_ARMED) || (g_state == SM_STATE_FIRING))
     {
         g_state = SM_STATE_IDLE;
+        Telemetry_PushState(SM_STATE_IDLE);
     }
 }
 
@@ -463,6 +507,7 @@ void SM_NotifyShotComplete(void)
     if (g_state == SM_STATE_FIRING)
     {
         g_state = SM_STATE_IDLE;
+        Telemetry_PushState(SM_STATE_IDLE);
     }
 }
 
@@ -517,27 +562,12 @@ void SM_PollFaults(void)
     {
         EnterFault(SM_FAULT_GENERAL, 0xFFU);   /* channel N/A for a system-wide fault */
     }
-    /* Emergency stop (PG10), added 2026-09-17 -- checked across ALL
-       states (IDLE/ARMED/FIRING), same as the GENERAL check just
-       above, NOT the FIRING-only carve-out external-enable below uses
-       -- see state_machine.h's own emergency-stop section for why.
-       Per direct instruction ("acts as though it does not exist" when
-       off), the PG10 read itself is gated behind
-       g_emergencyStopRequired first -- genuinely zero work, not just a
-       zero-effect check, when the feature is off. Uses
-       EmergencyStopAsserted() (EMERGENCY_STOP_POLARITY-aware), not a
-       raw HIGH/LOW comparison -- see that helper's own comment for the
-       2026-09-17 inverter-driven polarity reversal. */
-    else if ((g_emergencyStopRequired != 0U) && (EmergencyStopAsserted() != 0U))
-    {
-        EnterFault(SM_FAULT_EMERGENCY_STOP, 0xFFU);   /* channel N/A, system-wide */
-    }
     /* External-enable interlock (PF13, MOVED 2026-09-17 from PF15),
        added 2026-09-16 -- deliberately gated on SM_STATE_FIRING
        specifically, not IDLE/ARMED too. See state_machine.h's own
        external-enable section for the full reasoning (this is the ONLY
        continuous-monitoring gate point for this interlock; ARM/
-       PID:PROFile:STARt cover IDLE/ARMED via their own one-shot checks
+       SHOT:STARt cover IDLE/ARMED via their own one-shot checks
        instead). g_state re-read fresh here (not cached from above) so
        this naturally doesn't double-enter if the GENERAL check above
        already transitioned to FAULT this same call. */
@@ -569,7 +599,17 @@ void SM_PollFaults(void)
         uint8_t level = ExternalTriggerInputIsHigh();
         if ((g_lastExternalTriggerLevelWhileArmed == 0U) && (level != 0U))
         {
-            (void)SM_Fire();
+            /* Rising edge on PF15 -> fire. Report it over serial so the
+               operator can tell a trigger-initiated shot apart from a
+               command-initiated one: SM_Fire() already emits
+               "!EVT ... STATE FIRING"; this adds the "cause" annotation
+               ("!EVT ... TRIGGER FIRING") only when the fire actually
+               succeeded (a trigger while not ready / profile timing
+               unset stays silent, exactly like a failed SHOT:STARt). */
+            if (SM_Fire() != 0U)
+            {
+                Telemetry_PushTrigger();
+            }
         }
         g_lastExternalTriggerLevelWhileArmed = level;
     }
@@ -758,20 +798,11 @@ uint8_t SM_ClearFault(void)
     {
         return 0U;   /* still faulted -- stays in SM_STATE_FAULT */
     }
-    /* Emergency stop, added 2026-09-17 -- same philosophy again.
-       SM_EmergencyStopOk() itself already returns 1 unconditionally
-       when g_emergencyStopRequired is 0, so this is a no-op re-check
-       (never blocks clearing, never reads PG10) whenever the feature
-       isn't in use -- matching "acts as though it does not exist" when
-       off. */
-    if (SM_EmergencyStopOk() == 0U)
-    {
-        return 0U;   /* still faulted -- stays in SM_STATE_FAULT */
-    }
 
     g_state        = SM_STATE_IDLE;
     g_faultType    = SM_FAULT_NONE;
     g_faultChannel = 0xFFU;
+    Telemetry_PushFaultClear();
     return 1U;
 }
 
@@ -824,28 +855,4 @@ uint8_t SM_GetExternalTriggerRequired(void)
 uint8_t SM_GetExternalTriggerInputRaw(void)
 {
     return ExternalTriggerInputIsHigh();
-}
-
-void SM_SetEmergencyStopRequired(uint8_t required)
-{
-    g_emergencyStopRequired = (required != 0U) ? 1U : 0U;
-}
-
-uint8_t SM_GetEmergencyStopRequired(void)
-{
-    return g_emergencyStopRequired;
-}
-
-uint8_t SM_EmergencyStopOk(void)
-{
-    if (g_emergencyStopRequired == 0U)
-    {
-        return 1U;   /* feature not in use -- always "ok", and never reads PG10 */
-    }
-    return (EmergencyStopAsserted() == 0U) ? 1U : 0U;
-}
-
-uint8_t SM_GetEmergencyStopInputRaw(void)
-{
-    return EmergencyStopInputIsHigh();
 }

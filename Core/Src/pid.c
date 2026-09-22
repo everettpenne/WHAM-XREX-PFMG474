@@ -108,6 +108,14 @@ static uint8_t  g_faultRampActive       = 0U;
 static uint32_t g_faultRampElapsedTicks = 0U;
 static uint32_t g_faultRampTotalTicks   = 0U;
 
+/* FAULT_RAMP_DOWN_TIME_S -- RUNTIME-CONFIGURABLE as of 2026-09-22,
+   direct request. Backs CONFig:FaultRampTime (commands.c) via
+   PID_SetFaultRampDownTimeS()/PID_GetFaultRampDownTimeS() (below).
+   Read by PID_BeginFaultRampDown() (converted to ticks there, against
+   whatever g_pidLoopRateHz currently is -- see that function's own
+   updated comment). */
+static float g_faultRampDownTimeS = FAULT_RAMP_DOWN_TIME_S;
+
 /* --------------------------------------------------------------------------
  * Demand profile -- SHARED shot clock. Deliberately ONE global elapsed-
  * tick counter, not one per channel, so every channel's ramp/flat-top/
@@ -115,17 +123,30 @@ static uint32_t g_faultRampTotalTicks   = 0U;
  * channel has its own peak demandCurrentA (see pid.h). Ticks, not ms,
  * same convention as the pre-existing rampTicksLeft feature above.
  * -------------------------------------------------------------------------- */
-static uint8_t  g_profileActive       = 0U;
-static uint32_t g_profileElapsedTicks = 0U;
-static uint32_t g_profileRampTicks    = 0U;   /* one ramp's length (up == down) */
-static uint32_t g_profileFlatTopTicks = 0U;
-static uint32_t g_profileTotalTicks   = 0U;   /* 2*rampTicks + flatTopTicks */
+static uint8_t  g_profileActive        = 0U;
+static uint32_t g_profileElapsedTicks  = 0U;
+static uint32_t g_profileRampUpTicks   = 0U;   /* independently configurable from
+                                                   the down-ramp -- added 2026-09-22,
+                                                   direct request. Was one shared
+                                                   g_profileRampTicks (up == down)
+                                                   before this. */
+static uint32_t g_profileRampDownTicks = 0U;
+static uint32_t g_profileFlatTopTicks  = 0U;
+static uint32_t g_profileTotalTicks    = 0U;   /* rampUpTicks + flatTopTicks + rampDownTicks */
 
-/* Fixed control-loop sample interval, in seconds -- the whole point of
-   keeping Master as a fixed-rate heartbeat instead of a self-clocked
-   per-channel design, see pid.h's own header comment. Computed once as
-   a compile-time constant, not re-derived every call. */
-#define PID_DT_SEC  (1.0f / (float)PID_LOOP_RATE_HZ)
+/* Control-loop sample rate/interval -- RUNTIME-CONFIGURABLE as of
+   2026-09-22, direct request (was PID_LOOP_RATE_HZ, a #define, with
+   PID_DT_SEC computed from it once at compile time). g_pidLoopRateHz
+   defaults to the ctrlr_config.h compile-time value; PID_SetLoopRateHz()
+   (below) is the only way to change it, and recomputes g_pidDtSec in
+   the same call so the two can never drift out of sync with each
+   other. g_pidDtSec is what every per-tick PID_Update() calculation
+   actually reads (it used to read the PID_DT_SEC macro directly) --
+   still just a fixed-rate heartbeat, still deliberately decoupled from
+   any channel's own carrier/demand frequency, see pid.h's own header
+   comment; only WHAT that fixed rate is can now change live. */
+static uint32_t g_pidLoopRateHz = PID_LOOP_RATE_HZ;
+static float    g_pidDtSec      = 1.0f / (float)PID_LOOP_RATE_HZ;
 
 /* Waveform log -- see pid.h's own comment block on PID_ArmLog(). Plain
    parallel arrays (SoA), matching pfm_input.c's own period[] array
@@ -145,8 +166,8 @@ static uint32_t g_profileTotalTicks   = 0U;   /* 2*rampTicks + flatTopTicks */
    noise -- see docs/changelog.txt's glitch-finding entries -- two
    "identical" runs are never bit-for-bit identical). RAM cost: 4x a
    single channel's own (3 arrays * HRTIM_NUM_CHANNELS *
-   PID_LOG_MAX_SAMPLES * 4 bytes = 48000 bytes at today's 4
-   channels/1000 samples, up from 12000 -- tracked in the usual
+   PID_LOG_MAX_SAMPLES * 4 bytes = 84000 bytes at today's 4
+   channels/1750 samples, up from 12000 -- tracked in the usual
    memory-footprint commit; a real, deliberate RAM/capability
    trade-off, not an accident. */
 static uint32_t g_logSetpoint[HRTIM_NUM_CHANNELS][PID_LOG_MAX_SAMPLES];
@@ -175,10 +196,30 @@ static uint16_t g_logDecimCounter = 0U;
    match, this fails the BUILD instead of silently indexing past the
    array (or leaving a channel's entry as 0, quietly making that
    channel's Amps<->Hz conversion degenerate). */
-static const float g_pfmMaxCurrentA[HRTIM_NUM_CHANNELS] = PFM_MAX_CURRENT_A_PER_CHANNEL;
+/* RUNTIME-CONFIGURABLE as of 2026-09-22, direct request (was `const`,
+   initialized once from the ctrlr_config.h placeholder and never
+   touched again) -- PID_SetMaxCurrentA() (below) is the only way to
+   change an entry, backing CONFig:MAXCURRent (commands.c). This is
+   exactly the real per-channel calibration ctrlr_config.h's own "MUST
+   BE CALIBRATED BEFORE FINAL DEPLOYMENT" comment describes -- making
+   it live means that calibration no longer needs a rebuild+reflash
+   per channel, just a serial command (though it's still session-only,
+   never persisted -- see PID_SetMaxCurrentA()'s own doc comment). */
+static float g_pfmMaxCurrentA[HRTIM_NUM_CHANNELS] = PFM_MAX_CURRENT_A_PER_CHANNEL;
 _Static_assert(sizeof(g_pfmMaxCurrentA) / sizeof(g_pfmMaxCurrentA[0]) == HRTIM_NUM_CHANNELS,
                "PFM_MAX_CURRENT_A_PER_CHANNEL (ctrlr_config.h) must have exactly "
                "HRTIM_NUM_CHANNELS entries");
+
+/* PFM_TURNON_FREQ_HZ/PFM_MAX_FREQ_HZ (ctrlr_config.h) -- RUNTIME-
+   CONFIGURABLE as of 2026-09-22, direct request. PID_SetTurnonFreqHz()/
+   PID_SetMaxFreqHz() (below) are the only ways to change them, backing
+   CONFig:TURNONHz/CONFig:MAXFREQHz (commands.c). Both cross-validate
+   against each other (turnon must stay strictly below max) and against
+   [PID_OUTPUT_MIN_HZ, PID_OUTPUT_MAX_HZ] -- the documented nesting
+   relationship AmpsToHz() below relies on (see that function's own
+   comment) -- rather than trusting either setter's argument blindly. */
+static uint32_t g_pfmTurnonFreqHz = PFM_TURNON_FREQ_HZ;
+static uint32_t g_pfmMaxFreqHz    = PFM_MAX_FREQ_HZ;
 
 /* --------------------------------------------------------------------------
  * Demand profile helpers -- see pid.h's "DEMAND PROFILE" doc section.
@@ -186,25 +227,28 @@ _Static_assert(sizeof(g_pfmMaxCurrentA) / sizeof(g_pfmMaxCurrentA[0]) == HRTIM_N
 
 /* This channel's target current (Amps), on the shared trapezoidal
    shot shape, at `elapsedTicks` into the shot -- 0 -> linear up-ramp
-   -> demandCurrentA -> flat-top -> linear down-ramp -> 0. Only ever
-   called with elapsedTicks < g_profileTotalTicks (PID_Update() checks
-   shot completion BEFORE calling this, see there) -- g_profileRampTicks
-   is guaranteed nonzero whenever g_profileActive, since
-   PID_SetProfileTiming() refuses a zero ramp, so the divisions below
-   are safe. Interpolated from elapsed/total each call (not a fixed
-   per-tick increment accumulated forward), matching the existing
-   PID_StartRamp() convention just above -- lands exactly on the
-   flat-top/zero boundaries regardless of how evenly the durations
-   divide into whole ticks. */
+   -> demandCurrentA -> flat-top -> linear down-ramp -> 0. The up-ramp
+   and down-ramp each use their OWN independently-configured length
+   (g_profileRampUpTicks/g_profileRampDownTicks, added 2026-09-22,
+   direct request -- previously one shared g_profileRampTicks, up ==
+   down always). Only ever called with elapsedTicks < g_profileTotalTicks
+   (PID_Update() checks shot completion BEFORE calling this, see
+   there) -- both ramp tick counts are guaranteed nonzero whenever
+   g_profileActive, since PID_SetProfileTiming() refuses a zero ramp
+   on either side, so the divisions below are safe. Interpolated from
+   elapsed/total each call (not a fixed per-tick increment accumulated
+   forward), matching the existing PID_StartRamp() convention just
+   above -- lands exactly on the flat-top/zero boundaries regardless
+   of how evenly the durations divide into whole ticks. */
 static float TrapezoidalCurrentA(uint32_t elapsedTicks, float demandCurrentA)
 {
-    if (elapsedTicks < g_profileRampTicks)
+    if (elapsedTicks < g_profileRampUpTicks)
     {
-        float frac = (float)elapsedTicks / (float)g_profileRampTicks;
+        float frac = (float)elapsedTicks / (float)g_profileRampUpTicks;
         return demandCurrentA * frac;
     }
 
-    uint32_t flatEndTicks = g_profileRampTicks + g_profileFlatTopTicks;
+    uint32_t flatEndTicks = g_profileRampUpTicks + g_profileFlatTopTicks;
     if (elapsedTicks < flatEndTicks)
     {
         return demandCurrentA;
@@ -212,7 +256,7 @@ static float TrapezoidalCurrentA(uint32_t elapsedTicks, float demandCurrentA)
 
     /* Down-ramp. */
     uint32_t downElapsed = elapsedTicks - flatEndTicks;
-    float frac = (float)downElapsed / (float)g_profileRampTicks;
+    float frac = (float)downElapsed / (float)g_profileRampDownTicks;
     if (frac > 1.0f)
     {
         frac = 1.0f;   /* defensive only -- PID_Update()'s completion
@@ -257,8 +301,8 @@ static uint32_t AmpsToHz(uint8_t channel, float currentA)
     }
 
     float frac = currentA / maxCurrentA;
-    float hzF = (float)PFM_TURNON_FREQ_HZ +
-                frac * ((float)PFM_MAX_FREQ_HZ - (float)PFM_TURNON_FREQ_HZ);
+    float hzF = (float)g_pfmTurnonFreqHz +
+                frac * ((float)g_pfmMaxFreqHz - (float)g_pfmTurnonFreqHz);
 
     if (hzF < (float)PID_OUTPUT_MIN_HZ)
     {
@@ -272,11 +316,23 @@ static uint32_t AmpsToHz(uint8_t channel, float currentA)
     return (uint32_t)hzF;
 }
 
+/* RUNTIME-CONFIGURABLE as of 2026-09-22, direct request. Backs
+   CONFig:SLEWRate (commands.c) via PID_SetSlewRateHzPerTick()/
+   PID_GetSlewRateHzPerTick() below. This is a real hardware-safety
+   clamp (see ClampOutputSlew()'s own comment just below) -- the
+   setter enforces > 0 only (same "don't invent a paranoid extra
+   bound the operator didn't ask for" philosophy as this project's
+   other runtime setters), so it's the operator's own responsibility
+   not to configure this so loose it stops meaningfully protecting
+   downstream hardware; ctrlr_config.h's placeholder default (2000)
+   still applies at boot either way. */
+static float g_pidOutputMaxSlewHzPerTick = (float)PID_OUTPUT_MAX_SLEW_HZ_PER_TICK;
+
 /* Hard per-tick output slew-rate clamp -- see ctrlr_config.h's own
    extensive comment on PID_OUTPUT_MAX_SLEW_HZ_PER_TICK for the full
    rationale (a REAL, DSLogic-confirmed single-tick output glitch,
    2026-09-10). Bounds `desiredHz` to within
-   +/-PID_OUTPUT_MAX_SLEW_HZ_PER_TICK of `prevHz` (the previous tick's
+   +/-g_pidOutputMaxSlewHzPerTick of `prevHz` (the previous tick's
    ACTUAL output, i.e. st->lastOutputHz), then re-clamps to
    [PID_OUTPUT_MIN_HZ, PID_OUTPUT_MAX_HZ] as defense-in-depth (prevHz
    is itself always already in that range by construction, so this
@@ -288,7 +344,7 @@ static uint32_t AmpsToHz(uint8_t channel, float currentA)
    number. */
 static float ClampOutputSlew(float desiredHz, float prevHz)
 {
-    float maxDelta = (float)PID_OUTPUT_MAX_SLEW_HZ_PER_TICK;
+    float maxDelta = g_pidOutputMaxSlewHzPerTick;
     float clampedHz = desiredHz;
 
     if (clampedHz > (prevHz + maxDelta))
@@ -377,12 +433,190 @@ void PID_Init(void)
     g_running               = 0U;
     g_profileActive          = 0U;
     g_profileElapsedTicks    = 0U;
-    g_profileRampTicks       = 0U;
+    g_profileRampUpTicks     = 0U;
+    g_profileRampDownTicks   = 0U;
     g_profileFlatTopTicks    = 0U;
     g_profileTotalTicks      = 0U;
     g_faultRampActive        = 0U;
     g_faultRampElapsedTicks  = 0U;
     g_faultRampTotalTicks    = 0U;
+}
+
+/* Sane operating range for PID_SetLoopRateHz() -- NOT the full range
+   HRTIM1_SetPidHeartbeatRate() (hrtim.c) could technically accept
+   (roughly 649 Hz-42.5 MHz at this board's fixed /4 Master prescale);
+   this is a much tighter, deliberately conservative band centered on
+   the compile-time 1 kHz default this project has actually run and
+   tuned against. Lower bound (500 Hz) stays comfortably clear of the
+   hardware's own ~649 Hz floor rather than flirting with it; upper
+   bound (10 kHz) is well above "tens of Hz to low kHz," the normal
+   range this project's own PID_LOOP_RATE_HZ comment (ctrlr_config.h)
+   already documents for a magnet-supply current loop -- raise it only
+   after a real reason to run faster shows up. */
+#define PID_LOOP_RATE_HZ_MIN  (500UL)
+#define PID_LOOP_RATE_HZ_MAX  (10000UL)
+
+/* PID_LOOP_RATE_HZ -- RUNTIME-CONFIGURABLE as of 2026-09-22, direct
+   request. Backs CONFig:PIDRate (commands.c). Refuses to change while
+   g_running (ERR-equivalent 0 return) -- changing the control loop's
+   OWN sample rate mid-shot is categorically different from every
+   other runtime-configurable value added this same day (PID:GAINS,
+   SHOT:TIMing, etc. all only take effect on the NEXT shot by
+   design already): every already-armed/running channel's integral
+   accumulator, slew-clamp history, and profile tick-counting all
+   implicitly assume a CONSTANT dt across the shot they're mid-way
+   through, so this refuses outright rather than accepting a value
+   that would silently corrupt all of that for a shot already in
+   progress. Range-checked against [PID_LOOP_RATE_HZ_MIN,
+   PID_LOOP_RATE_HZ_MAX] above, then handed to
+   HRTIM1_SetPidHeartbeatRate() (hrtim.c) for the actual register
+   write/hardware-range check -- only committed to g_pidLoopRateHz/
+   g_pidDtSec if THAT succeeds too, so a rejected hardware write never
+   leaves the two out of sync with the real Master timebase. */
+uint8_t PID_SetLoopRateHz(uint32_t hz)
+{
+    if (g_running != 0U)
+    {
+        return 0U;   /* refuse mid-shot -- see this function's own doc comment */
+    }
+    if ((hz < PID_LOOP_RATE_HZ_MIN) || (hz > PID_LOOP_RATE_HZ_MAX))
+    {
+        return 0U;
+    }
+    if (HRTIM1_SetPidHeartbeatRate(hz) == 0U)
+    {
+        return 0U;   /* hardware register range check failed -- see hrtim.c */
+    }
+
+    g_pidLoopRateHz = hz;
+    g_pidDtSec      = 1.0f / (float)hz;
+    return 1U;
+}
+
+uint32_t PID_GetLoopRateHz(void)
+{
+    return g_pidLoopRateHz;
+}
+
+/* PFM_TURNON_FREQ_HZ/PFM_MAX_FREQ_HZ -- RUNTIME-CONFIGURABLE as of
+   2026-09-22, direct request. Back CONFig:TURNONHz/CONFig:MAXFREQHz
+   (commands.c). Each cross-validates against the OTHER's current
+   value (turnon must stay strictly below max -- AmpsToHz()'s linear
+   interpolation inverts nonsensically otherwise) and against
+   [PID_OUTPUT_MIN_HZ, PID_OUTPUT_MAX_HZ], the documented nesting
+   relationship AmpsToHz() itself assumes (its own final clamp to that
+   range is defense-in-depth regardless, so this isn't a hard safety
+   requirement -- just what keeps the calibration physically
+   sensible). No refuses-while-running policy like PID_SetLoopRateHz()
+   -- a mid-shot change here just means the NEXT AmpsToHz() call (next
+   tick) uses the new calibration, no discontinuity in timing/
+   integration the way a heartbeat-rate change would cause. */
+uint8_t PID_SetTurnonFreqHz(uint32_t hz)
+{
+    if ((hz < (uint32_t)PID_OUTPUT_MIN_HZ) || (hz >= g_pfmMaxFreqHz))
+    {
+        return 0U;
+    }
+    g_pfmTurnonFreqHz = hz;
+    return 1U;
+}
+
+uint32_t PID_GetTurnonFreqHz(void)
+{
+    return g_pfmTurnonFreqHz;
+}
+
+uint8_t PID_SetMaxFreqHz(uint32_t hz)
+{
+    if ((hz > (uint32_t)PID_OUTPUT_MAX_HZ) || (hz <= g_pfmTurnonFreqHz))
+    {
+        return 0U;
+    }
+    g_pfmMaxFreqHz = hz;
+    return 1U;
+}
+
+uint32_t PID_GetMaxFreqHz(void)
+{
+    return g_pfmMaxFreqHz;
+}
+
+/* PFM_MAX_CURRENT_A_PER_CHANNEL[channel] -- RUNTIME-CONFIGURABLE as of
+   2026-09-22, direct request (see g_pfmMaxCurrentA's own doc comment
+   above -- this is the real per-channel calibration ctrlr_config.h's
+   "MUST BE CALIBRATED BEFORE FINAL DEPLOYMENT" comment describes).
+   Backs CONFig:MAXCURRent (commands.c). `amps` must be > 0 -- a
+   channel with a zero or negative full-range current makes
+   AmpsToHz()'s own frac = currentA/maxCurrentA divide-by-zero/
+   nonsensical, matching PID_SetProfileTiming()'s own "no zero
+   durations" convention. */
+uint8_t PID_SetMaxCurrentA(uint8_t channel, float amps)
+{
+    if (channel >= HRTIM_NUM_CHANNELS)
+    {
+        return 0U;
+    }
+    if (amps <= 0.0f)
+    {
+        return 0U;
+    }
+    g_pfmMaxCurrentA[channel] = amps;
+    return 1U;
+}
+
+uint8_t PID_GetMaxCurrentA(uint8_t channel, float *amps)
+{
+    if (channel >= HRTIM_NUM_CHANNELS)
+    {
+        return 0U;
+    }
+    if (amps != NULL)
+    {
+        *amps = g_pfmMaxCurrentA[channel];
+    }
+    return 1U;
+}
+
+/* PID_OUTPUT_MAX_SLEW_HZ_PER_TICK -- RUNTIME-CONFIGURABLE as of
+   2026-09-22, direct request. Backs CONFig:SLEWRate (commands.c). See
+   g_pidOutputMaxSlewHzPerTick's own doc comment (above, next to
+   ClampOutputSlew()) for why this only enforces > 0, no upper
+   bound. */
+uint8_t PID_SetSlewRateHzPerTick(float hzPerTick)
+{
+    if (hzPerTick <= 0.0f)
+    {
+        return 0U;
+    }
+    g_pidOutputMaxSlewHzPerTick = hzPerTick;
+    return 1U;
+}
+
+float PID_GetSlewRateHzPerTick(void)
+{
+    return g_pidOutputMaxSlewHzPerTick;
+}
+
+/* FAULT_RAMP_DOWN_TIME_S -- RUNTIME-CONFIGURABLE as of 2026-09-22,
+   direct request. Backs CONFig:FaultRampTime (commands.c). Must be
+   > 0, same "no zero durations" convention as PID_SetProfileTiming().
+   Does NOT retroactively affect a fault ramp-down already in progress
+   -- PID_BeginFaultRampDown() only reads this at the moment a fault
+   is actually detected, converting to a fixed tick count for that one
+   ramp; changing it mid-ramp has no effect until the NEXT fault. */
+uint8_t PID_SetFaultRampDownTimeS(float s)
+{
+    if (s <= 0.0f)
+    {
+        return 0U;
+    }
+    g_faultRampDownTimeS = s;
+    return 1U;
+}
+
+float PID_GetFaultRampDownTimeS(void)
+{
+    return g_faultRampDownTimeS;
 }
 
 uint8_t PID_Start(void)
@@ -450,14 +684,14 @@ void PID_Stop(void)
     }
 
     g_running      = 0U;
-    g_profileActive = 0U;   /* a stop -- fault, PID:STOP, or shot completion
+    g_profileActive = 0U;   /* a stop -- fault, SOURce:STOP, or shot completion
                                 (see PID_Update()) -- always ends any
                                 profile in progress too; an operator
-                                must send PID:PROFILE:START again */
+                                must send SHOT:STARt again */
 
     /* A General-Fault ramp-down (added 2026-09-13, see
        PID_BeginFaultRampDown()) in progress when PID_Stop() is called
-       for some OTHER reason (a manual PID:STOP abort during the ramp
+       for some OTHER reason (a manual SOURce:STOP abort during the ramp
        -- allowed, deliberately: an operator asking for an immediate
        stop should get one, overriding the graceful ramp) is simply
        abandoned here -- HRTIM1_PWM_Stop() above already disconnects
@@ -501,7 +735,17 @@ uint8_t PID_IsRunning(void)
    must clear the fault and start a fresh one. */
 void PID_BeginFaultRampDown(void)
 {
-    g_faultRampTotalTicks = (uint32_t)(FAULT_RAMP_DOWN_TIME_S * (float)PID_LOOP_RATE_HZ);
+    /* g_pidLoopRateHz, NOT the PID_LOOP_RATE_HZ compile-time default --
+       fixed 2026-09-22 alongside making the loop rate itself runtime-
+       configurable (PID_SetLoopRateHz()): this conversion MUST use
+       whatever rate the loop is actually running at right now, or a
+       changed rate would silently make this ramp run for the wrong
+       real-world duration (ticks would still count out at
+       g_faultRampTotalTicks, but each tick no longer takes
+       1/PID_LOOP_RATE_HZ seconds). Also now reads g_faultRampDownTimeS
+       (below), not the compile-time FAULT_RAMP_DOWN_TIME_S default
+       directly -- see PID_SetFaultRampDownTimeS()'s own doc comment. */
+    g_faultRampTotalTicks = (uint32_t)(g_faultRampDownTimeS * (float)g_pidLoopRateHz);
     if (g_faultRampTotalTicks == 0U)
     {
         g_faultRampTotalTicks = 1U;   /* defensive -- a zero-tick ramp would
@@ -537,6 +781,48 @@ void PID_BeginFaultRampDown(void)
     }
 
     g_faultRampActive = 1U;
+}
+
+/* --------------------------------------------------------------------------
+ * Waveform-log helpers -- extracted 2026-09-22 (docs/telemetry.md Phase 3) so
+ * the fault-ramp-down path (ProcessFaultRampDown, below) keeps logging with
+ * the SAME decimation and timebase as the normal PID_Update() loop, instead of
+ * silently freezing the log at the fault boundary. That was a real gap found
+ * during the telemetry demo: GENERAL:TEST:FAULT mid-shot ramped the output
+ * down gracefully, but LOG:DATA? showed only the pre-fault flat-top.
+ * -------------------------------------------------------------------------- */
+
+/* Advance the shared decimation counter once per real tick and report whether
+ * THIS tick is a logging tick (a log is armed AND this tick hits the decimation
+ * stride AND the cap hasn't been reached). Must be called exactly once per
+ * PID_Update() tick -- the normal loop or the fault-ramp path, never both --
+ * so g_logDecimCounter advances once per tick either way. */
+static uint8_t LogDecimationTick(void)
+{
+    if (((g_logChannel != 0xFFU) || (g_logAllChannels != 0U)) && (g_logCount < g_logCap))
+    {
+        g_logDecimCounter++;
+        if (g_logDecimCounter >= g_logDecim)
+        {
+            g_logDecimCounter = 0U;
+            return 1U;
+        }
+    }
+    return 0U;
+}
+
+/* Write channel `ch`'s {setpoint, measured, output} into the current g_logCount
+ * slot, if that channel is the armed one (or all-channels logging is on). Call
+ * only when LogDecimationTick() returned 1 this tick. */
+static void LogSample(uint8_t ch)
+{
+    if ((g_logAllChannels != 0U) || (ch == g_logChannel))
+    {
+        PidChannelState_t *st = &g_ch[ch];
+        g_logSetpoint[ch][g_logCount] = st->setpointHz;
+        g_logMeasured[ch][g_logCount] = st->lastMeasuredHz;
+        g_logOutput[ch][g_logCount]   = st->lastOutputHz;
+    }
 }
 
 /* Drives one tick of an already-armed General-Fault ramp-down (see
@@ -588,20 +874,44 @@ static void ProcessFaultRampDown(void)
         }
 
         float startHz = (float)st->faultRampStartHz;
-        float endHz   = (float)PFM_TURNON_FREQ_HZ;
+        float endHz   = (float)g_pfmTurnonFreqHz;
         float hzF      = rampDone ? endHz : (startHz + frac * (endHz - startHz));
 
         float clampedHzF = ClampOutputSlew(hzF, (float)st->lastOutputHz);
         uint32_t outputHz = (uint32_t)clampedHzF;
 
         st->lastOutputHz = outputHz;
-        st->setpointHz   = outputHz;   /* keep PID:STATus?'s reported setpoint/output
+        st->setpointHz   = outputHz;   /* keep SOURce:STATus?'s reported setpoint/output
                                            consistent -- this IS the target now, there's
                                            no separate PID error to report during an
                                            open-loop ramp */
 
         uint16_t per = (uint16_t)((HRTIM_TIMER_CLK_HZ / outputHz) - 1U);
         HRTIM1_SetChannelPeriod(ch, per);
+    }
+
+    /* Log the ramp-down too (2026-09-22, docs/telemetry.md Phase 3): the
+       normal per-channel logging loop is skipped once PID_Update() takes the
+       FAULT branch, so without this the waveform log freezes at the fault
+       boundary and the graceful ramp never shows up in LOG:DATA?.
+       Measured is NOT updated during the open-loop ramp (no feedback consumed
+       -- see the function's own header comment), so the log records the last
+       HELD measured value; setpoint/output both follow the ramp (setpointHz is
+       overwritten to the ramp value just above, per the reporting-consistency
+       note). Logs only participating channels, same as the loop above. */
+    {
+        uint8_t logThisTick = LogDecimationTick();
+        if (logThisTick != 0U)
+        {
+            for (uint8_t ch = 0U; ch < HRTIM_NUM_CHANNELS; ch++)
+            {
+                if (g_ch[ch].faultRampParticipating != 0U)
+                {
+                    LogSample(ch);
+                }
+            }
+            g_logCount++;
+        }
     }
 
     if (rampDone != 0U)
@@ -806,16 +1116,7 @@ void PID_Update(void)
        channel's sample `i` is written from the SAME real tick -- the
        entire point of PID_ArmLogAll() over running the same shot N
        separate times. */
-    uint8_t logThisTick = 0U;
-    if (((g_logChannel != 0xFFU) || (g_logAllChannels != 0U)) && (g_logCount < g_logCap))
-    {
-        g_logDecimCounter++;
-        if (g_logDecimCounter >= g_logDecim)
-        {
-            g_logDecimCounter = 0U;
-            logThisTick = 1U;
-        }
-    }
+    uint8_t logThisTick = LogDecimationTick();
 
     for (uint8_t ch = 0U; ch < HRTIM_NUM_CHANNELS; ch++)
     {
@@ -953,7 +1254,7 @@ void PID_Update(void)
                enough for a first working version; revisit with
                back-calculation anti-windup only if real bench tuning shows
                a real need). */
-            float integralNext = st->integral + (error * PID_DT_SEC);
+            float integralNext = st->integral + (error * g_pidDtSec);
 
             /* Derivative ON MEASUREMENT, not on error -- avoids "derivative
                kick" (a huge transient D term) the instant a setpoint
@@ -963,7 +1264,7 @@ void PID_Update(void)
             float derivativeTerm = 0.0f;
             if (st->haveLastMeasured != 0U)
             {
-                derivativeTerm = -((float)measuredHz - (float)st->lastMeasuredHz) / PID_DT_SEC;
+                derivativeTerm = -((float)measuredHz - (float)st->lastMeasuredHz) / g_pidDtSec;
             }
             st->lastMeasuredHz   = measuredHz;
             st->haveLastMeasured = 1U;
@@ -1057,11 +1358,9 @@ void PID_Update(void)
            PID_ArmLogAll()) is written into the SAME g_logCount slot on
            a logging tick -- same real tick, same index, directly
            comparable across channels. */
-        if (logThisTick && (g_logAllChannels || (ch == g_logChannel)))
+        if (logThisTick)
         {
-            g_logSetpoint[ch][g_logCount] = st->setpointHz;
-            g_logMeasured[ch][g_logCount] = st->lastMeasuredHz;
-            g_logOutput[ch][g_logCount]   = st->lastOutputHz;
+            LogSample(ch);
         }
     }
 
@@ -1156,12 +1455,46 @@ uint8_t PID_GetStatus(uint8_t channel, uint32_t *setpointHz,
     return 1U;
 }
 
+/* Shared by PID_ArmLog()/PID_ArmLogAll() -- added 2026-09-22, real bug
+   found the hard way on real hardware: a DISABLED channel is skipped
+   entirely by PID_Update()'s per-channel loop (st->outputEnabled == 0U
+   -> continue, well before the log-write below), so it never writes
+   anything into g_logSetpoint/g_logMeasured/g_logOutput for the new
+   run -- but re-arming only resets g_logCount/g_logCap/g_logDecim*,
+   never the arrays themselves, so a disabled channel's log slots kept
+   showing whatever was written there the LAST time that memory was
+   used (a completely different, possibly hours-old shot -- real
+   output was correctly OFF the whole time, confirmed via a live
+   DRIVE_HZ measurement on the simulator staying at 0 throughout, but
+   LOG:DATA?/every plot built from it showed a smooth, plausible-
+   looking, fully stale trace for that channel, indistinguishable from
+   a genuine live one). Zeroing every channel's full log capacity here
+   (not just up to `maxSamples` -- cheap, and removes any possibility
+   of stale data leaking through regardless of future caller/count
+   mismatches) means a disabled channel now reads back as a flat 0 for
+   this run -- unambiguous, and matches the actual electrical truth:
+   no ENABLE command this run means no data this run either. */
+static void ClearLogArrays(void)
+{
+    for (uint8_t ch = 0U; ch < HRTIM_NUM_CHANNELS; ch++)
+    {
+        for (uint16_t i = 0U; i < (uint16_t)PID_LOG_MAX_SAMPLES; i++)
+        {
+            g_logSetpoint[ch][i] = 0U;
+            g_logMeasured[ch][i] = 0U;
+            g_logOutput[ch][i]   = 0U;
+        }
+    }
+}
+
 uint8_t PID_ArmLog(uint8_t channel, uint16_t maxSamples, uint16_t decim)
 {
     if (channel >= HRTIM_NUM_CHANNELS)
     {
         return 0U;
     }
+
+    ClearLogArrays();
 
     g_logChannel      = channel;
     g_logAllChannels  = 0U;
@@ -1184,6 +1517,8 @@ uint8_t PID_ArmLog(uint8_t channel, uint16_t maxSamples, uint16_t decim)
    See pid.h's own comment for the full rationale. */
 uint8_t PID_ArmLogAll(uint16_t maxSamples, uint16_t decim)
 {
+    ClearLogArrays();
+
     g_logChannel      = 0xFFU;
     g_logAllChannels  = 1U;
     g_logCap          = (maxSamples > (uint16_t)PID_LOG_MAX_SAMPLES)
@@ -1207,7 +1542,7 @@ uint32_t PID_GetLogSampleRateHz(void)
 
 /* channel: 0..HRTIM_NUM_CHANNELS-1, added 2026-09-10 alongside the
    row-per-channel log storage (see that comment). Returns NULL for an
-   out-of-range channel -- callers (cmd_pid_logdata(), commands.c) are
+   out-of-range channel -- callers (cmd_log_data(), commands.c) are
    expected to validate the wire-level channel argument themselves
    before calling, same convention as everywhere else in this file, so
    this is a defensive backstop, not the primary validation. */
@@ -1227,7 +1562,7 @@ const uint32_t *PID_GetLogSetpoint(uint8_t channel)
 }
 
 /* Which mode the current (or most recently armed) log is in -- added
-   2026-09-10 so cmd_pid_logdata() can apply the right validation rule
+   2026-09-10 so cmd_log_data() can apply the right validation rule
    for its optional channel argument (see that function's own comment):
    1 = PID_ArmLogAll() (any channel argument 1..HRTIM_NUM_CHANNELS is
    valid), 0 = PID_ArmLog() (only the single armed channel is valid --
@@ -1380,9 +1715,9 @@ const char *PID_GetChannelNickname(uint8_t channel)
     return g_ch[channel].nickname;
 }
 
-uint8_t PID_SetProfileTiming(uint32_t rampTimeMs, uint32_t flatTopTimeMs)
+uint8_t PID_SetProfileTiming(uint32_t rampUpTimeMs, uint32_t flatTopTimeMs, uint32_t rampDownTimeMs)
 {
-    if ((rampTimeMs == 0U) || (flatTopTimeMs == 0U))
+    if ((rampUpTimeMs == 0U) || (flatTopTimeMs == 0U) || (rampDownTimeMs == 0U))
     {
         return 0U;
     }
@@ -1390,22 +1725,25 @@ uint8_t PID_SetProfileTiming(uint32_t rampTimeMs, uint32_t flatTopTimeMs)
     /* Ticks, not ms -- same rounding convention as PID_StartRamp()
        above; at least 1 each, so a very short duration never produces
        a zero-tick phase (TrapezoidalCurrentA()'s own division would
-       divide-by-zero on a zero g_profileRampTicks). */
-    uint32_t rampTicks    = (rampTimeMs    * (uint32_t)PID_LOOP_RATE_HZ) / 1000U;
-    uint32_t flatTopTicks = (flatTopTimeMs * (uint32_t)PID_LOOP_RATE_HZ) / 1000U;
-    if (rampTicks == 0U)    { rampTicks    = 1U; }
-    if (flatTopTicks == 0U) { flatTopTicks = 1U; }
+       divide-by-zero on a zero g_profileRampUpTicks/RampDownTicks). */
+    uint32_t rampUpTicks   = (rampUpTimeMs   * (uint32_t)PID_LOOP_RATE_HZ) / 1000U;
+    uint32_t flatTopTicks  = (flatTopTimeMs  * (uint32_t)PID_LOOP_RATE_HZ) / 1000U;
+    uint32_t rampDownTicks = (rampDownTimeMs * (uint32_t)PID_LOOP_RATE_HZ) / 1000U;
+    if (rampUpTicks == 0U)   { rampUpTicks   = 1U; }
+    if (flatTopTicks == 0U)  { flatTopTicks  = 1U; }
+    if (rampDownTicks == 0U) { rampDownTicks = 1U; }
 
-    g_profileRampTicks    = rampTicks;
-    g_profileFlatTopTicks = flatTopTicks;
-    g_profileTotalTicks   = (2U * rampTicks) + flatTopTicks;   /* up-ramp + flat-top + down-ramp */
+    g_profileRampUpTicks   = rampUpTicks;
+    g_profileFlatTopTicks  = flatTopTicks;
+    g_profileRampDownTicks = rampDownTicks;
+    g_profileTotalTicks    = rampUpTicks + flatTopTicks + rampDownTicks;
 
     return 1U;
 }
 
-uint8_t PID_GetProfileTiming(uint32_t *rampTimeMs, uint32_t *flatTopTimeMs)
+uint8_t PID_GetProfileTiming(uint32_t *rampUpTimeMs, uint32_t *flatTopTimeMs, uint32_t *rampDownTimeMs)
 {
-    if ((g_profileRampTicks == 0U) && (g_profileFlatTopTicks == 0U))
+    if ((g_profileRampUpTicks == 0U) && (g_profileFlatTopTicks == 0U) && (g_profileRampDownTicks == 0U))
     {
         return 0U;   /* never successfully set -- see this function's own
                         doc comment in pid.h */
@@ -1417,13 +1755,17 @@ uint8_t PID_GetProfileTiming(uint32_t *rampTimeMs, uint32_t *flatTopTimeMs)
        an operator originally sent (that rounding already happened
        once, at set time; this is an honest readback of what's really
        active, not a replay of the original input). */
-    if (rampTimeMs != NULL)
+    if (rampUpTimeMs != NULL)
     {
-        *rampTimeMs = (g_profileRampTicks * 1000U) / (uint32_t)PID_LOOP_RATE_HZ;
+        *rampUpTimeMs = (g_profileRampUpTicks * 1000U) / (uint32_t)PID_LOOP_RATE_HZ;
     }
     if (flatTopTimeMs != NULL)
     {
         *flatTopTimeMs = (g_profileFlatTopTicks * 1000U) / (uint32_t)PID_LOOP_RATE_HZ;
+    }
+    if (rampDownTimeMs != NULL)
+    {
+        *rampDownTimeMs = (g_profileRampDownTicks * 1000U) / (uint32_t)PID_LOOP_RATE_HZ;
     }
     return 1U;
 }
@@ -1473,7 +1815,7 @@ uint8_t PID_GetProfileCurrent(uint8_t channel, float *demandCurrentA)
 
 uint8_t PID_ProfileStart(void)
 {
-    if ((g_profileRampTicks == 0U) && (g_profileFlatTopTicks == 0U))
+    if ((g_profileRampUpTicks == 0U) && (g_profileFlatTopTicks == 0U) && (g_profileRampDownTicks == 0U))
     {
         /* PID_SetProfileTiming() never called (or it was rejected) --
            refuse rather than run a degenerate zero-length shot. */

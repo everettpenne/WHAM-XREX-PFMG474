@@ -32,6 +32,7 @@
 #include "pid.h"
 #include "state_machine.h"
 #include "xrex_io.h"
+#include "telemetry.h"
 #include "sim_transrex.h"
 /* USER CODE END Includes */
 
@@ -185,6 +186,12 @@ int main(void)
                                          for the same "same cadence as
                                          everything else" consistency */
 
+  /* Telemetry event stream (telemetry.h) -- Phase 1 of docs/telemetry.md.
+     Just zeroes the event ring + sets the !EVT gate to ON; the actual
+     state/fault events are pushed by state_machine.c and emitted each
+     main-loop iteration by Telemetry_PollEmit() below. */
+  Telemetry_Init();
+
   uart_init(&uart2, &huart2);
 
   /* The HRTIM master-repetition interrupt must be enabled now, at
@@ -230,6 +237,13 @@ int main(void)
                                            "regardless of state" call site
                                            reasoning, but itself only acts
                                            while ARMED/FIRING (xrex_io.h) */
+
+    /* Emit any pending telemetry events (telemetry.h) as unsolicited
+       !EVT lines. Bounded (at most a few events per call) and only ever
+       runs at thread priority, so it cannot disturb the 1 kHz loop or any
+       fault ISR. */
+    Telemetry_PollEmit(&uart2);
+
 #if defined(BUILD_TARGET_SIMULATOR)
     SimTransrex_Update();   /* added 2026-09-18 -- SIMULATOR-ONLY, same
                                 "regardless of state" main-loop cadence;
@@ -507,7 +521,7 @@ static void MX_GPIO_Init(void)
      2026-09-17 from PF15 (Fiber_Enable) per direct instruction: enable
      and trigger are now two independent physical signals, not one
      shared wire. state_machine.c's own external-enable section has the
-     full design (ARM/PID:PROFile:STARt gating, FIRING-only continuous
+     full design (ARM/SHOT:STARt gating, FIRING-only continuous
      monitoring, SM_FAULT_EXTERNAL_ENABLE on loss). Plain polled input,
      no EXTI -- same reasoning as before the move: state_machine.c's
      SM_PollFaults() already checks this at the same cadence (main loop
@@ -587,12 +601,11 @@ static void MX_GPIO_Init(void)
      Removed entirely, per direct instruction ("shelve E-stop entirely
      again... pull the GPIO_PULLDOWN config off PG10 specifically") --
      this pin is not a usable GPIO on this board and must not be
-     reconfigured as one again. state_machine.c's emergency-stop
-     software (SM_FAULT_EMERGENCY_STOP and friends) is left in place,
-     dormant -- EMERGency:ENAble defaults off and, when off, never reads
-     any pin at all, so nothing there is electrically live -- but a
-     genuinely free pin from the schematic is needed before this feature
-     can be re-pointed at real hardware again. See
+     reconfigured as one again. The emergency-stop SOFTWARE
+     (SM_FAULT_EMERGENCY_STOP and friends) was then REMOVED 2026-09-21
+     (see docs/changelog.txt) rather than left dormant -- a genuinely
+     free pin from the schematic is needed before any future E-stop
+     feature can be re-pointed at real hardware. See
      [[pending-hardware-calibration]] (session memory) for the full
      writeup. */
 

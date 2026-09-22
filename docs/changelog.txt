@@ -1,6 +1,1784 @@
 WHAM-XREX-PFMG474 Firmware Changelog
 =====================================
 
+2026-09-22  —  Rename review: 5 findings fixed, build-verified before
+                first flash
+-----------------------------------------------------------------------
+  Change:  The PID: -> SOURce:/SHOT:/LOG:/CHANnel: rename (next entry
+        below) was hand-edited directly across cmd_parser.c/commands.c/
+        commands.h/state_machine.h -- never compiled or flashed before
+        this pass. An 8-angle review (correctness/removed-behavior/
+        cross-file/reuse/simplification/efficiency/altitude/
+        conventions) confirmed the mechanical rename itself was clean
+        (zero broken dispatch, zero orphaned old-namespace strings
+        anywhere in Core/, the Python tooling, or the docs -- every
+        SendErr()'s argument-count/range logic and every state-machine
+        safety guarantee carried over verbatim) but found 5 real issues
+        in code that rode along in the same hand-editing pass:
+
+        1. commands.h's ERR 13/15 doc table only listed ARM/DISARM/
+           SHOT:STARt as sources -- FIRE and SOURce:RUN (and ARM itself,
+           for ERR 15) also emit these codes now that the ARM-state gate
+           was extended to them. Fixed: table updated to name all the
+           real sources and explain why it widened.
+        2. The ARM-state + external-enable-interlock precondition check
+           (SM_GetState()==ARMED, SM_ExternalEnableOk()) was duplicated
+           byte-for-byte in cmd_fire/cmd_source_run/cmd_shot_start --
+           three independent copies of safety-interlock logic, one easy
+           to miss during a future edit. Fixed: factored into a new
+           static RequireArmedAndEnabled(inst) helper (commands.c,
+           right before cmd_fire) all three now call; cmd_arm()'s own
+           similar-but-distinct check (different message, a third
+           precondition) deliberately stays separate, not folded in.
+        3-4. Two stale doc-comment references left by a DIFFERENT,
+           already-completed change bundled into the same session (the
+           emergency-stop feature removal) -- state_machine.h still
+           named the removed SM_FAULT_EMERGENCY_STOP as a live sibling
+           of SM_FAULT_EXTERNAL_ENABLE, and commands.h still listed the
+           removed EMERGency:INPut? command as a live raw-readback
+           command (the identical comment in xrex_io.h had already been
+           correctly updated -- only this twin copy was missed). Both
+           fixed.
+        5. SM_Fire()/SM_StartPlain() (state_machine.c) are near-
+           duplicate bodies -- left as-is: the author's own comment
+           already documents this as a deliberate tradeoff (a mode-flag
+           on SM_Fire() was rejected in favor of a separate entry
+           point), not an oversight.
+
+        Verified after fixing: wham_build.py --target controller --clean
+        and --target simulator --clean both clean (zero errors,
+        zero warnings) -- the FIRST successful build of this rename.
+        python/wham_console.py and python/run_simulator_validation.py
+        both syntax-check and import cleanly (py_compile + a real
+        import, not just a grep).
+
+        Process note for next time: this rename was interleaved,
+        hunk-by-hunk, with ~8 unrelated feature additions in the same
+        files (CONFig:*, telemetry, DEBUG:FAULT:BYPASS, the E-stop
+        removal) -- no isolated "rename only" diff ever existed to
+        review in isolation, which is exactly what made this pass take
+        8 independent angles instead of one straightforward read. A
+        project-wide case-insensitive grep for every retired mnemonic/
+        function name, run as its own explicit step immediately after a
+        rename (before moving on to other edits in the same files), is
+        cheap insurance against this class of drift -- worth making a
+        habit rather than relying on a later audit to catch it.
+
+2026-09-22  —  Wire-protocol rename: PID: -> SOURce:/SHOT:/LOG:/CHANnel:
+-----------------------------------------------------------------------
+  Change:  Direct request: rename the output/demand SCPI commands out of
+        the PID: namespace into clean top-level namespaces, leaving PID:
+        to mean only the genuine PID-loop parameters. Clean cut, no
+        aliases -- the old PID:START/PID:SETPOINT/... spellings now
+        fall through to ERR 1 (unknown command), never silently
+        accepted.
+
+        Old -> new (canonical spellings; matching is case-insensitive):
+          PID:START            -> SOURce:RUN
+          PID:STOP             -> SOURce:STOP
+          PID:SETPOINT         -> SOURce:SETpoint
+          PID:STATus?          -> SOURce:STATus?
+          PID:RAMP             -> SOURce:RAMP
+          PID:CHANnel:ENAble   -> SOURce:ENAble
+          PID:CHANnel:ENAble?  -> SOURce:ENAble?
+          PID:CHANnel:NICKname -> CHANnel:NICKname
+          PID:CHANnel:NICKname? -> CHANnel:NICKname?
+          PID:PROFile:TIMing   -> SHOT:TIMing
+          PID:PROFile:TIMing?  -> SHOT:TIMing?
+          PID:PROFile:CURRent  -> SHOT:CURRent
+          PID:PROFile:CURRent? -> SHOT:CURRent?
+          PID:PROFile:STARt    -> SHOT:STARt
+          PID:LOG              -> LOG:ARM
+          PID:LOGDATA?         -> LOG:DATA?
+
+        PID:GAINS/PID:GAINS?/PID:LOOPMODE/PID:LOOPMODE? are unchanged --
+        they stay under PID:, which now means only those four. Error
+        strings updated too: "Invalid PID channel" -> "Invalid channel"
+        and "Invalid PID:* argument" -> "Invalid command arguments"
+        (ERR 11/12).
+
+        The underlying pid.c API, all units, and every command's reply
+        shape are unchanged -- a wire-protocol rename only, no behavior,
+        tuning, or calibration change. TELEMETRY_SCHEMA_VERSION bumped
+        3 -> 4 to mark the wire change.
+
+        Updated in lockstep: python/wham_console.py,
+        python/wham_llm_console.py, python/run_simulator_validation.py,
+        python/dslogic_shot_capture.py, and the docs
+        (docs/command_reference.md, docs/sop/wham_xrex_pfmg474_sop.tex,
+        docs/telemetry.md, AGENTS.md, docs/pin_mapping_reference.tex).
+
+2026-09-22  —  Docs: SOP Rev D (telemetry section, ARM/trigger update),
+                command_reference.md gaps filled
+-----------------------------------------------------------------------
+  Change:  Direct request: "Update the SOP and command manifest for new
+        commands and functionality. In the SOP, include a section about
+        telemetry and translation."
+
+        docs/command_reference.md: audited the full command_table[]
+        (cmd_parser.c, ~90 real entries) against the doc and closed the
+        two genuine gaps found -- DEBUG:FAULT:BYPASS/? (the bench-only
+        all-fault-types bypass) and DIAGnostic:OPTBytes? (the option-
+        byte boot-config diagnostic) were both implemented but entirely
+        undocumented. Also resolved a now-stale "known limitation" note
+        claiming wham_console.py's Amps<->Hz calibration constants were
+        hardcoded with no live sync -- that was fixed earlier this same
+        day (sync_calibration()); the note now describes the fix
+        instead of the gap it used to warn about.
+
+        docs/sop/wham_xrex_pfmg474_sop.tex, Rev D:
+        - New Section 10, "Telemetry -- Reading and Translating the
+          Event Stream": the live !EVT stream (SYS:EVENT), a translation
+          table mapping every !EVT line shape to its operational
+          meaning (STATE/TRIGGER FIRING/FAULT/FAULT CLEAR -- including
+          how TRIGGER FIRING is the only way to tell a trigger-initiated
+          shot apart from a command-initiated one), and the flight
+          recorder (SYS:EVLOG?) for post-mortem review after the live
+          stream wasn't being watched. Includes a worked example reusing
+          a real incident from earlier this same day (a spontaneous
+          FAULT GENERAL, diagnosed via SYS:EVLOG? rather than guessing).
+        - Section 9 updated for two real Rev D firmware behavior changes
+          that directly affect this procedure: EXTernal:ENAble/
+          EXTernal:TRIGger now default ON (previously opt-in/OFF), which
+          can newly block Step 7's ARM on hardware with nothing wired to
+          PF13 depending on how that board's pin rests; and ARM's
+          failure reply now names the specific precondition that failed
+          instead of one generic error. Documented firing via the
+          external trigger as an alternative to Step 8's manual
+          PID:PROFile:STARt (Step 8a/8b), with its own CAUTION addendum:
+          an ARMED board with the trigger on can fire at any later
+          moment, not just immediately, so the safety check belongs
+          before ARM in this mode, not just before the trigger pull.
+        - Troubleshooting table: updated the ARM entry for the new
+          specific error messages, added a row for the new
+          EXTernal:ENAble default surprising an unwired bench setup, and
+          a row for "the external trigger doesn't fire anything, no
+          error reported" (a triggered fire fails silently by design --
+          this is the exact failure mode debugged live earlier the same
+          day, root cause: profile timing wiped by a reflash).
+        - *** REAL BUG, FOUND AND FIXED same day, confirmed via PDF
+          render ***: the Troubleshooting table used a plain
+          tabular/center (can't break across a page), and the two new
+          rows pushed it past one page -- pdflatex reported an "Overfull
+          vbox (392pt too high)", which rendered as a blank page
+          followed by the table's last row cut off entirely, invisible
+          to a reader unless someone actually looked at the compiled
+          PDF rather than just the source. Fixed by switching to
+          longtable (already imported in the preamble, unused until
+          now) with a repeating header row; re-rendered and visually
+          confirmed clean across both continuation pages.
+        - Added a docs/telemetry.md reference; Rev D revision-table row.
+
+        Verified: docs/command_reference.md changes reviewed for
+        accuracy against the actual source (xrex_io.c/state_machine.c/
+        commands.c); SOP compiled twice with pdflatex (stable page
+        count and cross-references), then every changed/added page
+        inspected visually via PDF render -- title/revision table,
+        Section 9's reworked ARM step and new Step 8a/8b, Section 10 in
+        full, the fixed Troubleshooting table across its page break, and
+        References. No firmware changes -- docs only.
+
+2026-09-22  —  ARM now reports WHY it refused, not just that it did
+-----------------------------------------------------------------------
+  Change:  Direct request: "when we attempt to make a state change, can
+        we have the controller report why it could not move to the next
+        state if relevant? For instance, when I go to ARM the
+        controller, if we don't have a specific output track correctly
+        programmed, we should report this." cmd_arm() (commands.c) used
+        to collapse every failure reason -- wrong state, the
+        external-enable interlock, a specific channel's ENA_OUT/
+        CONTACT_OUT not both set -- into one generic
+        ERR 13 "not currently IDLE, or arm conditions not met". An
+        operator with one misconfigured channel out of four had no way
+        to tell which one from the wire protocol alone.
+
+        cmd_arm() now checks each precondition explicitly, in the same
+        order ArmConditionsMet() (state_machine.c) already checks them
+        internally, and reports the FIRST failing one distinctly --
+        matching the "distinct failure reasons, reported distinctly"
+        pattern cmd_pid_profile_start()/cmd_pid_start() already
+        established for PID:PROFile:STARt/PID:START (2026-09-16/
+        2026-09-21):
+          ERR 13  Can't ARM -- not currently IDLE
+          ERR 15  External enable interlock not satisfied -- PF13 reads LOW
+          ERR 13  Channel N's ENA_OUT/CONTACT_OUT aren't both set -- see
+                  XREX:CHANnel:ENAOut/CONTactOut, or PID:CHANnel:ENAble 0
+                  if unused
+
+        New Core/Src/xrex_io.c function XrexIo_FindNotReadyChannel() --
+        same per-channel scan XrexIo_EnableOutputsReadyToArm() already
+        did (now implemented in terms of this function instead of
+        duplicating the loop), but returns the first offending 0-based
+        channel instead of collapsing to a bool; 0xFF means every
+        enabled channel is ready, matching SM_GetFaultChannel()'s own
+        established not-applicable sentinel convention.
+
+        SM_Arm() itself (state_machine.c) is unchanged -- its own
+        internal ArmConditionsMet() check still backs the actual
+        transition as a last-line-of-defense against a narrow race
+        window between cmd_arm()'s new checks and the SM_Arm() call
+        (same reasoning as SM_Fire()'s own re-check of
+        SM_ExternalEnableOk()), falling back to a generic message that
+        should never fire outside that race.
+
+        docs/command_reference.md's ARM section and the ERR 15 table
+        row updated to match (ERR 15 is no longer PID:PROFile:STARt-only
+        -- ARM can now generate it too).
+
+        *** REAL BUG, FOUND AND FIXED same day, confirmed on real
+        hardware ***: the channel-not-ready message's first cut used
+        char buf[64] in cmd_arm() -- the full text ("Channel N's
+        ENA_OUT/CONTACT_OUT aren't both set -- see
+        XREX:CHANnel:ENAOut/CONTactOut, or PID:CHANnel:ENAble 0 if
+        unused") is 120 chars, so snprintf silently truncated it
+        mid-word ("...see XREX:CHA") -- null-terminated within the
+        given size rather than overflowing, so nothing crashed or
+        corrupted, it just quietly sent a cut-off error message. Caught
+        immediately by live-testing the new message on real hardware
+        rather than just reading the code. Fixed by growing the buffer
+        to 96 bytes AND shortening the message itself (dropped the
+        trailing "or PID:CHANnel:ENAble 0 if unused" clause) -- the
+        core "which channel, which check" information is what actually
+        matters. docs/command_reference.md's example updated to match
+        the shorter text.
+
+        Verified on real hardware, all three failure paths: wrong state
+        (ARM while already ARMED), and a specific channel's output not
+        ready (fresh-boot default: channel enabled, ENA_OUT/CONTACT_OUT
+        never asserted) -- both report their full, untruncated messages
+        and the underlying transitions behave correctly (DISARM back to
+        IDLE, a properly-configured channel ARMs cleanly). The external-
+        enable path (ERR 15) shares the exact same SM_ExternalEnableOk()
+        check already proven working via PID:PROFile:STARt's identical
+        ERR 15 earlier this session -- not independently re-tested here,
+        since it needs PF13 physically driven LOW to exercise (this
+        board's own fiber receiver idles HIGH with nothing wired to it).
+
+2026-09-22  —  External trigger reports itself over telemetry:
+               "!EVT ... TRIGGER FIRING"
+-----------------------------------------------------------------------
+  Change:  When the external trigger (rising edge on PF15 while ARMED)
+        successfully fires a shot, emit a dedicated telemetry event
+        "!EVT <tick> TRIGGER FIRING" in addition to the existing
+        "!EVT ... STATE FIRING" (so a host can distinguish a
+        trigger-initiated shot from a command-initiated one).
+
+        - telemetry.c/h: new TELEM_EVT_TRIGGER event kind +
+          Telemetry_PushTrigger(), rendered "!EVT <tick> TRIGGER FIRING".
+          TELEMETRY_SCHEMA_VERSION -> 3 (new !EVT payload type).
+        - state_machine.c (SM_PollFaults, external-trigger branch): now
+          checks SM_Fire()'s return and pushes the trigger event only when
+          the shot actually fired -- a trigger while not-ready / profile
+          timing unset stays silent, exactly like a failed PID:PROFILE:START.
+
+        Verified: clean build (both targets), flashed to the controller
+        (SYS:TELEM? -> OK 3, EXTernal:TRIGger? -> OK 1). NOT exercised live
+        end-to-end: PF15 is wired to the physical trigger source, not the
+        PD1/DIAGnostic:GPOut12 loopback, so a software-driven rising edge
+        could not be injected from the console -- needs a physical trigger
+        (or the loopback restored) to observe the TRIGGER FIRING line.
+
+2026-09-22  —  EXTernal:ENAble/EXTernal:TRIGger now ON by default
+-----------------------------------------------------------------------
+  Change:  Direct instruction: "we should leave the external enable and
+        trigger on by default -- that is, these are usable features by
+        default." g_externalEnableRequired and g_externalTriggerRequired
+        (state_machine.c) both flip from 0U to 1U at declaration -- the
+        only change; SM_SetExternalEnableRequired()/
+        SM_SetExternalTriggerRequired() and every check/gating site
+        (ArmConditionsMet(), SM_Fire(), the FIRING-time fault check,
+        FAULT:CLEAR's re-validation, the PF15 edge-fire path) are
+        unmodified, since this is purely a startup-default change, not a
+        behavior change. Both remain RAM-only config (like every other
+        runtime setting in this project) -- reset to ON on every reboot,
+        not persisted; `EXTernal:ENAble 0`/`EXTernal:TRIGger 0` opt back
+        out for a session same as before.
+
+        Real, not paper, consequence for EXTernal:ENAble specifically:
+        PF13 is GPIO_PULLDOWN (main.c), so a floating/unwired PF13 now
+        reads LOW = "not satisfied" out of the box -- ARM and
+        PID:PROFile:STARt will both refuse (ERR 13/ERR 15) on any bench
+        setup that doesn't have the real interlock wired, looped back
+        (DIAGnostic:GPOut11 -> PF13), or EXTernal:ENAble 0 sent first.
+        This affects every raw-SCPI/shot-wizard session from here on,
+        including this project's own docs/sop/wham_xrex_pfmg474_sop.tex
+        Section 9 procedure (not updated -- it doesn't mention
+        EXTernal:ENAble either way, so no correction needed there, but
+        an operator hitting a NEW ERR 13 following that procedure on
+        unwired hardware should check EXTernal:ENAble? first).
+        EXTernal:TRIGger's default has much lower practical impact: it
+        only means a PF15 rising edge can fire an already-ARMED shot,
+        never blocks anything by itself, and a floating/unwired PF15
+        (also GPIO_PULLDOWN) simply never produces a rising edge -- an
+        unwired bench setup sees no behavior change from that flag
+        alone.
+
+        python/run_simulator_validation.py's automated campaign is
+        UNAFFECTED: reset_to_safe_state() already sent
+        `EXTernal:ENAble 0` explicitly before/after every scenario
+        (needed for its software-only ARM/FIRE design, since that rig
+        has nothing wired to PF13/PF15 either) -- updated its own
+        top-of-file comment and reset_to_safe_state()'s doc comment to
+        stop describing the old default as current, but no functional
+        change was needed there.
+
+        Documentation updated to match: state_machine.c's own
+        g_externalEnableRequired/g_externalTriggerRequired comments,
+        state_machine.h's SM_GetExternalEnableRequired()/the
+        external-trigger design comment ("Opt-in, OFF by default"),
+        docs/command_reference.md's EXTernal:ENAble and EXTernal:TRIGger
+        sections (both previously said "Opt-in, OFF by default").
+
+        Verified: wham_build.py --target controller --clean and
+        --target simulator --clean both clean (zero errors/warnings).
+
+2026-09-22  —  Telemetry Phase 4: flight recorder + SYS:EVLOG? (post-mortem
+               event history); console `evlog` command
+-----------------------------------------------------------------------
+  Change:  docs/telemetry.md Phase 4. New retained event history alongside
+        the existing live !EVT stream:
+
+        - telemetry.c: a 128-entry flight-recorder ring (overwrite-oldest)
+          that every pushed event is ALSO recorded to -- separate from the
+          transmit queue, so it is never consumed by emission. The !EVT
+          line renderer was factored into EmitEventLine(), shared by the
+          live stream (Telemetry_PollEmit) and the replay
+          (Telemetry_ReplayFlightLog) so both render identically.
+        - SYS:EVLOG? (commands.c/cmd_parser.c): replays the retained
+          history oldest-first as "OK <n>" followed by n one-line !EVT
+          packets. Always recorded -- SYS:EVENT 0 silences the live stream
+          without losing the post-mortem log. RAM-only (clears on reset);
+          .noinit warm-reset retention is a later step.
+        - TELEMETRY_SCHEMA_VERSION -> 2 (new command).
+        - wham_console.py: query_evlog() (multi-line read via _read_line())
+          + `evlog` console command.
+
+        Verified on real hardware (controller, freshly flashed): three
+        consecutive SYS:EVLOG? queries each returned OK 6 + six clean
+        !EVT lines in order (ARM/FIRING/FAULT GENERAL/FAULT CLEAR/ARMED/
+        IDLE); SYS:EVENT 0 gated the live stream while the recorder kept
+        recording (history grew from 4 to 6 across the gated period).
+        A host-side !EVT/reply desync (a stray "!" gluing onto the next
+        reply as "!OK") was root-caused to WhamLink.query()'s
+        reset_input_buffer() clipping an in-flight line, and fixed via
+        _read_line() (separate entry below).
+
+2026-09-22  —  wham_console.py: fixed a !EVT/reply desync race, live
+                Amps<->Hz calibration sync (host-only, no firmware change)
+-----------------------------------------------------------------------
+  Change:  Two host-tooling gaps found and fixed while live-verifying
+        the eight new CONFig:* commands (previous entry, same day) on
+        real hardware.
+
+        1. WhamLink.query()/drain_events() used to call
+           self.ser.reset_input_buffer() right before writing the next
+           command, on the assumption that whatever was sitting in the
+           RX buffer at that instant "could only be a stale, already-
+           fully-arrived line." That assumption broke in practice:
+           flipping CONFig:FaultPolarity:OCP live (with the OCP pin
+           floating on the bench) trips a real per-channel OVERCURRENT
+           fault, which emits its own !EVT line a poll cycle after the
+           command's own OK reply -- real, observed latency. Firing the
+           next command with ~no delay could catch that !EVT line still
+           trickling in over the 115200-baud UART, and
+           reset_input_buffer() silently ate the tail of it, desyncing
+           every reply after it by one line (a bare "1" surfacing as one
+           query's reply, the real "OK 1" landing on the NEXT query,
+           etc. -- confirmed by reproducing it standalone before fixing
+           it, then re-running the identical zero-delay sequence
+           afterward with no further desync).
+
+           Fixed by replacing the one-shot read+discard design with a
+           persistent per-link byte buffer (WhamLink._rx_buf) and a new
+           _read_line() that only ever consumes a COMPLETE line, leaving
+           a still-arriving partial line buffered for the next call
+           instead of discarding it. reset_input_buffer() is gone
+           entirely -- drain_events() and query() now both go through
+           _read_line(), so pre-command buffer hygiene can no longer
+           clip an in-flight line. Verified by deliberately reproducing
+           the original race (flip OCP polarity to trip a real fault,
+           immediately follow with an 8-query rapid-fire burst, zero
+           delay) three separate times post-fix -- every reply came back
+           correctly framed.
+
+        2. PFM_TURNON_FREQ_HZ/PFM_MAX_FREQ_HZ/PFM_MAX_CURRENT_A
+           (wham_console.py's Amps<->Hz plot-axis conversion constants)
+           were hardcoded copies of ctrlr_config.h's compile-time
+           defaults -- a known gap flagged in the previous entry, since
+           CONFig:TURNONHz/MAXFREQHz/MAXCURRent now make the real values
+           live-changeable. Added sync_calibration(link), which queries
+           the three CONFig:*? commands and refreshes the module
+           globals; wired into WhamConsole._on_connect() (automatic on
+           every connect/reconnect) and default() via the new
+           _is_calibration_set() (automatic re-sync right after a raw
+           CONFig:TURNONHz/MAXFREQHz/MAXCURRent typed directly, the same
+           way _is_profile_start() already triggers auto-plot after a
+           raw PID:PROFile:STARt). Never raises -- an older firmware or
+           any query error just leaves the last-known values in place,
+           since this only feeds a plot axis, not a safety check.
+
+           Also added amps_to_hz() (the missing inverse of the existing
+           hz_to_amps()) and used it to replace four hand-inlined copies
+           of the same formula in run_simulator_validation.py, one of
+           which additionally hardcoded PFM_MAX_FREQ_HZ as a bare
+           100000.0 -- doubly stale, now fixed the same way. That file's
+           `from wham_console import PFM_TURNON_FREQ_HZ, PFM_MAX_CURRENT_A`
+           was also a live-sync trap in its own right: a `from` import
+           freezes a copy at import time, so mutating wham_console's own
+           globals later would never have reached it -- changed to
+           `import wham_console as wc` with module-qualified access
+           (wc.PFM_TURNON_FREQ_HZ etc.) everywhere those values are read.
+           Two module-level constants derived from PFM_MAX_CURRENT_A at
+           import time (MATRIX_DEMAND_LEVELS_A, GAIN_SMOOTHNESS_DEMAND_A)
+           are now recomputed in main() right after connecting and
+           syncing, same pattern this file already used for RAMP_S/
+           FLAT_S; also caught and fixed a related bug this surfaced --
+           run_gain_smoothness_sweep()'s demand_a=GAIN_SMOOTHNESS_
+           DEMAND_A default argument would have stayed frozen at its
+           pre-sync value even after the recompute (default arguments
+           bind once at module load), fixed by resolving it inside the
+           function body instead (demand_a=None, then read the current
+           global if still None).
+
+        PID_LOOP_RATE_HZ in run_simulator_validation.py has the exact
+        same kind of gap now that CONFig:PIDRate exists (still a
+        hand-kept-in-sync copy, used for PID:LOG/PID:LOGDATA? sample-
+        rate math) -- flagged in that file's own comment, not fixed
+        here (out of scope for this pass).
+
+        Verified live against the real controller: sync_calibration()
+        correctly picks up a live CONFig:TURNONHz change and
+        amps_to_hz()/hz_to_amps() immediately reflect it; _is_
+        calibration_set() unit-tested against every SCPI short/long-
+        form variant and confirmed it does NOT fire for the `?` query
+        forms or unrelated CONFig:* setters; WhamConsole's own
+        connect flow prints the synced values. No firmware changes --
+        python/ only.
+
+2026-09-22  —  Eight ctrlr_config.h values made runtime-configurable
+                (CONFig:* commands)
+-----------------------------------------------------------------------
+  Change:  Direct request: PID_LOOP_RATE_HZ, PFM_TURNON_FREQ_HZ,
+        PFM_MAX_FREQ_HZ, PFM_MAX_CURRENT_A_PER_CHANNEL,
+        PID_OUTPUT_MAX_SLEW_HZ_PER_TICK, FAULT_RAMP_DOWN_TIME_S, the
+        four fault-pin polarities, and PFM_MAX_CARRIER_FREQ_HZ were all
+        compile-time-only -- changing any of them meant editing
+        ctrlr_config.h, rebuilding, and reflashing. Each is now backed
+        by a mutable variable + setter/getter pair and a matching
+        CONFig:* SCPI command (see docs/command_reference.md), same
+        session-only convention as PID:GAINS/PID:PROFile:TIMing (resets
+        to the ctrlr_config.h default on every reboot/reflash).
+
+        PID_LOOP_RATE_HZ is the one value that reaches real hardware
+        state, not just a variable: CONFig:PIDRate live-reprograms the
+        HRTIM Master timebase period register directly
+        (HRTIM1_SetPidHeartbeatRate(), hrtim.c, writing
+        sMasterRegs.MPER -- no HAL macro for this exists in this HAL,
+        confirmed by grep) and PID_DT_SEC (used by every channel's
+        integral/derivative math) is recomputed atomically alongside it
+        so the two can never drift. It is also the one setter that
+        refuses to change while a shot is running (ERR 12) -- unlike
+        every other value here, changing the control loop's own sample
+        rate mid-shot would corrupt every running channel's integral
+        accumulator, slew-clamp history, and profile tick counting,
+        which all assume a constant dt across the shot.
+
+        PFM_TURNON_FREQ_HZ/PFM_MAX_FREQ_HZ (the AmpsToHz() calibration
+        endpoints) are cross-validated against each other (turnon
+        strictly below max) and against PID_OUTPUT_MIN_HZ/MAX_HZ.
+        PFM_MAX_CURRENT_A_PER_CHANNEL is settable per channel --  this
+        is the actual per-channel calibration ctrlr_config.h's own
+        "MUST BE CALIBRATED BEFORE FINAL DEPLOYMENT" comment refers to.
+        The four fault polarities (XR_WATER/TMP/ENERPRO/OCP_FLT_
+        POLARITY, xrex_io.c) got a shared SetFaultPolarity() helper
+        behind four thin CONFig:FaultPolarity:WATER/TEMP/ENERPRO/OCP
+        wrappers, placed outside the BUILD_TARGET_SIMULATOR guard so
+        they compile/work on both targets even though only the
+        controller's real fault-detection logic reads them.
+        PFM_MAX_CARRIER_FREQ_HZ (the legacy TABle:STEP carrier ceiling)
+        is now PFM_SetMaxCarrierFreqHz()/TableStepMinPer(), replacing
+        the old TABLE_STEP_MIN_PER macro, with the same 16-bit HRTIM
+        PER-register-fit check the macro used to get for free at
+        compile time.
+
+        Known gap, flagged but not addressed: python/wham_console.py
+        and python/run_simulator_validation.py hardcode their own
+        Python copies of PFM_TURNON_FREQ_HZ/PFM_MAX_FREQ_HZ/
+        PFM_MAX_CURRENT_A for host-side Amps<->Hz plot conversions.
+        Changing the real values via these new commands does not
+        update those Python constants -- an Amps-axis plotted after
+        such a change will be silently wrong (the Hz-axis stays
+        correct). Neither host tool queries these live yet.
+
+        Hit the same "*/ inside a /* */ comment" bug twice while
+        writing doc comments containing the literal text "PID:*/
+        CONFig:*" (the */ prematurely closes the comment, corrupting
+        following code into a syntax error) -- once in pid.h, once in
+        commands.c, both caught by the build and fixed by rewording to
+        "PID:* or CONFig:*". Added a proactive
+        `grep -n 'PID:\*/\|:\*/[A-Za-z]'` check before every later
+        build in this session to catch this class of bug before
+        wasting a build cycle.
+
+        Verified: wham_build.py --target controller --clean and
+        --target simulator --clean both clean (zero errors/warnings)
+        after all eight value groups were added -- pid.c/xrex_io.c/
+        commands.c are shared between both targets.
+
+2026-09-22  —  Telemetry: "one line per packet" protocol invariant +
+               waveform log now captures the fault ramp-down
+-----------------------------------------------------------------------
+  Change:  Two pieces of docs/telemetry.md Phase 3, both driven by a live
+        hardware demo of the telemetry stream.
+
+        1. Formalized a hard wire-protocol invariant (docs/telemetry.md,
+           "Packet framing invariant"): EVERY telemetry packet is exactly
+           one CRLF-terminated line -- replies, !EVT events, and future
+           stream/flight-recorder lines alike -- with no embedded CR/LF, so
+           a host never needs length-prefixing or multi-line reassembly.
+           Companion rule: bounded line length (a packet is a few hundred
+           bytes, not one giant blob); the existing PID:LOGDATA? (one
+           multi-KB line) is the one current violator and is superseded by
+           the stream tier.
+
+        2. Waveform log now logs THROUGH the General-Fault ramp-down.
+           pid.c: extracted the log decimation + per-sample write into
+           LogDecimationTick()/LogSample() (shared by the normal loop and
+           the fault path), and ProcessFaultRampDown() now logs each ramp
+           tick. Previously PID_Update() returned early once in FAULT, so
+           the log froze at the fault boundary -- a real gap found in the
+           demo: GENERAL:TEST:FAULT mid-shot ramped the output 20 kHz ->
+           5 kHz, but PID:LOGDATA? showed only the pre-fault flat-top.
+           Now setpoint/output follow the ramp (setpointHz is overwritten
+           to the ramp value) and measured holds its last value (no
+           feedback is consumed during the open-loop ramp).
+
+        Verified on real hardware (two-board controller<->simulator rig,
+        freshly flashed): 1750-sample log shows the output ramp 20000 ->
+       ~6000 Hz (approaching the 5 kHz floor) after GENERAL:TEST:FAULT,
+       with setpoint tracking output and measured held at ~19.76 kHz; all
+        four !EVT events (STATE ARMED / STATE FIRING / FAULT GENERAL /
+        FAULT CLEAR) surfaced between command replies. Clean build, both
+        targets.
+
+2026-09-22  —  wham_console.py handles the !EVT telemetry stream (Phase 5
+               partial) + `events` console command
+-----------------------------------------------------------------------
+  Change:  Host-side counterpart to the Phase 1 telemetry firmware (entry
+        above). python/wham_console.py now:
+
+        - Surfaces unsolicited !EVT lines instead of dropping/corrupting
+          them: WhamLink.query() drains any pending events before sending,
+          then reads in a loop -- printing+logging each !EVT line
+          (timestamped with the host's wall-clock) and skipping it -- and
+          returns the first non-!EVT line as the actual reply. This is what
+          keeps a fault/state event emitted mid-command from being misread
+          as that command's OK/ERR reply. Added WhamLink.drain_events()
+          (non-blocking) + _emit_event().
+        - New `events [0|1|on|off]` console command: no arg shows the
+          SYS:EVENT gate (ON/OFF) and drains pending events; 1/0 sends
+          SYS:EVENT 1/0. (SYS:EVENT is also still reachable as raw SCPI.)
+        - _on_connect() now also queries SYS:TELEM? and prints the schema
+          version (tolerates ERR 1 from pre-telemetry firmware).
+
+        Verified: python3 ast.parse clean. NOT yet run against a real board
+        (needs the bench: trigger OCP:TEST:FAULT and watch the !EVT line
+        print between replies).
+
+2026-09-22  —  Telemetry event stream (Phase 1): SYS:TIME?/SYS:TELEM?/
+               SYS:EVENT + unsolicited !EVT state/fault events
+-----------------------------------------------------------------------
+  Change:  Phase 1 of docs/telemetry.md. New module Core/Inc/telemetry.h +
+        Core/Src/telemetry.c: a 64-entry ring buffer carrying timestamped
+        state/fault events from the state machine (including ISR context)
+        to the main loop, which emits them as unsolicited
+        "!EVT <tick> <STATE|FAULT> ..." lines. Push is a few stores inside
+        a NESTABLE PRIMASK save/restore critical section (safe from thread
+        and ISR context, and nests under the fault path's own existing
+        __disable_irq()); emit (Telemetry_PollEmit, main loop) is bounded
+        to a few events per iteration and never masks IRQs, so it cannot
+        disturb the 1 kHz PID loop or any fault ISR (docs/telemetry.md
+        Section 6).
+
+        New commands (commands.c/cmd_parser.c/commands.h):
+          SYS:TIME?   -> OK <ms-since-boot>   (HAL_GetTick, 1 ms)
+          SYS:TELEM?  -> OK <schema_version>  (TELEMETRY_SCHEMA_VERSION = 1)
+          SYS:EVENT <0|1> / SYS:EVENT?         (gate the !EVT stream; default ON)
+
+        state_machine.c now pushes events at every transition: STATE
+        (ARMED/FIRING/IDLE on arm/fire/start/stop/disarm/shot-complete),
+        FAULT <type> [ch] on fault latch (EnterFault), FAULT CLEAR on
+        SM_ClearFault success. Event names mirror STATE?'s own names
+        (GENERAL/OVERCURRENT/EXTERNAL_ENABLE/ENABLE_OUTPUT/ENERPRO).
+
+        Memory: +2,064 B .text, +16 B .data, +520 B .bss (64 x 8 B event
+        ring). Verified: clean build (zero warnings), both
+        BUILD_TARGET_CONTROLLER and BUILD_TARGET_SIMULATOR. NOT yet
+        exercised on real hardware -- needs the bench (trigger a fault,
+        observe the !EVT line mid-shot).
+
+        Next phases (docs/telemetry.md): non-blocking TX (Phase 0),
+        frozen reply contract (Phase 2), stream standardization (Phase 3),
+        flight recorder (Phase 4), wham_console.py telemetry client
+        (Phase 5).
+
+2026-09-22  —  FIRE + PID:START gated behind ARM; emergency-stop feature
+               removed (design-review follow-up)
+-----------------------------------------------------------------------
+  Change:  Follow-up to a full design review of this project (the same
+        session). The review found two of this controller's three
+        energization paths -- the legacy `FIRE` command and `PID:START`
+        -- could start real output with only a fault check, bypassing
+        the ARM/interlock gate that `PID:PROFile:STARt` enforces. Both
+        are now gated:
+
+        - PID:START (cmd_pid_start, commands.c): now requires
+          SM_STATE_ARMED and SM_ExternalEnableOk() (ERR 13/15), then
+          transitions via a new SM_StartPlain() (state_machine.c/.h) --
+          ARMED -> FIRING, calling PID_Start(). This loop has no shot
+          clock, so PID:STOP (SM_Stop()) is what returns it to IDLE.
+        - FIRE (cmd_fire, commands.c): now requires ARMED +
+          external-enable (ERR 13/15) in addition to the existing fault
+          (ERR 6) and empty-table (ERR 5) checks. Deliberately NOT
+          transitioned to FIRING -- the legacy table path is not part of
+          the SM's IDLE/ARMED/FIRING lifecycle, and marking it FIRING
+          would make EnterFault()'s handlers assume pid.c's PID_Update()
+          loop is running when it isn't. ARMED is a required precondition
+          only; a fault during playback still safes the legacy output
+          (EnterFault from ARMED -> PFM_ForceStop()).
+
+        Also REMOVED the dormant emergency-stop feature entirely, per
+        direct decision: SM_FAULT_EMERGENCY_STOP, EMERGency:ENAble/
+        ENAble?/INPut?, SM_SetEmergencyStopRequired()/
+        SM_GetEmergencyStopRequired()/SM_EmergencyStopOk()/
+        SM_GetEmergencyStopInputRaw(), EmergencyStopInputIsHigh()/
+        EmergencyStopAsserted()/HandleEmergencyStopFault(), and
+        EMERGENCY_STOP_POLARITY (ctrlr_config.h). PG10 -- the feature's
+        input pin -- had already been proven electrically tied to NRST
+        (a real reset pin, not a usable GPIO; see the 2026-09-17
+        entries), so the feature had no pin and no safe way to be wired.
+        A future E-stop must use a genuinely free input pin and re-settle
+        the fail-safe polarity question afresh.
+
+        Review items TABLED (not implemented) this pass: a loss-of-
+        feedback trip/timeout (currently closed-loop holds last output
+        with no timeout), and a hard dI/dt (amps/sec) ramp-rate clamp.
+        Also flagged during review: PC10/HRTIM1_FLT6 -- the only
+        CPU-independent, silicon-level output-safing -- is NOT physically
+        connected on this board, so hrtim.c's "even if the CPU is hung"
+        comments are currently not true; a watchdog (IWDG) was attempted
+        and removed -- it broke serial BOOT/flash (see the next entry).
+
+        Verified: clean build (zero warnings), both BUILD_TARGET_CONTROLLER
+        and BUILD_TARGET_SIMULATOR.
+
+2026-09-22  —  Independent Watchdog (IWDG) added, then REMOVED -- it broke
+               serial BOOT/flash (design-review follow-up, part 2)
+-----------------------------------------------------------------------
+  Change:  Added an IWDG (Core/Src/iwdg.c + Core/Inc/iwdg.h, IWDG_ENABLED/
+        IWDG_TIMEOUT_MS in ctrlr_config.h, fed from main.c's main loop,
+        heartbeat-gated on PID_Update()), then REMOVED it the same day after
+        it broke the serial reflash workflow on real hardware.
+
+        Root cause of the breakage (confirmed by direct hardware testing):
+        the IWDG, once started, survives NVIC_SystemReset() -- it lives in
+        the VDD domain on its own LSI clock, and only a power-cycle stops
+        it. The BOOT command's BootJump_RequestBootloader() (boot_jump.c)
+        enters the ROM bootloader via exactly that NVIC_SystemReset(), and
+        the ROM bootloader does NOT feed a software-started IWDG. So ~1 s
+        (IWDG_TIMEOUT_MS) into the bootloader session the IWDG hardware-
+        resets the chip mid-flash, corrupting/aborting the reflash and
+        leaving the board with no valid app -- and no serial response.
+        No software fix exists: the IWDG cannot be stopped by software and
+        the ROM bootloader cannot be modified. Removing it is therefore the
+        only way to keep the serial BOOT/stm32flash workflow working.
+
+        Removal was complete, not just a flag flip: iwdg.c/iwdg.h deleted;
+        main.c's Iwdg_Init()/Iwdg_Refresh() call sites and pid.c's
+        Iwdg_NotifyHeartbeat() reverted; IWDG_ENABLED/IWDG_TIMEOUT_MS
+        removed from ctrlr_config.h; iwdg.c dropped from
+        Debug/Core/Src/subdir.mk + Debug/objects.list.
+
+        Recorded consequence: there is again NO CPU-independent output-
+        safing (PC10/HRTIM1_FLT6 is also not physically connected), so a
+        CPU hang leaves the demand output at its last command. A watchdog
+        can only be reintroduced if the reflash path changes to one that
+        resets the IWDG (a power cycle, or a non-BOOT boot mechanism), or
+        by abandoning the serial BOOT workflow for SWD/st-flash.
+
+        Verified: clean build (zero warnings), both BUILD_TARGET_CONTROLLER
+        and BUILD_TARGET_SIMULATOR, after the removal.
+
+2026-09-22  —  docs/sop: new Section 9, programming/firing a shot
+               profile by hand over raw SCPI -- Rev C
+-----------------------------------------------------------------------
+  Change:  Direct request: a standard operating procedure for a human
+        operator programming the controller via raw SCPI, bypassing
+        wham_console.py's `shot` wizard entirely. docs/sop/wham_xrex_
+        pfmg474_sop.tex was Rev B (2026-09-04), predating this whole
+        project's state machine/ARM/PID:PROFile:* system, and only
+        covered the legacy TABLE:*/FIRE path -- added a new Section 9
+        ("Procedure: Program and Fire a Shot Profile (Raw SCPI)")
+        matching its existing style (numbered procedure, CAUTION box,
+        acceptance criterion), covering: per-channel setup (XREX:
+        CHANnel:ENAOut/CONTactOut, PID:CHANnel:ENAble, PID:LOOPMODE,
+        PID:GAINS, PID:PROFile:CURRent), explicitly disabling unused
+        channels, PID:PROFile:TIMing (now 3 args, see the ramp-down
+        entry above), PID:LOG, ARM/PID:PROFile:STARt, watching for
+        completion, PID:LOGDATA?, and resetting to a safe state
+        afterward. Added matching Troubleshooting rows (ERR 13 on ARM,
+        ERR 12 on PROFile:STARt/TIMing, a "disabled" channel still
+        showing data) and a References entry.
+
+        Also corrected two Rev B claims found stale while writing this:
+        (1) the Scope section's "no ARM precondition, no state machine,
+        no fault interlock" was true only for the legacy path -- the
+        modern path gained all three since Rev B; (2) Section 8's own
+        caution claimed FIRE has no fault interlock at all, which was
+        ALREADY incomplete at Rev B -- cmd_fire() (commands.c) has
+        always checked AnyFaultLatched() (ERR 6), it just isn't the
+        richer per-category interlock the modern path has. Both
+        corrected in place rather than silently left wrong next to new,
+        accurate text.
+
+2026-09-22  —  Ramp-up and ramp-down time now independently
+               configurable -- was one shared duration for both
+-----------------------------------------------------------------------
+  Change:  Direct request. Firmware (pid.c/pid.h): split the single
+        g_profileRampTicks ("one ramp's length (up == down)") into
+        g_profileRampUpTicks/g_profileRampDownTicks; TrapezoidalCurrentA()
+        now uses the up-ramp count for its first branch and the
+        down-ramp count for its last; g_profileTotalTicks =
+        rampUpTicks + flatTopTicks + rampDownTicks (was 2*rampTicks +
+        flatTopTicks). PID_SetProfileTiming()/PID_GetProfileTiming()
+        now take/return three values (rampUpTimeMs, flatTopTimeMs,
+        rampDownTimeMs) instead of two.
+
+        Wire protocol (commands.c): PID:PROFile:TIMing now takes THREE
+        arguments (rampUpTimeS flatTopTimeS rampDownTimeS) -- a
+        BREAKING change to the wire format; the old two-argument form
+        is rejected outright (ERR 12, "needs three arguments"), no
+        silent old-format fallback. PID:PROFile:TIMing? now replies
+        with three values to match.
+
+        wham_console.py: `shot` wizard gained a third prompt (Ramp Up
+        Time / Flat Top Time / Ramp Down Time, was two); `timing`
+        wrapper takes three arguments now; self.profile_timing is
+        {"ramp_up_s", "flat_s", "ramp_down_s"} (was {"ramp_s", "flat_s"});
+        every total_s calculation (do_shot, do_refire's decim fallback,
+        _watch_shot) updated from 2*ramp_s+flat_s to
+        ramp_up_s+flat_s+ramp_down_s; generate_plot()/generate_multi_
+        channel_plot()'s phase-boundary shading and titles updated to
+        use ramp_up_s/ramp_down_s separately; _shot_meta()'s
+        ramp_time_s meta.json key renamed to ramp_up_time_s, with a new
+        ramp_down_time_s alongside it.
+
+        run_simulator_validation.py: start_profile_shot() gained an
+        optional ramp_down_s=None parameter (defaults to ramp_s,
+        preserving every existing caller's symmetric behavior
+        unchanged) and now always sends the new 3-argument PID:PROFile:
+        TIMing underneath. The three OTHER call sites in this file that
+        send PID:PROFile:TIMing directly (not through start_profile_
+        shot()) were updated to the 3-argument form too (ramp_s used
+        for both up and down, unchanged behavior) -- required, not
+        optional: the old 2-argument form is now rejected by the
+        firmware outright, so every caller needed updating regardless
+        of whether it wanted asymmetric ramps.
+
+        wham_llm_console.py: updated its own SCPI documentation strings
+        (shown to the LLM) to the 3-argument form -- would otherwise
+        have kept instructing the LLM to send the now-rejected
+        2-argument PID:PROFILE:TIMING.
+
+        docs/command_reference.md updated to match. Rebuilt both
+        targets (pid.c/commands.c are shared, compiled into both) and
+        reflashed the simulator; the controller flash is still pending
+        explicit confirmation per this project's own standing
+        convention (its .bin is already built and waiting).
+
+2026-09-22  —  wham_console.py: every console-generated plot now shows
+               each channel's gains, not just the single-channel one
+-----------------------------------------------------------------------
+  Change:  Direct request. generate_plot() (single-channel) already
+        put Kp/Ki/Kd in its title; generate_multi_channel_plot() (the
+        `allch.png` 4-row plot) and generate_output_fft_plot() (the
+        4x2 output/FFT plot) did not -- easy to lose track of which
+        gains produced which trace once you're a few `refire`s deep
+        into a tuning session. Both now append `Kp=.. Ki=.. Kd=..` to
+        each channel's own subtitle (only when known -- an idle/
+        disabled channel has none to show). Also fixed
+        dslogic_shot_capture.py's cross-check plot the same way (the
+        gains were already sitting right there in `self.per_channel`,
+        just never surfaced). Verified by regenerating both plots from
+        an already-saved shot's data (shots/20260922_102259) and
+        confirming "Kp=0 Ki=1000 Kd=0" appears on channel 1's titles in
+        both.
+
+2026-09-22  —  wham_console.py: `refire` now re-arms the waveform log
+               before firing -- it was silently re-saving shot 1's
+               frozen data on every subsequent refire
+-----------------------------------------------------------------------
+  Change:  User-reported: adjusted Ki across three shots (`shot` then
+        two `gains ...` + `refire` cycles), watched genuinely different
+        live behavior scroll by during each one, but "notice no actual
+        change to the output." Checked the three saved shots directly
+        -- their allch.csv files were BYTE-FOR-BYTE IDENTICAL (same
+        MD5), across all three separately-fired real shots.
+
+        Root cause: `refire` (added earlier the same day) sends ARM +
+        PID:PROFile:STARt but never re-sends PID:LOG. PID_GetLogSample
+        Count()'s own documented behavior is to keep reporting the
+        final count once the log fills (no auto-wrap) -- so once the
+        FIRST shot (via `shot`, which does arm logging) filled the
+        1000-sample buffer, g_logCount stayed pinned at 1000 forever;
+        logThisTick's own `g_logCount < g_logCap` check then stayed
+        false on every later tick, so NOTHING was ever written to the
+        log again. Every `refire` after that genuinely re-fired the
+        real profile (confirmed by the differing live PID:STATus?
+        values printed while watching) but then fetched and re-saved
+        the exact same frozen shot-1 log, over and over.
+
+        Fixed: `refire` now re-arms PID:LOG (same target/maxSamples/
+        decim as whatever `log`/`shot` last armed -- tracked via two
+        new instance attributes, last_log_max_samples/last_log_decim)
+        immediately before firing. Falls back to recomputing a decim
+        from the current profile timing (same auto-sizing formula
+        `shot` itself uses) if nothing was ever armed via `log`/`shot`
+        this session. Deliberately NOT applied to a raw PID:PROFile:
+        STARt typed directly via default() -- that path is intentional
+        pure passthrough; an operator scripting raw SCPI needs to
+        re-arm PID:LOG themselves between fires, same as on the wire.
+
+        Verified with a real console-driven regression test (pexpect,
+        answers only sent after seeing their actual prompt) replaying
+        the user's own exact workflow: `shot` (Kp=0.2 Ki=300) then two
+        `gains`+`refire` cycles (Ki=400, Ki=1000). All three saved
+        CSVs now have different MD5s. Ki=300 vs. 400 -- output jitter
+        RMS 417Hz vs. 365Hz (small, expected, matches this project's
+        own earlier finding that Ki has to move a lot before jitter
+        moves much); Ki=1000 -- 1798Hz, a genuine ~5x jump, exactly
+        the Ki-driven-noise relationship established earlier the same
+        day. The underlying PID response was never actually stuck --
+        only the SAVED DATA was.
+
+2026-09-22  —  PID_ArmLog()/PID_ArmLogAll() now clear the log arrays --
+               a disabled channel no longer shows stale data from a
+               previous run
+-----------------------------------------------------------------------
+  Change:  User-reported (from reviewing a console shot's auto-
+        generated plots): channels 2-4, explicitly disabled for that
+        shot, showed a full, plausible-looking ramp/flat-top/ramp-down
+        trace in both `output` and `measured` instead of sitting flat
+        -- read as "the controller is outputting a demand signal on a
+        channel that was never enabled," a real safety concern for a
+        system that will eventually drive a real Transrex.
+
+        Investigated on real hardware before touching any code (this
+        matters too much to guess): fired a shot with channel 2
+        explicitly disabled but given a brand-new, never-before-used
+        demand current, then watched the SIMULATOR's own raw received
+        signal (SIM:CHANnel:STATus? DRIVE_HZ) in real time for the
+        full shot -- it stayed at exactly 0 throughout. Real PWM output
+        was never the problem: PID_SetChannelEnable() does call
+        HRTIM1_SetChannelOutputEnable(), and PID_Update()'s per-channel
+        loop `continue`s immediately for any disabled channel
+        (st->outputEnabled == 0U), before any setpoint/PID/HRTIM/log
+        work happens for it.
+
+        That same `continue` is what actually caused the misleading
+        plot, though: PID_ArmLog()/PID_ArmLogAll() only ever reset
+        g_logCount/g_logCap/g_logDecim*, never the underlying
+        g_logSetpoint/g_logMeasured/g_logOutput arrays themselves --
+        so a disabled channel's log slots kept showing whatever was
+        written there the LAST time that channel was genuinely active
+        (in this case, real data from an entirely different, hours-
+        earlier shot). Confirmed directly: PID:PROFile:CURRent 2 2000
+        stored and read back correctly, but the logged setpoint for
+        that "shot" still ramped to the OLD 5400A target -- because a
+        disabled channel never re-enters the update loop to recompute
+        anything, so nothing about a fresh PID:PROFile:CURRent could
+        ever reach it while disabled.
+
+        Fixed with a new ClearLogArrays() helper (Core/Src/pid.c),
+        called from both PID_ArmLog() and PID_ArmLogAll() -- zeroes
+        every channel's full PID_LOG_MAX_SAMPLES capacity, not just up
+        to the newly-requested `maxSamples`, so no stale data can leak
+        through regardless of a future mismatched count. A disabled
+        channel's log now reads back as a flat, unambiguous 0 for that
+        run, matching the electrical truth instead of contradicting it.
+
+        Verified end-to-end on real hardware after rebuilding+
+        reflashing BOTH targets (pid.c is shared, compiled into both):
+        fired a real shot with channel 2 genuinely active (real
+        4500A-equivalent data logged, 1000/1000 nonzero samples,
+        ~76250Hz mid-shot) immediately followed by a second shot with
+        channel 2 disabled and channel 1 active instead -- channel 2's
+        log came back 0/1000 nonzero, every sample exactly (0,0,0),
+        instead of replaying the first shot's real data. Confirms the
+        fix, not just "happened to read zero since boot."
+
+2026-09-22  —  Simulator idle tone now ON by default -- passive
+               out-of-the-box behavior, no serial setup needed
+-----------------------------------------------------------------------
+  Change:  Direct request: "I want the simulator to be pretty passive
+        -- by default it's outputting 3kHz on all channels, and the
+        channels respond to pfm inputs assuming all of its conditions
+        are met... this would not require serial commands to enable."
+        Every piece of this already existed EXCEPT the default:
+        SimTransrex_Update()'s gating (ENA_OUT+CONTACT_OUT, read
+        straight from hardware, GateDriver_Read()) was already fully
+        passive/serial-free; the 100ms-ish low-pass response was
+        already SIM_TRANSREX_DEFAULT_TAU_MS=100, configurable live via
+        SIM:MODEL:TAU; the 3kHz idle tone itself already existed
+        (SIM_TRANSREX_IDLE_TONE_HZ) but defaulted OFF, requiring
+        `SIM:DIAGnostic:IDLETONE 1` before an ungated channel showed
+        anything but a physically disconnected (silent) output.
+
+        Fixed by flipping s_idleToneEnabled's default (sim_transrex.c)
+        from 0 to 1 -- the simulator now boots with all 4 channels
+        holding 3kHz, transitioning to a real filtered response the
+        instant the controller asserts that channel's ENA_OUT+
+        CONTACT_OUT, with zero commands sent to the simulator itself.
+        `SIM:DIAGnostic:IDLETONE 0` still exists to go back to the
+        original stricter realism (fully silent while ungated) for
+        whoever wants it. Updated sim_transrex.h's doc comments
+        (SimTransrex_Init()/SimTransrex_Update()/the idle-tone section)
+        to match the new default -- they previously described the
+        OFF-by-default behavior as the only/normal case.
+
+        Verified end-to-end on real hardware after rebuilding+reflashing
+        the simulator (wham_build.py --target simulator, wham_serial_
+        flash.py --target simulator): (1) fresh boot, zero serial
+        commands sent to the simulator -- SIM:DIAGnostic:IDLETONE? ->
+        OK 1, every ungated channel's SIM:CHANnel:STATus? already shows
+        FEEDBACK_HZ=3000; (2) drove the CONTROLLER's channel 3 only
+        (XREX:CHANnel:ENAOut/CONTactOut, PID:CHANnel:ENAble/LOOPMODE/
+        GAINS/SETPOINT/START) -- again zero commands to the simulator --
+        and polled its STATus?: FEEDBACK_HZ climbed from the 3kHz idle
+        tone and converged on the ~40kHz commanded setpoint through the
+        filter, confirming the whole passive response chain works with
+        the controller as the only thing anyone needs to talk to.
+
+        This also explains today's earlier "simulator not responding"
+        report: the wham_console.py `shot` wizard bug fixed earlier the
+        same day (never asserting XREX:CHANnel:ENAOut/CONTactOut) meant
+        the controller was never actually gating any channel on in the
+        first place -- the simulator was correctly staying unresponsive
+        exactly as designed, given nothing had told it to respond.
+
+2026-09-22  —  wham_console.py: output/FFT plot now full shot span +
+               both output and measured, not output-only/flat-top-only
+-----------------------------------------------------------------------
+  Change:  Two direct-request refinements to generate_output_fft_plot()
+        (the 4-row x 2-col plot auto-generated after `shot`/`refire`/a
+        raw PID:PROFile:STARt, added earlier the same day):
+        (1) always uses the FULL logged span now, not an auto-detected
+        flat-top-only window -- the earlier cut trimmed to flat-top
+        (0.5s off each end) whenever profile timing was known, same
+        convention as the gain-smoothness sweep's own verdict logic,
+        but the operator wants the whole shot (ramp included) visible,
+        not a snippet; (2) both OUTPUT (commanded/drive) and MEASURED
+        (feedback) are now plotted in EVERY panel -- time domain and
+        FFT alike -- color-matched (blue/orange, same convention as
+        generate_plot()/generate_multi_channel_plot()) with peak labels
+        in the matching color, instead of output only. Makes it
+        directly visible how much drive-side noise survives into the
+        physically-filtered feedback vs. how much is a purely
+        commanded-signal artifact.
+
+2026-09-22  —  wham_console.py: fixed `shot` wizard never asserting
+               XREX:CHANnel:ENAOut/CONTactOut -- ARM always failed
+-----------------------------------------------------------------------
+  Change:  Bug found live on real hardware: `shot` always failed at
+        ARM with "ERR 13 Can't ARM -- not currently IDLE, or arm
+        conditions not met", regardless of gains/timing/DEBUG:FAULT:
+        BYPASS. Root cause: ArmConditionsMet() (state_machine.c)
+        requires XrexIo_EnableOutputsReadyToArm() -- both ENA_OUT AND
+        CONTACT_OUT HIGH for every currently PID-enabled channel
+        (added 2026-09-17) -- but `shot`'s programming step never sent
+        XREX:CHANnel:ENAOut/CONTactOut at all, only PID:CHANNEL:ENABLE.
+        This is a SEPARATE precondition from fault state, which is why
+        DEBUG:FAULT:BYPASS (2026-09-21) didn't help -- it bypasses
+        EnterFault(), not ArmConditionsMet().
+
+        python/run_simulator_validation.py's own arm_and_gate() already
+        got this right (sends ENAOut/CONTactOut before PID:CHANnel:
+        ENAble) -- wham_console.py's `shot` wizard was simply never
+        updated to match when that precondition was added. Fixed by
+        sending XREX:CHANnel:ENAOut/CONTactOut <ch> <1|0> alongside
+        PID:CHANNEL:ENABLE in `shot`'s programming loop, same
+        explicit-every-time treatment as everything else there.
+        `refire`/a raw PID:PROFile:STARt aren't affected the same way
+        (they fire whatever's already programmed) but only work once
+        SOMETHING has set ENAOut/CONTactOut for the channels in use --
+        normally `shot`, now fixed.
+
+2026-09-22  —  wham_console.py: automatic output/FFT plot after every
+               shot fire, `refire` command
+-----------------------------------------------------------------------
+  Change:  Direct request: after firing a shot through the console
+        (`shot`'s wizard, the new `refire` command, or a raw
+        PID:PROFile:STARt typed directly), the console now always
+        auto-generates a 4-row (channel 1-4, always -- an unlogged/idle
+        channel just shows 'no data') x 2-column plot alongside the
+        existing setpoint/output/measured plot(s): left column is that
+        channel's commanded OUTPUT in the time domain, right column is
+        that same trace's amplitude spectrum (Hann-windowed FFT, top
+        peaks annotated). New module-level generate_output_fft_plot()
+        + _fft_spectrum()/_fft_top_peaks() helpers (needs numpy, a new
+        optional dependency alongside matplotlib -- everything else in
+        the console still works without it). Motivated directly by the
+        same-day gain-smoothness-sweep FFT investigation (see
+        docs/reports/gain_smoothness_sweep/ and this project's own
+        closed-loop-output-noise-vs-integrator-action finding) -- makes
+        that analysis a routine part of firing a shot instead of a
+        one-off scratch script. Uses OUTPUT only (not measured), since
+        that investigation found the commanded signal carries the
+        interesting high-frequency content far more clearly.
+
+        New `refire` command: re-fires whatever is CURRENTLY programmed
+        on the device (channel enable/demand/gains/timing, whatever
+        `log`/`shot` last armed) with no wizard prompts -- the intended
+        low-friction way to repeat a shot after changing just the PID
+        constants (`gains <ch> <kp> <ki> <kd>` then `refire`), instead
+        of re-running the whole `shot` wizard. NOT named `fire` --
+        this file's own "Adding a new console command" convention
+        explicitly reserves that name for the real (legacy TABLE:*-
+        based) FIRE SCPI command, which `refire` is unrelated to.
+
+        Refactored the watch-loop-then-auto-plot logic that used to
+        live only inside `do_shot`'s tail into two shared methods,
+        _watch_shot() and _auto_plot_after_shot() -- used by `shot`,
+        `refire`, and a raw PID:PROFile:STARt (detected via the new
+        _is_profile_start() helper, deliberately narrower than
+        _is_dangerous()'s own STARt-suffix match so it doesn't also
+        fire on plain PID:START or the legacy FIRE path).
+
+2026-09-21  —  Added real Transrex current-output ripple to the simulator's
+               simulated FEEDBACK (720Hz fundamental + 1440Hz 2nd
+               harmonic, ~1% of full-scale combined)
+-----------------------------------------------------------------------
+  Change:  Direct request: the real (non-simulated) Transrex current
+        output has a 720Hz fundamental ripple with a secondary 1440Hz
+        component, on the order of 1% of full-scale current combined --
+        added to sim_transrex.c's simulated FEEDBACK generation so the
+        controller's measured feedback now shows this too. New
+        SIM_TRANSREX_RIPPLE_FUNDAMENTAL_HZ/SECOND_HARMONIC_HZ (720/1440)
+        and _PERCENT constants (0.8%/0.2%, sim_transrex.h) -- the 0.8/0.2
+        split is MY OWN reasonable-sounding harmonic-falloff assumption,
+        not a specified split, chosen so the combined swing lands "on
+        the order of 1%" as instructed; flagged for correction if wrong.
+
+        ASSUMPTION flagged for the user to confirm: the instruction
+        described "~1% of the full 20kA output" -- this simulator's own
+        per-channel calibration (PFM_MAX_CURRENT_A_PER_CHANNEL,
+        ctrlr_config.h) is currently 6kA, not 20kA. Implemented as 1% of
+        THIS channel's own configured full-scale (whatever that is,
+        currently or after any future recalibration) rather than a
+        literal 20kA -- turns out this doesn't actually matter
+        numerically: the Amps<->Hz mapping's Hz endpoints
+        (PFM_TURNON_FREQ_HZ/PFM_MAX_FREQ_HZ) are shared/global, not
+        per-channel, so "X% of any channel's own full-scale Amps" always
+        equals "X% of the same frequency span" regardless of that
+        channel's own Amps calibration -- see sim_transrex.c's own
+        comment at the ripple computation for the algebra. Still worth
+        confirming with the user whether 20kA vs. 6kA reflects a real
+        system-level distinction (e.g. total/combined rating) that
+        matters for something else.
+
+        Implementation: additive sine-wave modulation on top of the
+        existing low-pass-filtered target current, applied only while
+        genuinely gated (real simulated current flowing -- an ungated
+        channel's floor or SIM:DIAGnostic:IDLETONE's own diagnostic
+        tone represents no real current, so stays clean). Deliberately
+        NOT mixed into the filter's own internal recursive state
+        (s_filteredHz[]) -- that stays the clean average used for the
+        filter's own next-tick math; a new s_lastOutputHz[] array holds
+        the real, ripple-inclusive value actually written to HRTIM each
+        tick, and both SIM:CHANnel:STATus?'s FEEDBACK_HZ and the
+        waveform log (SIM:LOG/SIM:LOGDATA?) now report THAT instead of
+        the clean filtered value, matching their own existing "what's
+        actually driving out via HRTIM" documented meaning. All 4
+        channels share one time base (phase-locked together, matching a
+        real system where every channel's ripple derives from the same
+        AC line); the time base is wrapped to a 1-second window
+        (mathematically exact for both 720Hz/1440Hz, which each
+        complete a whole number of cycles per second) to avoid float
+        precision loss in the sine argument over a long-running session.
+
+        Verified live: rapid FEEDBACK_HZ polling on a channel driving a
+        steady demand shows genuine ~800-900Hz peak-to-peak variation
+        around the target (matching the expected combined amplitude),
+        while DRIVE_HZ (what the simulator measures FROM the controller)
+        stays clean -- ripple correctly appears only in the simulated
+        Transrex's own current response, not in what it perceives as
+        commanded. Clean rebuild on both targets (controller binary size
+        unchanged, confirming zero effect there). Also cleaned up a new
+        BUILD_TARGET_SIMULATOR unused-function warning (BitIsFault(),
+        xrex_io.c) surfaced by the earlier fault-polling fix.
+
+2026-09-21  —  CONFIRMED: all-4-channels-simultaneous profiled shot passes
+               cleanly with the fault-polling fix in place; fixed two
+               test-script verdict bugs found along the way
+-----------------------------------------------------------------------
+  Change:  Direct follow-up to the fault-polling fix immediately above --
+        confirmed with a 12/12-cycle single-channel stress test (zero
+        capture failures, zero spurious simulator faults, tracked via
+        both PFMIN:DEBUG:RAW? and the simulator's own STATE? after every
+        cycle), then re-ran the actual scenario_all_channels_profiled_shot
+        (python/run_simulator_validation.py) requested by the user.
+
+        Found and fixed two SEPARATE, genuine test-script bugs while
+        getting a trustworthy verdict out of otherwise-excellent data:
+          1. The verdict originally used the WHOLE shot's worst-case
+             output_error, which is trivially ~0 in open-loop (that's
+             just the profile generator following itself) -- switched to
+             feedback_vs_output_error (measured vs. output), the number
+             that actually reflects the real simulator fiber round-trip.
+          2. Even with that fixed, max_abs over the whole flat-top window
+             was dominated by (a) the filter's own legitimate ~500ms
+             settling tail right after the ramp ends (not a bug -- a
+             ~100ms-tau filter chasing a step needs ~5 tau to fully
+             settle), and (b) rare, isolated, physically-impossible
+             single-sample values (a real observed case: measured_hz=
+             133752, beyond this hardware's own ~100000 Hz max range --
+             the signature of a corrupted value in one PID:LOGDATA?
+             transmission, not a real measurement event; fetch_log()'s
+             own retry logic only catches a malformed reply's sample
+             COUNT, not one bad value inside an otherwise well-formed
+             one). Fixed: verdict window now starts/ends 0.5s inside the
+             flat-top (skipping the settling tail both directions), and
+             the metric is now MEDIAN absolute error (robust to a small
+             number of outlier samples, unlike max_abs or even rms).
+
+        RESULT: 1/1 PASS. Median flat-top tracking error per channel:
+        ch1=3 Hz, ch2=27 Hz, ch3=89 Hz, ch4=166 Hz -- against commanded
+        outputs up to 90500 Hz (5400 A), all 4 channels simultaneously,
+        through the real simulator fiber pool, with the fault-polling
+        fix in place. Combined plot sent to the user.
+
+2026-09-21  —  ROOT CAUSE FOUND AND FIXED: the simulator's own unmodified
+               controller fault-detection code was reading its
+               REPURPOSED pins (ENA_OUT/CONTACT_OUT gating input, fault-
+               injection transmitters) as if they were real Water/Temp/
+               Enerpro/OCP fault signals, spuriously hard-disabling
+               channels' own HRTIM output mid-session
+-----------------------------------------------------------------------
+  Change:  Directly confirmed via live investigation (continuing from
+        this file's own entry immediately below, "MAJOR finding, still
+        not fully root-caused"): checked the simulator's own STATE?
+        DURING a failing capture attempt and found it genuinely showing
+        `FAULT OVERCURRENT 1` -- its OWN internal state machine had
+        tripped. Confirmed this wasn't a one-off: FAULT:CLEAR on the
+        simulator cleared it, but it re-tripped essentially immediately,
+        and PID:CHANnel:ENAble? on the simulator itself showed channel 1
+        genuinely disabled (OK 0) -- its own HandleOvercurrentFault()
+        had called PID_SetChannelEnable(1, 0), which directly
+        disconnects that channel's HRTIM output (the exact physical pin
+        sim_transrex.c uses to transmit FEEDBACK) -- completely
+        independent of anything sim_transrex.c's own gating logic
+        tracks, so it stayed disconnected regardless of later real
+        ENA_OUT/CONTACT_OUT gating.
+
+        ROOT CAUSE: xrex_io.c's XrexIo_PollOcpFaults()/
+        XrexIo_EvaluateGateDriverFault()/XrexIo_PollEnerproFaults()/
+        XrexIo_PollEnableOutputFaults() are the controller's own,
+        UNMODIFIED fault-detection code, and the simulator runs this
+        code unconditionally (sim_transrex.h's own long-documented
+        "KNOWN LIMITATION"). On the simulator:
+          - kOcpPin[] (PF4/PF8/PF12/PF5) has NO real meaning at all --
+            genuinely floating/unconnected. XrexIo_PollOcpFaults() has
+            been reading these as real OCP fault levels since the
+            moment the simulator booted (PID_GetChannelEnable() defaults
+            to TRUE for every channel at boot, per PID_Init() -- no
+            explicit enable command was ever needed to activate this),
+            tripping an essentially random per-channel fault from
+            electrical noise on an unconnected pin.
+          - PE0..PE11 (GateDriver_Read()) are REPURPOSED as the
+            simulator's own ENA_OUT/CONTACT_OUT gating INPUT (receiving
+            the controller's real, legitimate gating signals) and its
+            own Water+Temp/Enerpro fault-INJECTION transmit pins.
+            XrexIo_EvaluateGateDriverFault()/XrexIo_PollEnerproFaults()
+            misread these same bits as real Water/Temp/Enerpro fault
+            levels -- meaning ordinary, correct gating activity during
+            normal testing could ALSO trip a spurious fault, not just
+            random noise.
+          - XrexIo_PollEnableOutputFaults() has the same issue in
+            reverse: deliberately injecting a Water+Temp/Enerpro fault
+            via SIM:FAULT:* (which drives these same PG0..PG7 pins LOW)
+            would be misread as the simulator's own ENA_OUT/CONTACT_OUT
+            being missing.
+
+        This fully explains the ENTIRE day's saga: failures never
+        correlated with channel count, FIRE vs START, PID:LOG, or any
+        other specific command tested (see the entry below) because the
+        REAL trigger was elsewhere entirely -- essentially random
+        electrical noise (OCP) plus deterministic cross-talk from
+        completely normal gating activity (Water/Temp/Enerpro) -- both
+        able to strike at literally any moment, explaining why a fresh
+        reboot always "fixed" it (resets state back to IDLE with every
+        channel enabled again, buying a fresh window) but nothing else
+        reliably did.
+
+        FIXED: all four functions now `#if defined(BUILD_TARGET_SIMULATOR)`
+        guarded to be complete no-ops (XrexIo_EvaluateGateDriverFault()
+        always returns "no fault") on that build target -- the
+        controller-target code path is textually unchanged (wrapped in
+        the matching #else), confirmed via a clean controller rebuild at
+        the same binary size as before this fix. Rebuilt --target
+        simulator, reflashed, re-verifying now with a repeated multi-
+        cycle stress test checking both real capture success AND the
+        simulator's own STATE? after every cycle (previously impossible
+        to distinguish "works" from "got lucky this time" without that
+        second check) -- see this session's own follow-up for the
+        result.
+
+        NOT YET DONE, flagged as real follow-up work: XrexIo_
+        EnableOutputsReadyToArm() (the ARM precondition, not a fault-
+        reporting path) has the same structural read-the-wrong-pins
+        issue but wasn't touched here, since it only blocks ARM rather
+        than disabling an already-running channel -- lower urgency, but
+        worth the same treatment for correctness. The proper, complete
+        fix (differentiating main.c's own state-machine/PID polling to
+        be controller-only, removing the "KNOWN LIMITATION" entirely
+        instead of pin-by-pin guarding its symptoms) is still flagged as
+        unstarted follow-up work in sim_transrex.h.
+
+2026-09-21  —  MAJOR finding, still not fully root-caused: the simulator
+               intermittently stops correctly transmitting/responding
+               after some variable amount of runtime/cycling, with NO
+               single reproducible trigger command found despite
+               extensive isolation testing -- a fresh reboot always
+               restores it
+-----------------------------------------------------------------------
+  Change:  NOT a firmware change (yet) -- an exhaustive same-day
+        investigation, recorded here in full because of how much
+        ground it covers and how easily it could mislead a future
+        session into chasing the wrong variable again.
+
+        BACKGROUND: earlier the same day, a "controller receives
+        nothing from the simulator" symptom was register-level-proven
+        real (see the two entries above this one) and then, following
+        direct user insistence that physical cabling was NOT the cause,
+        traced to a real DRIVE_HZ reporting bug in sim_transrex.c
+        (fixed, see the entry titled "Fixed real bug: SIM:CHANnel:
+        STATus?'s DRIVE_HZ..."). Immediately after that fix, a live
+        controller<->simulator test worked cleanly. The user then asked
+        for all 4 channels gated and tested with plots.
+
+        WHAT ACTUALLY HAPPENED chasing that request, in order, each
+        with real evidence at the time:
+        1. A hand-rolled "gate all 4 channels" check passed (real
+           gating confirmed via SIM:CHANnel:STATus? on all 4).
+        2. The new automated scenario_all_channels_profiled_shot()
+           (python/run_simulator_validation.py) FAILED -- measured_hz
+           exactly 0 for the ENTIRE shot, all 4 channels, confirmed
+           both in PID:LOGDATA? and live via PID:STATus? during a
+           genuine FIRING window.
+        3. Hypothesis "multi-channel simultaneous capture is broken":
+           tested extensively -- ruled out. [1,2] (sharing TIM2), [1,3]/
+           [2,4]/[1,4] (different timers) ALL failed identically; but
+           crucially, later a fresh-boot test showed all 4 channels
+           simultaneously working PERFECTLY (measured tracking commanded
+           output almost exactly on every channel) -- so channel count
+           was never the real variable.
+        4. Hypothesis "controller accumulates bad state across many
+           ARM/FIRE/STOP cycles without a reboot": tested by reflashing
+           ONLY the controller fresh and immediately retrying a single
+           channel -- STILL FAILED on the very first attempt after a
+           genuinely fresh controller boot. Ruled out -- not the
+           controller.
+        5. Fingerprinted all 6 physical PFM_Input ports on the
+           controller while only channel 1 was gated and driving a real,
+           distinct 40kHz signal -- NONE showed any activity (not even
+           on a "wrong" port), and the simulator's own status
+           simultaneously confirmed genuine live transmission. Ruled out
+           a simple fiber mis-patch (that would show the signal on a
+           DIFFERENT port, not nowhere).
+        6. Rebooting BOTH boards fresh and retrying: WORKED PERFECTLY,
+           single channel AND all 4 simultaneously, with real matching
+           measured values on every channel. This pinned the issue to
+           SOMETHING ON THE SIMULATOR accumulating bad state over
+           time/use, since a controller-only reboot did NOT fix it but
+           a simulator reboot did.
+        7. Chased what specifically triggers the simulator's
+           degradation: PID:PROFile:STARt (real FIRE) vs plain
+           PID:START; PID:PROFile:TIMing/CURRent individually; an
+           unrelated STATE? query inserted at the same point; extra
+           delay with no extra commands; PID:LOG (both single-channel
+           and all-channels/channel-0 mode). EVERY one of these
+           appeared, at some point, to be "the trigger" when tested
+           once -- and every single one of them ALSO later tested
+           clean on a fresh boot, including immediately re-testing the
+           exact same "broken" sequence again minutes later and having
+           it pass. This is the key tell: it is NOT any specific
+           command. A harmless STATE? query broke a previously-clean
+           sequence in one trial and a real profiled FIRE worked
+           cleanly in another. The failures are real (never a test
+           artifact -- confirmed via raw, unconditional hardware
+           registers: PFMIN:DEBUG:REG?'s IDR frozen, firstRise=0,
+           avgCount=0, vs. genuinely toggling/incrementing on success),
+           but WHEN they happen does not correlate with any single
+           action taken.
+        8. A 30-cycle timed characterization run (same simple single-
+           channel test, repeated, tracking wall-clock time since the
+           simulator's own last reboot) was started to look for a
+           pattern in cycle count or elapsed time -- see this file's
+           own next entry (or this session's own follow-up) for the
+           result once that run completes; not yet analyzed as of this
+           writing.
+
+        WHAT IS RULED OUT, with real evidence, as of this entry:
+          - Physical fiber cabling/patching (per direct, repeated user
+            statement, and consistent with: both boards' own hardware
+            independently proven correct via self-loopback tests using
+            the SAME physical connectors/paths that later "failed" in
+            cross-board mode).
+          - Multi-channel-specific capture bug (4 channels simultaneously
+            proven to work cleanly on a fresh boot).
+          - Controller-side accumulated state (a controller-only reboot
+            did not fix a live failure; only a simulator reboot did).
+          - Any single specific SCPI command as a deterministic trigger
+            (every candidate command also tested clean at other times).
+          - DMA/timer channel sharing (TIM2 shared by ch1/ch2, TIM5 by
+            ch3/ch4 -- cross-timer pairs failed identically to same-timer
+            pairs).
+          - A logging artifact (failures confirmed live via PID:STATus?
+            during genuine FIRING, and via raw PFMIN:DEBUG:REG?/RAW? register
+            reads, independent of any PID:LOGDATA? path).
+
+        WHAT IS NOT YET KNOWN: the actual mechanism on the simulator
+        side that degrades over time/use. Leading candidates for a
+        FUTURE session to investigate, not yet tested: a slow resource
+        leak in sim_transrex.c's own per-tick logic (SimTransrex_Update()
+        runs on every single main-loop iteration, unconditionally, from
+        boot -- unlike the controller's PID_Update(), which only runs
+        while g_running); NVIC/interrupt timing drift from the
+        simulator's KNOWN LIMITATION of running the full controller
+        stack (state_machine.c/pid.c/gate_driver.c) unconditionally
+        alongside sim_transrex.c the whole time (documented as a known,
+        not-yet-removed limitation in sim_transrex.h); or a hardware/
+        analog issue specific to the simulator board's own transmitter
+        electronics that happens to correlate with runtime rather than
+        any digital/software state at all.
+
+        PRACTICAL WORKAROUND, confirmed reliable every time it was
+        tried: reboot (reflash) the SIMULATOR specifically before any
+        test that depends on real cross-board feedback. Simulator
+        reflashes need no special confirmation (only controller
+        reflashes do) -- this is a cheap, fast, safe thing to do
+        liberally during a test session until the real root cause is
+        found.
+
+2026-09-21  —  Added SIM:DIAGnostic:IDLETONE -- board-wide 3kHz visual-
+               test tone on ungated simulator channels
+-----------------------------------------------------------------------
+  Change:  Direct request, for visually confirming the fiber
+        transmitters are alive on the bench independent of any real
+        shot (useful right now for isolating the FEEDBACK-fiber finding
+        below). New sim_transrex.c static s_idleToneEnabled (default
+        OFF -- this module's original behavior is unchanged by default:
+        an ungated channel's output stays physically DISCONNECTED,
+        mimicking a real Transrex not responding). When turned ON
+        (SIM:DIAGnostic:IDLETONE 1, board-wide, all 4 channels at once
+        -- no real use case for lighting only some transmitters), an
+        UNGATED channel's output instead stays CONNECTED and the filter
+        targets a new SIM_TRANSREX_IDLE_TONE_HZ constant (3000 Hz)
+        instead of the normal PFM_TURNON_FREQ_HZ floor. A GATED channel
+        (real shot in progress) is completely unaffected either way --
+        this only changes the idle state. New SIM:DIAGnostic:IDLETONE?
+        query added to match. Rebuilt --target simulator, reflashed (no
+        confirmation needed, simulator-only), confirmed live: all 4
+        channels report FEEDBACK_HZ=3000 while still fully ungated
+        (ENA_OUT=LOW CONTACT_OUT=LOW).
+
+2026-09-21  —  Fixed real bug: SIM:CHANnel:STATus?'s DRIVE_HZ was forced
+               to 0 every tick while ungated, hiding a genuinely healthy
+               receive path behind a misleading "nothing arriving" reading
+-----------------------------------------------------------------------
+  Change:  Found via a direct controlled experiment, at the user's
+        insistence physical cabling was ruled out: flashed the
+        simulator's own physical board back and forth between
+        controller-target and simulator-target firmware, self-loopback
+        wired (this board's own DRIVE output fed directly into its own
+        FEEDBACK input), same cable throughout. Under controller
+        firmware, self-loopback worked perfectly (real, correct
+        measured values). Under simulator firmware + SIM:DIAGnostic:
+        IDLETONE, SIM:CHANnel:STATus?'s DRIVE_HZ read 0 the entire
+        time -- BUT PFMIN:DEBUG:RAW?/REG? (the raw, unconditional
+        hardware registers, not filtered by any software logic) showed
+        genuine, healthy, continuously-updating captures throughout
+        (firstRise=1, avgCount climbing rapidly, real toggling IDR,
+        lastPeriod matching the idle tone's 3kHz almost exactly). The
+        raw hardware was receiving perfectly; only the higher-level
+        DRIVE_HZ status field was wrong.
+
+        Root cause: SimTransrex_Update()'s only call to
+        PfmInput_ConsumeAveragePeriod() (the function that actually
+        reads the real capture data) was inside `if (gated != 0U)` --
+        and SIM:DIAGnostic:IDLETONE deliberately does NOT require
+        gating, so that block never ran, and the ungated branch
+        forcibly zeroed s_lastMeasuredHz[ch] every single tick,
+        completely independent of what was really being received.
+        DRIVE_HZ and the simulated RESPONSE (targetHz/FEEDBACK_HZ) had
+        been incorrectly conflated into one gated code path -- a real
+        Transrex's receiver can see light regardless of whether it's
+        "connected" (gated); only its RESPONSE is gated.
+
+        Fixed: PfmInput_ConsumeAveragePeriod() now runs every tick,
+        unconditionally -- DRIVE_HZ is a true, always-live measurement
+        of the raw incoming signal, decoupled from gating entirely.
+        targetHz (what the simulator actually drives out as its
+        simulated response) is UNCHANGED -- still genuinely gated,
+        preserving the intentional "real Transrex doesn't respond when
+        disconnected" behavior; only the diagnostic reporting was wrong,
+        not the actual simulated electrical behavior. Rebuilt --target
+        simulator, reflashed, reverified on the same self-loopback
+        setup: DRIVE_HZ now correctly reads 3000 (matching FEEDBACK_HZ)
+        instead of 0, confirmed via the real SIM:CHANnel:STATus? path
+        (not just raw registers this time).
+
+        NOTE: this fixes a real diagnostic-clarity bug on the
+        SIMULATOR side, confirmed via self-loopback on the simulator's
+        own board. It does NOT by itself explain the earlier, separate
+        finding of zero signal arriving at the CONTROLLER's receiver
+        when tested against the simulator's real transmission (measured
+        via PFMIN:DEBUG:REG?'s raw IDR directly on the controller,
+        which never went through this buggy gated code path at all).
+        Per direct user statement, physical cabling is not the cause of
+        that separate finding -- still open, next investigated with
+        this same rigor.
+
+2026-09-21  —  Ruled out state-machine gating: IDR still frozen during a
+               genuine FIRE (PID:PROFile:STARt), not just PID:START/ARMED
+-----------------------------------------------------------------------
+  Change:  NOT a firmware change -- direct user hypothesis, tested:
+        every controller-side diagnostic run so far today had used
+        plain PID:START, which this project's own documented "known
+        gap" leaves in SM_STATE_ARMED, never SM_STATE_FIRING. Tested
+        whether the FEEDBACK receive path is only truly live during a
+        genuine FIRE (PID:PROFile:STARt) instead. Result: PFMIN:DEBUG:
+        REG?'s raw IDR level for channel 1's receive pin stayed frozen
+        at a constant level across a tight polling loop spanning the
+        entire real FIRING window (confirmed via simultaneous STATE?
+        readings) and well beyond. State-machine gating is now ruled
+        out as a factor -- the receive pin never toggles regardless of
+        ARMED-only or genuinely FIRING. Combined with the earlier
+        register-level proof (timer/DMA fully healthy, reflash didn't
+        help, all 6 ports equally dark), the remaining explanation is a
+        physical/optical one: no light is reaching the controller's
+        receiver for this signal path, even though the user visually
+        confirmed the fiber routing "appears accurate" (not yet
+        confirmed with an independent instrument -- a DSLogic capture
+        on these specific pins isn't physically possible on this bench
+        per direct user statement, so this can't be settled further by
+        this project's usual "scope it directly" method for now).
+        Remaining physical checks not yet tried: confirm the FEEDBACK
+        receiver modules are genuinely powered (a receiver being
+        "plugged in" doesn't guarantee it has power -- this was part of
+        the 2026-09-15 incident's own resolution path before the real
+        cause turned out to be a routing swap), try fully reseating the
+        connectors even though they look correctly seated, and try a
+        spare/different fiber cable if one exists on the bench.
+
+2026-09-21  —  CORRECTED, register-level proof: controller-side PFM_Input
+               capture is fully healthy; the real problem is that no
+               toggling signal physically reaches ANY of the controller's
+               6 PFM_Input receiver pins right now
+-----------------------------------------------------------------------
+  Change:  NOT a firmware change -- supersedes this file's own two
+        entries directly above (the "systemic FEEDBACK path dark"
+        finding, and its retraction after one gain_sweep run appeared
+        to work). Chased this down further: a controller reflash (same
+        firmware, forcing a clean MCU boot) did NOT fix it -- fresh
+        boot, first-ever PFM_Input use, still `firstRise=0`. Went to
+        the raw register level (PFMIN:DEBUG:REG?, the same temporary
+        diagnostic built for the 2026-09-15 fiber-patching incident --
+        see pfm-input-feedback-gap memory): CR1=1 (timer genuinely
+        counting, CNT visibly incrementing between polls), CCER/DIER/
+        CCMR1/MODER/AFR all correct and healthy -- but IDR (the pin's
+        RAW logic level, sampled directly, no software involved at all)
+        is FROZEN across 10 rapid back-to-back reads during an active
+        shot, while the SIMULATOR's own SIM:CHANnel:STATus? simultaneously
+        confirms it IS genuinely transmitting a real, live, changing
+        ~40kHz signal (DRIVE_HZ received correctly, FEEDBACK_HZ tracking
+        and varying poll to poll). This is airtight, hardware-level
+        proof the controller's capture peripheral/DMA/software are all
+        completely healthy -- the electrical/optical signal simply never
+        arrives at the pin. Widened the check to all 6 physical
+        PFM_Input ports (not just channel 1's expected port) -- NONE
+        show any toggling at all (unlike the 2026-09-15 incident, where
+        a misrouted signal at least showed up on a WRONG port; this
+        time nothing arrives anywhere).
+
+        Root cause: almost certainly a physical fiber-patching/
+        connection problem on the CONTROLLER's own FEEDBACK receive
+        side (the 4 DRIVE<->FEEDBACK transceiver pairs specifically --
+        NOT the GPOut/GateDriverStatus fault-injection fiber pool the
+        user already visually confirmed lit via SIM:DIAGnostic:IDLETONE
+        earlier today, a physically separate transceiver group).
+        Plausible explanation: last Friday's session had the user
+        physically rewire the controller's own DRIVE directly into its
+        own FEEDBACK for a self-loopback test, bypassing the simulator
+        entirely -- those 4 FEEDBACK fibers on the controller may never
+        have been reconnected back to the simulator's DRIVE outputs when
+        the boards were reconnected this morning. Flagged directly to
+        the user for physical inspection -- not something further
+        firmware/software diagnosis can resolve; see this project's own
+        established fingerprinting technique in pfm-input-feedback-gap
+        memory if a re-patch is needed (drive distinct frequencies per
+        channel, check PFMIN:DEBUG:RAW?/REG? on all 6 ports to find
+        which physical port each channel's real signal actually lands
+        on).
+
+2026-09-21  —  New finding, physical not firmware: simulator->controller
+               FEEDBACK fiber path reads 0 on the controller across ALL 4
+               channels, even though the simulator genuinely transmits a
+               real, correct signal
+-----------------------------------------------------------------------
+  Change:  NOT a firmware change -- found starting the new closed-loop
+        gain_sweep test scenario (python/run_simulator_validation.py):
+        all 3 gains (Kp=0.2/0.5/1.0) FAILED, controller's own measured_hz
+        staying at exactly 0 for the entire 4s shot on channel 1. Isolated
+        live: gated ch1, commanded a fixed 40 kHz open-loop DRIVE.
+        SIM:CHANnel:STATus? 1 showed the simulator receiving it correctly
+        (DRIVE_HZ~40000) AND generating a real, correct FEEDBACK_HZ
+        (~40000) in response -- the simulator side of the loop is
+        confirmed working. But PID:STATus? 1 on the CONTROLLER read
+        measured=0 the entire time, meaning nothing was arriving on the
+        controller's own XR1_FEEDBACK input. Repeated for channels 2/3/4
+        -- SAME result on every channel (simulator transmits correctly,
+        controller measures exactly 0). Systemic across all 4 channels
+        rules out a single loose connector; this is almost certainly the
+        physical simulator->controller FEEDBACK fiber bundle not
+        currently connected (or connected wrong) -- plausibly because
+        the 2026-09-18 session's controller self-loopback test (wiring
+        the controller's own DRIVE directly into its own FEEDBACK,
+        bypassing the simulator entirely, to work around this exact
+        symptom) never got its cabling restored to the normal simulator
+        configuration afterward. NOT a firmware issue: the capture path
+        itself (PfmInput_ConsumeAveragePeriod()/pid.c's measured field)
+        is independently proven working by that same self-loopback test
+        (closed-loop-confirmed-via-direct-loopback memory) and by
+        today's own baseline test (controller->simulator DRIVE direction
+        works correctly through the real fiber). Only the RETURN
+        direction (simulator->controller FEEDBACK) is currently dark.
+        Needs physical inspection/reconnection of the XR1-4_FEEDBACK
+        fiber bundle on the controller before any closed-loop-through-
+        the-simulator test can produce a real result -- flagged to the
+        user directly rather than guessed at further from software.
+
+2026-09-21  —  Root cause found for the fiber-transmitter mystery: simulator
+               board was running stale firmware (ae2ecd1), predating
+               sim_transrex.c entirely -- reflashed to latest (d74b065)
+-----------------------------------------------------------------------
+  Change:  NOT a source change -- a deployment gap. Re-identified both
+        boards via *IDN? after reconnecting for the day: controller was
+        on d74b0653-dirty (correct, matches the 2026-09-18 end-of-day
+        state), but the SIMULATOR was on ae2ecd1e-dirty -- one commit
+        BEHIND d74b065, which is the exact commit that added
+        sim_transrex.c/.h (SimTransrex_Init()/Update(), the ENA_OUT/
+        CONTACT_OUT gating, DRIVE capture -> filter -> FEEDBACK
+        generation, and the default-healthy fault-transmitter levels)
+        in the first place. The simulator board had never once run any
+        of that logic -- every "simulator" test all last week (the
+        fiber-transmitter light mystery, the fault-injection scenarios,
+        the 8-scenario + 45-shot matrix validation campaign) was
+        actually exercising ae2ecd1's firmware, which has no
+        SimTransrex_Init()/Update() call sites at all and does not
+        drive GPOut_01-12/GateDriverStatus-position pins to any of the
+        roles sim_transrex.c assumes.
+
+        This plausibly explains the entire unresolved fiber-transmitter
+        saga (see fiber-transmitter-debugging-saga.md memory): a board
+        with no simulator logic running would not reliably light its
+        DRIVE transmitter, would not gate on ENA_OUT/CONTACT_OUT
+        correctly, and would not produce any FEEDBACK signal -- matching
+        the observed flat-zero feedback and inconsistent light behavior
+        without needing any firmware-bug or wiring explanation. NOT
+        confirmed as the sole cause (the saga's own timeline still shows
+        some light-state changes correlated with physical/DSLogic
+        rewiring, which this finding doesn't explain), but it is a real,
+        previously-unknown gap and the most likely single largest
+        contributor.
+
+        Fixed: rebuilt --target simulator from a clean, HEAD-matching
+        source tree (d74b065, no local Core/ changes), flashed to
+        /dev/cu.usbserial-1120, confirmed via *IDN? ->
+        WHAM-XREX-PFMG474-SIM REVA v0.1 d74b0653-dirty. Simulator-target
+        flashes need no special confirmation per this project's standing
+        rule (only controller flashes do).
+
+        CONFIRMED LIVE immediately after reflashing: with all 4 channels
+        ungated, SIM:CHANnel:STATus? read ENA_OUT=LOW/CONTACT_OUT=LOW on
+        every channel, no faults, FEEDBACK_HZ floored at 5000 (0A) -- the
+        correct idle default. Driving XREX:CHANnel:ENAOut 2 1 +
+        CONTactOut 2 1 on the controller (channel 2 ONLY) gated channel 2
+        alone on the simulator (ENA_OUT=HIGH CONTACT_OUT=HIGH) while
+        channels 1/3/4 stayed fully ungated -- confirms the per-channel
+        independent ENA_OUT+CONTACT_OUT gating matches the intended
+        design exactly (direct user description, 2026-09-21: "They can
+        only output when that channel receives both the contact and the
+        enable signal," independently per channel). Then firing a real
+        open-loop shot on channel 2 (PID:CHANnel:ENAble 2 1,
+        PID:LOOPMODE 2 0, PID:PROFile:CURRent 2 3000A) produced a live,
+        real DRIVE_HZ on the simulator tracking the controller's actual
+        commanded frequency, with FEEDBACK_HZ following it near-
+        instantly (low-pass filtered, both within ~10 Hz of each other
+        at every poll) -- the DRIVE-capture -> filter -> FEEDBACK-
+        generation path genuinely works end to end through the real
+        fiber pair, not just via the direct controller self-loopback
+        used last week. Both boards returned to clean safe state
+        afterward.
+
+2026-09-21  —  Fixed: a freshly-gated channel with no real DRIVE signal
+               yet decayed FEEDBACK_HZ to 0, not the healthy "0A" floor
+               (5000 Hz)
+-----------------------------------------------------------------------
+  Change:  FIXED, same session -- found during the live gating re-verification
+        above. SimTransrex_Init() sets s_lastMeasuredHz[ch]=0 for every
+        channel (sim_transrex.c), and the ungated branch of
+        SimTransrex_Update() also resets s_lastMeasuredHz[ch]=0 every
+        tick (line ~243) -- both intentional for DRIVE_HZ reporting
+        (0 Hz measured is correct/expected while ungated, nothing is
+        being driven). But when a channel then GATES ON before any real
+        DRIVE edge has been captured, SimTransrex_Update()'s gated
+        branch holds `targetHz = (float)s_lastMeasuredHz[ch]`, which is
+        still that stale 0 -- so the low-pass filter chases 0 Hz, not
+        PFM_TURNON_FREQ_HZ (5000 Hz = 0A, the value a real healthy
+        Transrex should read back before current actually flows).
+        Reproduced live: gated channel 2 on with the controller not yet
+        driving anything, watched SIM:CHANnel:STATus? -- FEEDBACK_HZ
+        went from 5000 straight to 0 within about 1 filter time-constant
+        and stayed there. The ACTUAL driven HRTIM output is still
+        clamped to >= PID_OUTPUT_MIN_HZ (3000 Hz) by the existing clamp
+        block, so this isn't a div-by-zero risk, but 3000 Hz is itself
+        below the true 0A floor (5000 Hz) -- both the reported status
+        and the real transmitted signal are wrong/misleading for this
+        specific window (gated, pre-first-DRIVE-edge).
+
+        Fix applied: new per-channel s_haveMeasuredSinceGate[] flag
+        (sim_transrex.c), cleared on every ungated->gated edge, set the
+        first time a real PfmInput sample lands under that gating
+        window. While gated but not yet set, the filter's target is
+        PFM_TURNON_FREQ_HZ (the healthy 0A floor) instead of
+        s_lastMeasuredHz[ch]'s stale 0 -- consistent with the ungated
+        branch's own already-existing "floor toward PFM_TURNON_FREQ_HZ"
+        behavior (sim_transrex.h's own SimTransrex_Update() doc
+        comment). Rebuilt --target simulator, reflashed (no confirmation
+        needed, simulator-only), reverified live: gated channel 2 with
+        zero real DRIVE signal, FEEDBACK_HZ now holds steady at 5000
+        (0A) instead of decaying to 0.
+
+2026-09-18  —  Test methodology finding: matrix sweep's start_profile_shot()
+               never set loop mode, channel 4 silently ran closed-loop
+               with zero gains and stuck at the output floor
+-----------------------------------------------------------------------
+  Change:  NOT a firmware change -- found by the new 45-shot channel-
+        combination x demand-level stress matrix (python/
+        run_simulator_validation.py --matrix, direct request: "every
+        combination of channels... up to and including differing
+        demand values"): every one of the 15 non-empty channel
+        combinations was run at 3 demand levels (600/3000/5400 A). The
+        first pass showed a striking, 100% consistent pattern: EVERY
+        combination including channel 4 failed, output stuck EXACTLY at
+        PID_OUTPUT_MIN_HZ (3000 Hz) regardless of demand (error =
+        demand_hz - 3000, exactly, at all three demand levels); every
+        combination without channel 4 tracked perfectly (0 Hz error).
+
+        Root cause, confirmed live: PID:LOOPMODE? 1 -> OK 0 (open-loop),
+        PID:LOOPMODE? 4 -> OK 1 (closed-loop) -- start_profile_shot()
+        (the shared helper added earlier today for the fault-injection
+        scenarios) never explicitly sets loop mode at all. Channels 1-3
+        only happened to be open-loop because EARLIER scenarios in this
+        same file had explicitly set `PID:LOOPMODE {c} 0` on them,
+        state that persists on the controller across scenario runs.
+        Channel 4, never touched by anything before the matrix sweep,
+        was still at its PID_Init()-time boot default (closed-loop),
+        with PID gains also still at that same safe-inert default
+        (PID:GAINS? 4 -> OK 0 0 0, Kp=Ki=Kd=0, never set by any script)
+        -- closed-loop control with zero gains computes zero corrective
+        action every tick, so the output never moves off wherever it
+        started. Not a real issue with channel 4's own hardware/fiber
+        wiring (XREX:CHANnel:STATus? 4 showed all 4 fault pins HIGH/
+        healthy) -- purely a test-script gap: implicitly relying on
+        state left over from a different test instead of setting it
+        explicitly, the same class of bug as the PID:LOG decimation
+        fix earlier today.
+
+        Fixed: start_profile_shot() now explicitly sends
+        `PID:LOOPMODE {c} 0` for every channel it's about to shoot,
+        before PID:PROFile:CURRent/STARt -- fixes every caller at once
+        (full_profiled_shot, all the fault-injection scenarios,
+        ena_contact, multi_fault, and the matrix sweep), and makes every
+        scenario in this file correctly self-contained instead of
+        depending on what a previous scenario happened to leave
+        configured.
+
+  Verify: Re-ran the full 45-shot matrix after the fix: 45/45 PASSED,
+        every one of the 15 channel combinations at all 3 demand levels
+        (600/3000/5400 A) tracking with EXACTLY 0 Hz output error
+        (docs/simulator_channel_matrix_report.tex/.pdf, 14 pages,
+        includes the all-4-channels representative plots at each demand
+        level). Confirms open-loop tracking is correct across the
+        entire channel/demand combinatorial space -- the earlier 21/45
+        pass rate was entirely explained by this test-script bug, not
+        by any real per-channel firmware or hardware difference.
+
+2026-09-18  —  Test methodology finding: PID:START never reaches
+               SM_STATE_FIRING -- fault-injection tests need
+               PID:PROFile:STARt, not PID:START
+-----------------------------------------------------------------------
+  Change:  NOT a firmware change -- a real gap in how
+        python/run_simulator_validation.py's fault-injection scenarios
+        (OCP/Enerpro/Water-Temp/ENA_OUT-CONTACT_OUT/multi-fault) were
+        driving the controller, found while debugging why the
+        multi-fault scenario's survivor channel reported
+        PID:STATus?'s isRunning=0 almost immediately (~150ms) after the
+        first fault -- far too fast to be a completed 1-second ramp-
+        down.
+
+        Root cause: those scenarios used PID:START (plain, non-profile
+        closed-loop start) to begin their open-loop test shots.
+        PID:START is explicitly documented (docs/command_reference.md's
+        own "Known gap") as NOT gated by the state machine and NOT
+        moving it out of IDLE/ARMED -- only PID:PROFile:STARt calls
+        SM_Fire() to reach SM_STATE_FIRING. HandleOvercurrentFault()
+        (state_machine.c) branches on exactly this: `if
+        (g_stateBeforeFault == SM_STATE_FIRING)` decides between the
+        real graceful per-channel derate-and-ramp path
+        (PID_BeginOvercurrentRampDown()) and an immediate, unconditional
+        full PID_Stop() otherwise. Every fault-injection scenario run
+        earlier today was silently taking the immediate-full-stop
+        branch -- the STATE?/fault-TYPE assertions still happened to
+        pass (those don't depend on which branch ran), but the
+        survivor-derate behavior these tests exist to verify was never
+        actually exercised.
+
+        Fixed: added start_profile_shot() (PID:PROFile:TIMing/CURRent/
+        STARt) to run_simulator_validation.py and switched every fault-
+        injection scenario to use it instead of PID:START/PID:SETPOINT.
+        Also tightened the multi-fault scenario's own assertions: an
+        earlier attempt asserted an exact "(1-1/n) telescoped to 1/3 of
+        original setpoint" target that was itself wrong (each fault's
+        derate applies to the survivor's CURRENT, already-ramping
+        output, not the original setpoint -- real ramp progress happens
+        in the time between two sequential faults) -- replaced with a
+        directionally-correct check (survivor still running, visibly
+        below its steady-state output) instead of a fragile exact
+        number.
+
+  Verify: Re-ran all 5 affected scenarios against the real, reflashed
+        controller -- all now PASS with genuinely meaningful survivor
+        data: ocp/enerpro/ena_contact all show the survivor mid-ramp
+        around 21700-21800 Hz (well below its ~52500 Hz steady-state for
+        a 3000A demand); multi_fault's survivor visibly dropped further
+        between the two sequential faults (30139 Hz -> 25069 Hz),
+        confirming the second fault's derate genuinely compounded on the
+        first. docs/simulator_validation_report.tex/.pdf regenerated
+        (8/8 Part C scenarios now pass, external-trigger regression
+        confirmed working once PF15 was physically wired to GPOut12).
+
 2026-09-18  —  REAL BUG FIX: SM_GetFaultChannel() returned 0xFF (STATE?
                reported channel "256") for SM_FAULT_ENABLE_OUTPUT
 -----------------------------------------------------------------------

@@ -292,7 +292,7 @@ uint32_t PfmInput_GetLatestPeriod(uint8_t channel);
 uint8_t PfmInput_ConsumeAveragePeriod(uint8_t channel, uint32_t *avgPeriodTicks, uint16_t *sampleCount);
 
 /* TEMPORARY debug aid, added 2026-09-15 -- diagnosing why measuredHz
- * (PID:STATus?, backed by PfmInput_ConsumeAveragePeriod() above) reads
+ * (SOURce:STATus?, backed by PfmInput_ConsumeAveragePeriod() above) reads
  * persistently 0 for WHAM channels 2/3/4 while channel 1 works
  * correctly, confirmed via real hardware (each channel isolated alone,
  * driving confirmed-correct real HRTIM output, over a full shot).
