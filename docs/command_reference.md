@@ -1056,10 +1056,19 @@ Available on both build targets unless noted otherwise.
 
 - **`CONFig:PIDRate <hz>` / `?`** — `PID_LOOP_RATE_HZ`. Live-reprograms
   the real HRTIM Master timebase register (`HRTIM1_SetPidHeartbeatRate()`,
-  `hrtim.c`). Range-checked to `[500, 10000]` Hz and **refuses while a
-  shot is running** (`ERR 12`) — unlike every other setting here, a
-  mid-shot change would corrupt every running channel's integral/slew/
+  `hrtim.c`). Range-checked to `[700, 10000]` Hz (raised from `500` on
+  2026-09-23 — `500` was actually below the ~649 Hz real hardware floor,
+  so every value in `[500, 648]` looked valid but always silently
+  failed for an unrelated reason) and **refuses while a shot is
+  running** (`ERR 12`) — unlike every other setting here, a mid-shot
+  change would corrupt every running channel's integral/slew/
   profile-tick state, which all implicitly assume a constant `dt`.
+  **Also affects every other command whose own stored value is
+  tick-based** (`SHOT:TIMing`, `SOURce:RAMP`, and `LOG:DATA?`'s
+  reported sample rate) — changing the loop rate after those were set
+  but before the shot actually fires changes the real wall-clock
+  duration those ticks now represent (found and fixed 2026-09-23, see
+  `docs/changelog.txt`).
 - **`CONFig:TURNONHz <hz>` / `?`**, **`CONFig:MAXFREQHz <hz>` / `?`** —
   `PFM_TURNON_FREQ_HZ`/`PFM_MAX_FREQ_HZ`, the Amps↔Hz calibration
   endpoints (`AmpsToHz()`, `pid.c`). Cross-validated against each other

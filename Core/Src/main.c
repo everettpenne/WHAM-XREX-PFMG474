@@ -164,6 +164,27 @@ int main(void)
      serial command (not yet added, see docs/changelog.txt). */
   PID_Init();
 
+  /* Telemetry event stream (telemetry.h) -- Phase 1 of docs/telemetry.md.
+     Just zeroes the event ring + flight recorder + sets the !EVT gate
+     to ON; the actual state/fault events are pushed by state_machine.c
+     and emitted each main-loop iteration by Telemetry_PollEmit() below.
+
+     *** REAL BUG, FOUND AND FIXED 2026-09-23 ***: this used to run
+     AFTER the SM_Init()/SM_PollFaults()/XrexIo_Poll*Faults() block
+     below -- which, per that block's OWN comment, exists specifically
+     to catch a fault that's already latched at power-on. When that
+     happened, EnterFault() (state_machine.c) correctly pushed a FAULT
+     event into both the live ring AND the flight recorder -- and this
+     call, running right after, unconditionally zeroed both, silently
+     erasing the one event the flight recorder (SYS:EVLOG?) exists
+     specifically to survive for post-mortem review. No later call ever
+     re-pushes it (every fault-report path dedupes on g_state already
+     being SM_STATE_FAULT), so it was gone permanently, not delayed --
+     defeating the flight recorder's own stated purpose for exactly the
+     case it matters most. Moved before the boot-time fault poll below
+     so any pre-existing fault's event survives it. */
+  Telemetry_Init();
+
   /* Top-level operating-state machine (state_machine.h), added
      2026-09-13 -- see that header for the full design (IDLE/ARMED/
      FIRING/FAULT). SM_Init() alone would set IDLE unconditionally,
@@ -185,12 +206,6 @@ int main(void)
                                          (see xrex_io.h) -- called anyway
                                          for the same "same cadence as
                                          everything else" consistency */
-
-  /* Telemetry event stream (telemetry.h) -- Phase 1 of docs/telemetry.md.
-     Just zeroes the event ring + sets the !EVT gate to ON; the actual
-     state/fault events are pushed by state_machine.c and emitted each
-     main-loop iteration by Telemetry_PollEmit() below. */
-  Telemetry_Init();
 
   uart_init(&uart2, &huart2);
 

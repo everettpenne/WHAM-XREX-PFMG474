@@ -447,13 +447,24 @@ void PID_Init(void)
    (roughly 649 Hz-42.5 MHz at this board's fixed /4 Master prescale);
    this is a much tighter, deliberately conservative band centered on
    the compile-time 1 kHz default this project has actually run and
-   tuned against. Lower bound (500 Hz) stays comfortably clear of the
+   tuned against. Lower bound (700 Hz) stays comfortably clear of the
    hardware's own ~649 Hz floor rather than flirting with it; upper
    bound (10 kHz) is well above "tens of Hz to low kHz," the normal
    range this project's own PID_LOOP_RATE_HZ comment (ctrlr_config.h)
    already documents for a magnet-supply current loop -- raise it only
-   after a real reason to run faster shows up. */
-#define PID_LOOP_RATE_HZ_MIN  (500UL)
+   after a real reason to run faster shows up.
+
+   *** REAL BUG, FOUND AND FIXED 2026-09-23 ***: this used to say 500
+   Hz, which is actually BELOW the ~649 Hz hardware floor the comment
+   itself cites -- not unsafe (HRTIM1_SetPidHeartbeatRate() correctly
+   rejects anything in [500, 648] regardless, so PID_SetLoopRateHz()
+   never actually let an unreachable rate through), but every value in
+   that dead sub-range looked like a valid, in-range request right up
+   until it silently failed for a completely different, undocumented
+   reason -- confusing for an operator with no way to tell from this
+   range alone which low values are real vs. dead. Raised to a value
+   genuinely clear of the real floor instead. */
+#define PID_LOOP_RATE_HZ_MIN  (700UL)
 #define PID_LOOP_RATE_HZ_MAX  (10000UL)
 
 /* PID_LOOP_RATE_HZ -- RUNTIME-CONFIGURABLE as of 2026-09-22, direct
@@ -1537,7 +1548,16 @@ uint16_t PID_GetLogCount(void)
 
 uint32_t PID_GetLogSampleRateHz(void)
 {
-    return (uint32_t)PID_LOOP_RATE_HZ / g_logDecim;
+    /* *** REAL BUG, FOUND AND FIXED 2026-09-23, via code review, not a
+       live symptom anyone had actually hit yet ***: this read the
+       compile-time PID_LOOP_RATE_HZ macro, not g_pidLoopRateHz -- once
+       CONFig:PIDRate (2026-09-22) made the loop rate genuinely runtime-
+       configurable, this meant LOG:DATA?'s own reported sample rate
+       silently went stale the instant an operator changed it, with no
+       way to notice from the wire protocol (the header value is just
+       wrong, not flagged as wrong) -- corrupting the time axis of any
+       waveform plot built from it after a rate change. */
+    return g_pidLoopRateHz / g_logDecim;
 }
 
 /* channel: 0..HRTIM_NUM_CHANNELS-1, added 2026-09-10 alongside the
@@ -1594,8 +1614,13 @@ uint8_t PID_StartRamp(uint8_t channel, uint32_t startHz, uint32_t endHz, uint32_
        heartbeat = one PID_DT_SEC) -- rounds to the nearest whole tick;
        at least 1, so a very short durationMs never produces a
        zero-tick ramp (which PID_Update()'s elapsed/total division
-       would divide-by-zero on). */
-    uint32_t ticks = (durationMs * (uint32_t)PID_LOOP_RATE_HZ) / 1000U;
+       would divide-by-zero on). *** REAL BUG, FOUND AND FIXED
+       2026-09-23, same class as PID_GetLogSampleRateHz()'s own fix
+       above ***: used the compile-time PID_LOOP_RATE_HZ macro, not
+       g_pidLoopRateHz -- SOURce:RAMP's own durationMs silently ran 2x
+       too fast/slow after a CONFig:PIDRate change, with no way to tell
+       from the wire protocol. */
+    uint32_t ticks = (durationMs * g_pidLoopRateHz) / 1000U;
     if (ticks == 0U)
     {
         ticks = 1U;
@@ -1725,10 +1750,27 @@ uint8_t PID_SetProfileTiming(uint32_t rampUpTimeMs, uint32_t flatTopTimeMs, uint
     /* Ticks, not ms -- same rounding convention as PID_StartRamp()
        above; at least 1 each, so a very short duration never produces
        a zero-tick phase (TrapezoidalCurrentA()'s own division would
-       divide-by-zero on a zero g_profileRampUpTicks/RampDownTicks). */
-    uint32_t rampUpTicks   = (rampUpTimeMs   * (uint32_t)PID_LOOP_RATE_HZ) / 1000U;
-    uint32_t flatTopTicks  = (flatTopTimeMs  * (uint32_t)PID_LOOP_RATE_HZ) / 1000U;
-    uint32_t rampDownTicks = (rampDownTimeMs * (uint32_t)PID_LOOP_RATE_HZ) / 1000U;
+       divide-by-zero on a zero g_profileRampUpTicks/RampDownTicks).
+       *** REAL BUG, FOUND AND FIXED 2026-09-23, same class as
+       PID_GetLogSampleRateHz()/PID_StartRamp()'s own fixes above ***:
+       used the compile-time PID_LOOP_RATE_HZ macro, not
+       g_pidLoopRateHz -- SHOT:TIMing's stored durations silently ran
+       2x too fast/slow after a CONFig:PIDRate change.
+
+       Narrower issue NOT fixed here, flagged instead: these ticks are
+       computed once, at SET time, from whatever rate is current then --
+       if CONFig:PIDRate changes AGAIN before the shot actually fires
+       (allowed: PID_SetLoopRateHz() only refuses while g_running != 0,
+       i.e. mid-shot, not while merely ARMED with timing already set),
+       the stored tick counts stay tied to the OLD rate while
+       PID_Update() will tick at the NEW one, so the real elapsed wall-
+       clock duration would still drift from what was originally
+       requested in ms -- a real gap, but a different, deeper design
+       question (re-derive ticks at fire time instead of set time?)
+       than this specific bug, not resolved here. */
+    uint32_t rampUpTicks   = (rampUpTimeMs   * g_pidLoopRateHz) / 1000U;
+    uint32_t flatTopTicks  = (flatTopTimeMs  * g_pidLoopRateHz) / 1000U;
+    uint32_t rampDownTicks = (rampDownTimeMs * g_pidLoopRateHz) / 1000U;
     if (rampUpTicks == 0U)   { rampUpTicks   = 1U; }
     if (flatTopTicks == 0U)  { flatTopTicks  = 1U; }
     if (rampDownTicks == 0U) { rampDownTicks = 1U; }
@@ -1757,15 +1799,15 @@ uint8_t PID_GetProfileTiming(uint32_t *rampUpTimeMs, uint32_t *flatTopTimeMs, ui
        active, not a replay of the original input). */
     if (rampUpTimeMs != NULL)
     {
-        *rampUpTimeMs = (g_profileRampUpTicks * 1000U) / (uint32_t)PID_LOOP_RATE_HZ;
+        *rampUpTimeMs = (g_profileRampUpTicks * 1000U) / g_pidLoopRateHz;
     }
     if (flatTopTimeMs != NULL)
     {
-        *flatTopTimeMs = (g_profileFlatTopTicks * 1000U) / (uint32_t)PID_LOOP_RATE_HZ;
+        *flatTopTimeMs = (g_profileFlatTopTicks * 1000U) / g_pidLoopRateHz;
     }
     if (rampDownTimeMs != NULL)
     {
-        *rampDownTimeMs = (g_profileRampDownTicks * 1000U) / (uint32_t)PID_LOOP_RATE_HZ;
+        *rampDownTimeMs = (g_profileRampDownTicks * 1000U) / g_pidLoopRateHz;
     }
     return 1U;
 }

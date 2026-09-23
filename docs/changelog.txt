@@ -1,6 +1,112 @@
 WHAM-XREX-PFMG474 Firmware Changelog
 =====================================
 
+2026-09-23  —  Review of the bundled CONFig:*/telemetry/host-tooling
+                work: 6 real bugs found and fixed
+-----------------------------------------------------------------------
+  Change:  Autonomous follow-up (direct authorization), a genuine
+        independent review of the work that rode along with the
+        PID:->SOURce:/SHOT:/LOG:/CHANnel: rename but never got its own
+        pass (the rename itself already got an 8-angle review, see the
+        prior entry). Three review passes -- pid.c/xrex_io.c's
+        CONFig:* additions, telemetry.c, and the ~2700 combined new
+        lines in wham_console.py/run_simulator_validation.py -- found
+        6 real, concrete bugs, none of them hypothetical.
+
+        FIRMWARE (Core/Src/pid.c, Core/Src/main.c):
+
+        1. Four call sites in pid.c still read the compile-time
+           PID_LOOP_RATE_HZ macro instead of the runtime
+           g_pidLoopRateHz variable CONFig:PIDRate (2026-09-22) actually
+           changes: PID_GetLogSampleRateHz() (LOG:DATA?'s own reported
+           sample rate), PID_StartRamp() (SOURce:RAMP's duration),
+           PID_SetProfileTiming()/PID_GetProfileTiming() (SHOT:TIMing/
+           SHOT:TIMing?). CONFig:PIDRate itself worked correctly and
+           reported success -- these four commands silently kept using
+           the stale 1000 Hz default regardless, so a shot's real
+           ramp/flat-top/ramp-down durations ran 2x too fast or slow
+           after a loop-rate change, invisibly (SHOT:TIMing? read back
+           exactly what was asked for, using the same stale constant).
+           All four fixed to read g_pidLoopRateHz. A narrower, deeper
+           issue flagged but NOT fixed: SHOT:TIMing's stored tick
+           counts are computed once at set-time and go stale again if
+           CONFig:PIDRate changes a second time before the shot
+           actually fires (allowed -- PID_SetLoopRateHz() only refuses
+           while g_running != 0) -- a real gap, but a different design
+           question (re-derive ticks at fire time?) than this bug.
+
+        2. Minor, related: PID_LOOP_RATE_HZ_MIN was 500 Hz, below the
+           ~649 Hz real HRTIM hardware floor its own comment cited --
+           not unsafe (fails closed, HRTIM1_SetPidHeartbeatRate()
+           correctly rejects the whole [500,648] sub-range), just
+           presented a dead range as valid with no way to tell from the
+           bound alone. Raised to 700 Hz; docs/command_reference.md
+           updated to match.
+
+        3. Telemetry_Init() (main.c) ran AFTER the boot-time fault poll
+           (SM_Init()/SM_PollFaults()/XrexIo_Poll*Faults()), which
+           exists specifically to catch a fault already latched at
+           power-on. When that happened, EnterFault() correctly pushed
+           the event into both the live !EVT ring and the flight
+           recorder -- and Telemetry_Init(), running right after,
+           unconditionally zeroed both, permanently erasing the one
+           event SYS:EVLOG? exists to survive for post-mortem review
+           (no later call ever re-pushes it -- every fault-report path
+           dedupes on already being in SM_STATE_FAULT). Moved
+           Telemetry_Init() before the fault-poll block.
+
+        HOST TOOLING (python/run_simulator_validation.py):
+
+        4. generate_combined_plot() referenced `survivor_rows`, not an
+           actual parameter or local (the real name is `extra_traces`)
+           -- a NameError on any scenario whose controller log came
+           back genuinely empty (a legitimate `OK 0 ...` reply, not an
+           error), which discarded that scenario's own already-computed
+           real PASS/FAIL verdict and replaced it with a generic
+           "Unexpected exception" in the campaign report. Fixed to
+           check `extra_traces`.
+
+        5. Several scenarios (OCP/Enerpro/Watertemp fault injection,
+           ENA_OUT/CONTACT_OUT-dropped, plus two more for consistency)
+           armed the simulator's onboard log with a hardcoded
+           min_interval_ms=5 -- only 5.0s of coverage (1000 samples *
+           5ms) -- instead of this file's own sim_log_interval_ms(),
+           added earlier specifically to fix this exact bug class
+           elsewhere. With the module default RAMP_S=10.0/FLAT_S=5.0,
+           the fault-injection scenarios fire their fault at ~10.5s --
+           well past the 5.0s cutoff -- silently truncating the
+           simulator-side DRIVE/FEEDBACK log before the fault instant,
+           corrupting the diagnostic plot/CSV for exactly the tests
+           meant to visually confirm hardware fault response (did not
+           affect PASS/FAIL, which polls STATE?/SOURce:STATus?
+           directly, not this log). All 7 real call sites now use
+           sim_log_interval_ms() consistently.
+
+        6. shot_meta() built its returned dict with the pre-rename key
+           `ramp_time_s`, but wham_console.py's generate_plot()/
+           generate_multi_channel_plot() were updated in the same
+           rename to require separate ramp_up_time_s/ramp_down_time_s
+           (once SHOT:TIMing became a 3-argument asymmetric-ramp
+           command) -- shot_meta() was never updated to match, so
+           have_profile was always False and every plot this script
+           produced silently fell back to the plain Hz-only view
+           instead of the intended phase-shaded ramp/flat-top/ramp-down
+           + Amps-axis plot, for essentially the whole campaign, no
+           error printed. A second consumer of the same stale key
+           inside this same file (generate_multi_channel_grid_plot()'s
+           own phase-shading) was also broken the same way and also
+           fixed. This script only ever commands symmetric ramps, so
+           both new keys are set to the same value.
+
+        Verified: wham_build.py --target controller/--target simulator
+        --clean both clean (zero errors/warnings). Python: py_compile +
+        real imports clean; shot_meta()'s new keys and the resulting
+        have_profile condition functionally tested True; confirmed zero
+        remaining hardcoded min_interval_ms=5 call sites (only the
+        function's own default parameter, which is fine, remains).
+        Firmware changes not yet reflashed/hardware-verified as of this
+        entry -- next step.
+
 2026-09-23  —  ARM-readiness stub: investigated, comments corrected,
                 deliberately NOT closed further
 -----------------------------------------------------------------------

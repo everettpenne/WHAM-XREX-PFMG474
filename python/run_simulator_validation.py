@@ -269,7 +269,23 @@ def shot_meta(link, channel, ramp_s=None, flat_s=None, demand_a=None):
         channel=channel, nickname=None,
         timestamp=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         idn=idn, kp=kp, ki=ki, kd=kd, loop_mode=loop_mode,
-        ramp_time_s=ramp_s, flat_top_time_s=flat_s, demand_current_a=demand_a,
+        # *** REAL BUG, FOUND AND FIXED 2026-09-23 ***: this used to be
+        # a single `ramp_time_s=ramp_s`, the pre-2026-09-22 key name.
+        # wham_console.py's generate_plot()/generate_multi_channel_plot()
+        # were updated in the same rename to expect SEPARATE
+        # ramp_up_time_s/ramp_down_time_s keys (once SHOT:TIMing became
+        # a 3-argument asymmetric-ramp command) -- this file's own
+        # shot_meta() was never updated to match, so have_profile was
+        # always False for every plot this script produced, silently
+        # falling back to the plain Hz-only plot instead of the
+        # intended phase-shaded ramp/flat-top/ramp-down + Amps-axis one,
+        # for essentially the whole campaign, with no error printed.
+        # This script only ever commands symmetric ramps (one ramp_s
+        # for both directions -- see every caller of this function, and
+        # start_profile_shot()'s own single ramp_s parameter), so both
+        # keys are simply set to the same value here.
+        ramp_up_time_s=ramp_s, ramp_down_time_s=ramp_s,
+        flat_top_time_s=flat_s, demand_current_a=demand_a,
     )
 
 
@@ -437,7 +453,16 @@ def generate_combined_plot(name, description, verdict, notes, channel, ctrl_rows
     ax1.set_ylabel("Frequency (Hz)")
     ax1.set_title("Controller: commanded vs. measured", fontsize=10)
     ax1.grid(True, alpha=0.3)
-    if ctrl_rows or survivor_rows:
+    # *** REAL BUG, FOUND AND FIXED 2026-09-23 ***: was `survivor_rows`,
+    # which is not a parameter or local of this function (the survivor's
+    # own data comes in via `extra_traces`, plotted in the loop above) --
+    # a NameError here, short-circuited away by `ctrl_rows or ...` as
+    # long as ctrl_rows was truthy, but ANY scenario whose controller log
+    # came back genuinely empty (a legitimate, non-exceptional OK 0
+    # reply, not an error) crashed here -- discarding that scenario's
+    # already-computed real PASS/FAIL verdict and replacing it with a
+    # generic "Unexpected exception" in the campaign report.
+    if ctrl_rows or extra_traces:
         ax1.legend(loc="best", fontsize=8)
 
     if sim_rows:
@@ -554,7 +579,11 @@ def scenario_baseline_tracking(ctrl, sim):
 
     duration_s = 3.0
     ctrl.query(f"LOG:ARM {ch} {PID_LOG_MAX_SAMPLES} {pid_log_decim(duration_s)}", timeout=1.0)
-    arm_sim_log(sim, ch, max_samples=1000, min_interval_ms=5)
+    # duration_s=3.0 was already safely under the hardcoded default's
+    # 5.0s capacity -- switched to sim_log_interval_ms() anyway
+    # 2026-09-23, for consistency with every other call site (and so
+    # this stays correct if duration_s here is ever changed later).
+    arm_sim_log(sim, ch, max_samples=1000, min_interval_ms=sim_log_interval_ms(duration_s))
 
     ctrl.query(f"PID:LOOPMODE {ch} 0", timeout=1.0)   # open-loop
     target_hz = 20000
@@ -607,7 +636,7 @@ def generate_multi_channel_grid_plot(name, description, verdict, notes, per_chan
     in one tall image. `per_channel_rows`/`per_channel_meta` are
     {channel: rows}/{channel: meta} dicts; a channel may be missing (no
     data) -- that subplot is annotated 'no data'. When any channel's meta
-    carries ramp_time_s/flat_top_time_s, the ramp-up/flat-top/ramp-down
+    carries ramp_up_time_s/flat_top_time_s, the ramp-up/flat-top/ramp-down
     regions are shaded and labeled on every panel. `fault_events` is an
     optional list of (t_s, label) -- each is drawn as a vertical dashed
     red line + rotated label on every populated panel, marking when a
@@ -617,11 +646,18 @@ def generate_multi_channel_grid_plot(name, description, verdict, notes, per_chan
 
     # Profile timing is shared across channels in one shot -- read it from
     # the first channel meta that has it, then shade every panel the same.
+    # Fixed 2026-09-23: was reading the old `ramp_time_s` key, which
+    # shot_meta() stopped producing once it was fixed (see that
+    # function's own comment) to emit ramp_up_time_s/ramp_down_time_s
+    # instead -- this shading silently stopped working the same way
+    # generate_plot()'s own phase-shading did. Reads ramp_up_time_s
+    # (== ramp_down_time_s always, this script only ever commands
+    # symmetric ramps -- see shot_meta()'s own comment).
     ramp_s = flat_s = None
     for _ch in (1, 2, 3, 4):
         _m = per_channel_meta.get(_ch) or {}
-        if _m.get("ramp_time_s") and _m.get("flat_top_time_s") is not None:
-            ramp_s = _m["ramp_time_s"]
+        if _m.get("ramp_up_time_s") and _m.get("flat_top_time_s") is not None:
+            ramp_s = _m["ramp_up_time_s"]
             flat_s = _m["flat_top_time_s"]
             break
     phase_bounds = None
@@ -1233,7 +1269,20 @@ def scenario_fault_injection(name, sim_cmd, description, ch, second_ch, expect_s
 
         ramp_s, flat_s, demand_a = RAMP_S, FLAT_S, 3000.0
         ctrl.query(f"LOG:ARM 0 {PID_LOG_MAX_SAMPLES} {pid_log_decim(2 * ramp_s + flat_s)}", timeout=1.0)   # all channels -- captures the survivor too
-        arm_sim_log(sim, ch, max_samples=1000, min_interval_ms=5)
+        # *** REAL BUG, FOUND AND FIXED 2026-09-23 ***: was a hardcoded
+        # min_interval_ms=5 (1000 samples * 5ms = 5.0s max coverage --
+        # see sim_log_interval_ms()'s own docstring for the full
+        # reasoning, same bug class this function exists to fix
+        # elsewhere). With the module defaults (RAMP_S=10.0/FLAT_S=5.0),
+        # the fault below fires at ramp_s+0.5 ~= 10.5s -- well past the
+        # sim log's own 5.0s cutoff -- so the fault instant and
+        # everything after it was silently missing from the simulator's
+        # own DRIVE/FEEDBACK data for these OCP/Enerpro/Watertemp
+        # scenarios specifically (didn't affect PASS/FAIL, driven by
+        # STATE?/SOURce:STATus? polling, not this log -- but did corrupt
+        # the diagnostic plot/CSV evidence for exactly the tests meant
+        # to visually confirm hardware fault response).
+        arm_sim_log(sim, ch, max_samples=1000, min_interval_ms=sim_log_interval_ms(2 * ramp_s + flat_s))
 
         if not start_profile_shot(ctrl, [ch, second_ch], ramp_s, flat_s, demand_a):
             reset_to_safe_state(ctrl, sim)
@@ -1320,7 +1369,12 @@ def scenario_ena_contact_dropped(ctrl, sim):
 
     ramp_s, flat_s, demand_a = 1.0, 3.0, 3000.0
     ctrl.query(f"LOG:ARM 0 {PID_LOG_MAX_SAMPLES} {pid_log_decim(2 * ramp_s + flat_s)}", timeout=1.0)
-    arm_sim_log(sim, ch, max_samples=1000, min_interval_ms=5)
+    # Fixed 2026-09-23 for consistency with the other scenarios' own
+    # fix (same bug class, see scenario_fault_injection()'s own
+    # comment) -- this one's 2*1.0+3.0=5.0s total shot duration was
+    # already right at the hardcoded min_interval_ms=5 default's exact
+    # 5.0s capacity with zero margin, not clearly safe.
+    arm_sim_log(sim, ch, max_samples=1000, min_interval_ms=sim_log_interval_ms(2 * ramp_s + flat_s))
 
     if not start_profile_shot(ctrl, [ch, survivor], ramp_s, flat_s, demand_a):
         reset_to_safe_state(ctrl, sim)
