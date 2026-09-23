@@ -1,6 +1,47 @@
 WHAM-XREX-PFMG474 Firmware Changelog
 =====================================
 
+2026-09-23  —  ARM-readiness stub: investigated, comments corrected,
+                deliberately NOT closed further
+-----------------------------------------------------------------------
+  Change:  Autonomous follow-up (direct authorization) on a known,
+        long-flagged gap: ArmConditionsMet() (state_machine.c) still
+        carried a "TODO, populate the rest" comment claiming profile
+        timing / gains sanity / "whatever else turns out to matter"
+        were unchecked, even though the function itself already checks
+        two real conditions (the external-enable interlock, and every
+        enabled channel's ENA_OUT/CONTACT_OUT readiness).
+
+        Investigated each item the stale comment claimed was missing:
+        "profile timing configured" turns out NOT to be a real gap --
+        PID_ProfileStart() (pid.c, called from SM_Fire()/SHOT:STARt)
+        already independently refuses to fire with no timing set, so
+        ARM succeeding without it is harmless (ARM changes nothing
+        electrical either way). "No fault active" was never a separate
+        check to add -- IDLE and FAULT are already mutually exclusive
+        states, covered for free by SM_Arm()'s own state check.
+
+        Deliberately did NOT add a gain-sanity check: there is no
+        universal "wrong" PID gain value to enforce without real domain
+        input on what's actually unsafe for this specific plant --
+        guessing a bound here would be worse than not checking at all,
+        and this is exactly the kind of safety-relevant behavior change
+        that shouldn't be made unilaterally while unattended. Flagged
+        clearly in the corrected comments instead of guessed at.
+
+        Corrected the stale "currently a stub"/"always allows arming"/
+        "TODO, populate the rest" comments in both state_machine.c
+        (ArmConditionsMet() itself, header and closing comment) and
+        state_machine.h (the ARMED state's own design writeup, and
+        SM_Arm()'s declaration comment) to accurately describe what's
+        actually checked today. state_machine.h's own "ALSO NOTE TO
+        REVISIT, PARTIALLY RESOLVED" paragraph was already accurate --
+        left unchanged.
+
+        Comment-only change, no behavior change. Verified: wham_build.py
+        --target controller --clean compiles clean (zero errors/
+        warnings) -- not reflashed, since nothing electrical changed.
+
 2026-09-23  —  Closed the two remaining PID-loop-rate/log-size
                 staleness gaps (host tooling only)
 -----------------------------------------------------------------------

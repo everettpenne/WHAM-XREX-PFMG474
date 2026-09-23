@@ -213,18 +213,20 @@ static void HandleOvercurrentFault(uint8_t channel)
     }
 }
 
-/* Readiness gate for SM_Arm() -- STUB, per direct instruction: always
-   allows arming today. Real interlock conditions (no fault active --
-   already implicitly guaranteed, since IDLE and FAULT are mutually
-   exclusive states, so nothing further needed for that one
-   specifically; profile timing actually configured; at least one
-   channel enabled; gains sane; whatever else turns out to matter) are
-   explicitly NOT implemented yet -- populate later.
+/* Readiness gate for SM_Arm(). Originally a pure STUB (always allowed
+   arming); TWO real conditions are now populated: the external-enable
+   interlock (SM_ExternalEnableOk(), 2026-09-16 -- ON by default as of
+   2026-09-22, see this file's header comment) and every currently-
+   enabled channel's ENA_OUT/CONTACT_OUT readiness
+   (XrexIo_EnableOutputsReadyToArm(), 2026-09-17). "No fault active" was
+   never a separate check to add -- IDLE and FAULT are already mutually
+   exclusive states, so SM_Arm()'s own `g_state != SM_STATE_IDLE` guard
+   covers it for free.
 
-   ONE real condition now populated, 2026-09-16: the external-enable
-   interlock (SM_ExternalEnableOk(), see this file's header comment) --
-   still an opt-in, OFF-by-default check, but no longer purely a stub
-   for this specific case. */
+   Corrected 2026-09-23: NOT still an open TODO, as the comment used to
+   claim -- see this function's own closing comment for what's actually
+   still deliberately unchecked (gain sanity) and why, and why "profile
+   timing configured" turned out not to be a real gap at all. */
 static uint8_t ArmConditionsMet(void)
 {
     if (SM_ExternalEnableOk() == 0U)
@@ -241,7 +243,22 @@ static uint8_t ArmConditionsMet(void)
     {
         return 0U;
     }
-    return 1U;   /* TODO (2026-09-13): populate the rest. */
+    /* Corrected 2026-09-23: the "TODO, populate the rest" this comment
+       used to end with overstated what's actually still missing.
+       Profile timing being unset is NOT a real gap here -- it's
+       already independently, redundantly checked at the next gate
+       (PID_ProfileStart(), pid.c, called from SM_Fire()/SHOT:STARt):
+       ARM succeeding with no timing configured is harmless, since
+       nothing electrical happens on ARM either way (see this
+       function's own header comment) and firing still refuses until
+       timing is actually set. The one item from the original TODO
+       that's genuinely still open is per-channel gain sanity for
+       closed-loop channels -- deliberately NOT implemented here: there
+       is no universal "wrong" gain value for this check to enforce
+       without real domain input on what's actually unsafe for THIS
+       plant, so guessing a bound would be worse than not checking at
+       all. Flagged, not guessed at. */
+    return 1U;
 }
 
 /* Shared by SM_PollFaults() AND every SM_Report*Fault() -- the one

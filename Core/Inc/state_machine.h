@@ -35,8 +35,9 @@ extern "C" {
  *              electrical changes on entry. What ARMED buys is a
  *              deliberate, separately-confirmable "ready to fire" step
  *              before any real output begins, gated by
- *              ArmConditionsMet() (currently a STUB, see its own
- *              comment below -- always allows arming today). Entered
+ *              ArmConditionsMet() (corrected 2026-09-23 -- no longer a
+ *              pure stub, see its own comment for exactly what's
+ *              checked and what's deliberately still not). Entered
  *              via SM_Arm() (the `ARM` command); left via SM_Fire()
  *              (`SHOT:STARt`, which only succeeds from here) or
  *              SM_Disarm() (`DISARM`, stand down) or SM_Stop()
@@ -370,8 +371,9 @@ uint8_t SM_GetFaultChannel(void);
 
 /* IDLE -> ARMED. Backs the `ARM` command (commands.c). Returns 1 on
  * success, 0 if the current state isn't IDLE (already ARMED/FIRING/
- * FAULT) or if ArmConditionsMet() (state_machine.c, currently a stub
- * that always returns 1) refuses. */
+ * FAULT) or if ArmConditionsMet() (state_machine.c -- external-enable
+ * interlock + per-channel ENA_OUT/CONTACT_OUT readiness, not a pure
+ * stub since 2026-09-17) refuses. */
 uint8_t SM_Arm(void);
 
 /* ARMED -> IDLE, WITHOUT firing -- stand down. Backs the `DISARM`
