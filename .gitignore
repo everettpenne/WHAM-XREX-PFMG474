@@ -25,6 +25,25 @@ __pycache__/
 # build off the tracked .elf, with zero information not already in it.
 # Narrowed to actually ignore them; .bin/.elf/subdir.mk are NOT touched
 # by this and stay tracked -- see the reasoning below.
+#
+# *** REAL BUG, FOUND AND FIXED 2026-09-23, one day after this section
+# was first added ***: `Debug/**/*.list` (etc.) never actually matched
+# the two files most responsible for the original problem --
+# Debug/WHAM-XREX-PFMG474.list/.map sit directly in Debug/, zero
+# subdirectories deep, and this git's glob treats `**/` as requiring
+# at least one directory level, not "zero or more" as might be
+# assumed -- so the exact 69,000-line file that broke ultrareview in
+# the first place stayed tracked the whole time; only the Core/Src/*
+# subdirectory intermediates were ever actually caught. Confirmed via
+# `git ls-files`/`git check-ignore` after the fact, not assumed. Added
+# explicit top-level patterns alongside the `**` ones so both depths
+# are covered regardless of this glob quirk.
+Debug/*.list
+Debug/*.map
+Debug/*.o
+Debug/*.d
+Debug/*.su
+Debug/*.cyclo
 Debug/**/*.list
 Debug/**/*.map
 Debug/**/*.o
