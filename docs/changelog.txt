@@ -1,6 +1,64 @@
 WHAM-XREX-PFMG474 Firmware Changelog
 =====================================
 
+2026-09-23  —  Closed the two remaining PID-loop-rate/log-size
+                staleness gaps (host tooling only)
+-----------------------------------------------------------------------
+  Change:  Autonomous follow-up (direct authorization) to two gaps
+        flagged but left open in earlier entries.
+
+        1. python/wham_console.py's sync_calibration() now also
+           queries CONFig:PIDRate? and refreshes
+           PID_LOOP_RATE_HZ_ASSUMED, same live-sync treatment already
+           applied to the Amps<->Hz globals -- wired into the same two
+           call sites (connect-time, and default()'s post-command
+           resync via _is_calibration_set(), now also matching
+           CONFig:PIDRate). python/run_simulator_validation.py's own
+           hardcoded PID_LOOP_RATE_HZ = 1000 copy removed;
+           pid_log_decim() now reads wc.PID_LOOP_RATE_HZ_ASSUMED
+           directly (module-qualified, tracks live syncs -- same
+           pattern already used for wc.PFM_MAX_CURRENT_A).
+
+        2. *** REAL BUG, FOUND while fixing (1), not what was being
+           looked for ***: wham_console.py's PID_LOG_MAX_SAMPLES_ASSUMED
+           was hardcoded 1000. Core/Inc/pid.h's real PID_LOG_MAX_SAMPLES
+           is 1750, and always has been -- confirmed directly against
+           source. This one isn't a live-sync gap at all (no CONFig:*
+           command backs a compile-time log-buffer size); it was just
+           wrong, unconditionally, underestimating real log capacity by
+           43% in the shot wizard's auto-suggested decim value. Fixed
+           to the correct constant.
+
+        3. python/dslogic_shot_capture.py's own third independent
+           hardcoded copy of PFM_TURNON_FREQ_HZ/PFM_MAX_FREQ_HZ/
+           PFM_MAX_CURRENT_A -- NOT simply merged with wham_console.py's
+           copy: that module's own header comment says it's deliberately
+           kept as a separate copy so it stays usable standalone,
+           without wham_console.py's heavier dependencies -- and
+           wham_console.py already imports dslogic_shot_capture.py at
+           its own top level, so having dslogic_shot_capture.py import
+           wham_console back would risk a real circular-import problem
+           depending on which script runs as __main__. Added
+           dslogic_shot_capture.set_calibration(turnon_hz, max_hz,
+           max_current_a) instead -- no device query, no wham_console
+           import -- and wired wham_console.py's do_shot() DSLogic
+           integration to push its own already-fetched live values
+           through after every successful sync_calibration(), at both
+           call sites (connect-time and the raw-command resync path).
+           Standalone use of dslogic_shot_capture.py is completely
+           unaffected -- its hardcoded defaults are untouched, this only
+           adds an optional live-refresh path for callers that have one.
+
+        Verified: all three files syntax-check and import cleanly
+        (py_compile + real imports, confirmed no circular-import issue
+        in practice -- wham_console imports fine with
+        dslogic_shot_capture already imported into it, and vice versa
+        standalone); dslogic_shot_capture.set_calibration() functionally
+        tested (updates its module globals correctly);
+        run_simulator_validation.pid_log_decim(10.0) returns 8,
+        matching ceil(1000*10*1.25/1750). No firmware changes --
+        python/ only.
+
 2026-09-22  —  Rename review: 5 findings fixed, build-verified before
                 first flash
 -----------------------------------------------------------------------

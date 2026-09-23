@@ -98,6 +98,26 @@ PFM_MAX_CURRENT_A = 6000.0  # updated 2026-09-18 -- see wham_console.py's
                             # installed LEMs are 6kA, not 5kA)
 
 
+def set_calibration(turnon_hz, max_hz, max_current_a):
+    """Updates the three globals above from an already-known-live
+    source -- added 2026-09-23, closing the same staleness gap already
+    fixed in wham_console.py (sync_calibration()) and
+    run_simulator_validation.py. Deliberately does NOT query the
+    device itself (no WhamLink import here, no `import wham_console`
+    either) -- this module is meant to stay usable standalone without
+    a live connection (see the comment on the globals above), so a
+    caller that DOES have one (wham_console.py's own do_shot(), after
+    its own sync_calibration() succeeds) should pass the already-
+    fetched values through instead of this module re-querying the
+    device a second time or importing wham_console and risking the
+    circular import that would create (wham_console already imports
+    this module at its own top level)."""
+    global PFM_TURNON_FREQ_HZ, PFM_MAX_FREQ_HZ, PFM_MAX_CURRENT_A
+    PFM_TURNON_FREQ_HZ = float(turnon_hz)
+    PFM_MAX_FREQ_HZ = float(max_hz)
+    PFM_MAX_CURRENT_A = float(max_current_a)
+
+
 def _hz_to_amps(hz):
     import numpy as np
     hz = np.asarray(hz, dtype=float)

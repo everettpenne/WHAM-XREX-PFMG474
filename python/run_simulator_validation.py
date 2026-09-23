@@ -90,14 +90,19 @@ REPORT_TEX = os.path.join(DOCS_DIR, "simulator_validation_report.tex")
 
 HRTIM_NUM_CHANNELS = 4
 
-# LOG:ARM/LOG:DATA? -- MUST match Core/Inc/ctrlr_config.h's
-# PID_LOOP_RATE_HZ and Core/Inc/pid.h's PID_LOG_MAX_SAMPLES exactly.
-# PID_LOOP_RATE_HZ is now ALSO live-configurable (CONFig:PIDRate,
-# 2026-09-22) same as wham_console.py's Amps<->Hz calibration used to
-# be before wc.sync_calibration() -- this one hasn't been wired up to
-# CONFig:PIDRate? the same way yet; still a hand-kept-in-sync copy.
-PID_LOOP_RATE_HZ = 1000
+# LOG:ARM/LOG:DATA? -- MUST match Core/Inc/pid.h's PID_LOG_MAX_SAMPLES
+# exactly (a compile-time log-buffer size, not runtime-configurable --
+# no CONFig:* backs it, so a plain constant is correct here, unlike
+# the loop rate below).
 PID_LOG_MAX_SAMPLES = 1750
+
+# PID_LOOP_RATE_HZ -- RESOLVED 2026-09-23: wc.sync_calibration() now
+# also refreshes wc.PID_LOOP_RATE_HZ_ASSUMED from the live
+# CONFig:PIDRate?, same fix already applied to the Amps<->Hz globals
+# this file already reads via wc.PFM_* (see main()'s own sync call).
+# pid_log_decim() below reads wc.PID_LOOP_RATE_HZ_ASSUMED directly
+# (module-qualified, not a local copy) so it always sees whatever
+# main() last synced, exactly like the wc.PFM_MAX_CURRENT_A fix.
 
 
 # Default shot-profile timing (seconds) -- 2026-09-21, raised for the
@@ -123,7 +128,7 @@ def sim_log_interval_ms(duration_s, margin=1.25):
 
 def pid_log_decim(duration_s, margin=1.25):
     """Decimation for `LOG:ARM 0 1750 <decim>` so PID_LOG_MAX_SAMPLES
-    (1000) samples comfortably cover a shot lasting `duration_s`
+    (1750) samples comfortably cover a shot lasting `duration_s`
     seconds, with `margin` headroom for this script's own imprecise
     time.sleep() timing (real elapsed time always runs a bit long).
 
@@ -142,7 +147,7 @@ def pid_log_decim(duration_s, margin=1.25):
     at all, even though the live SOURce:STATus?/STATE? checks driving each
     scenario's own PASS/FAIL verdict were unaffected (those poll the
     board directly, not the log)."""
-    needed = math.ceil(PID_LOOP_RATE_HZ * duration_s * margin / PID_LOG_MAX_SAMPLES)
+    needed = math.ceil(wc.PID_LOOP_RATE_HZ_ASSUMED * duration_s * margin / PID_LOG_MAX_SAMPLES)
     return max(1, needed)
 
 

@@ -151,43 +151,59 @@ PFM_MAX_CURRENT_A = 6000.0  # updated 2026-09-18 -- ctrlr_config.h's
 
 
 def sync_calibration(link):
-    """Refreshes the three globals above from the live controller's own
-    CONFig:TURNONHz?/CONFig:MAXFREQHz?/CONFig:MAXCURRent? (channel 1)
-    -- added 2026-09-22 alongside those commands, closing the
-    staleness gap the comment above used to just warn about. Returns
-    True on success. Never raises: an older firmware without these
-    commands, or any query error, just leaves the current values (the
-    hardcoded defaults, or whatever a previous sync last set) in
-    place -- calibration only feeds a plot axis, not a safety check,
-    so silently keeping the last-known-good value is the right
-    failure mode here."""
-    global PFM_TURNON_FREQ_HZ, PFM_MAX_FREQ_HZ, PFM_MAX_CURRENT_A
+    """Refreshes the Amps<->Hz globals above AND PID_LOOP_RATE_HZ_ASSUMED
+    (below) from the live controller's own CONFig:TURNONHz?/
+    CONFig:MAXFREQHz?/CONFig:MAXCURRent? (channel 1)/CONFig:PIDRate? --
+    added 2026-09-22 alongside those commands, closing the staleness
+    gap the comments above/below used to just warn about (the loop-
+    rate half added slightly later the same day, once the same gap was
+    noticed there too -- same hand-kept-in-sync-copy problem, same
+    fix). Returns True on success. Never raises: an older firmware
+    without these commands, or any query error, just leaves the
+    current values (the hardcoded defaults, or whatever a previous
+    sync last set) in place -- none of these four are a safety check,
+    only a plot axis or a suggested-decim calculation, so silently
+    keeping the last-known-good value is the right failure mode here."""
+    global PFM_TURNON_FREQ_HZ, PFM_MAX_FREQ_HZ, PFM_MAX_CURRENT_A, PID_LOOP_RATE_HZ_ASSUMED
     try:
         turnon = link.query("CONFig:TURNONHz?", timeout=2.0)
         maxfreq = link.query("CONFig:MAXFREQHz?", timeout=2.0)
         maxcurr = link.query("CONFig:MAXCURRent? 1", timeout=2.0)
+        looprate = link.query("CONFig:PIDRate?", timeout=2.0)
     except WhamError:
         return False
-    if is_err(turnon) or is_err(maxfreq) or is_err(maxcurr):
+    if is_err(turnon) or is_err(maxfreq) or is_err(maxcurr) or is_err(looprate):
         return False
     try:
         PFM_TURNON_FREQ_HZ = float(turnon.split()[1])
         PFM_MAX_FREQ_HZ = float(maxfreq.split()[1])
         PFM_MAX_CURRENT_A = float(maxcurr.split()[1])
+        PID_LOOP_RATE_HZ_ASSUMED = int(float(looprate.split()[1]))
     except (ValueError, IndexError):
         return False
     return True
 
-# Same caveat as above -- MUST MATCH Core/Inc/ctrlr_config.h's
-# PID_LOOP_RATE_HZ and Core/Inc/pid.h's PID_LOG_MAX_SAMPLES. Used only
+# PID_LOOP_RATE_HZ_ASSUMED: now kept in sync by sync_calibration()
+# above (added 2026-09-23, same live-staleness fix as the Amps<->Hz
+# globals -- CONFig:PIDRate made this genuinely runtime-configurable
+# 2026-09-22, and this copy hadn't been wired up to it yet). Used only
 # to auto-suggest a decim value in the shot wizard (see do_shot) that
-# spreads PID_LOG_MAX_SAMPLES samples across a whole shot's duration
-# -- the log itself is always read back with its own real rate_hz
-# (PID_GetLogSampleRateHz(), reported directly in LOG:DATA?'s own
-# reply), so a stale value here only makes the SUGGESTED decim
+# spreads PID_LOG_MAX_SAMPLES_ASSUMED samples across a whole shot's
+# duration -- the log itself is always read back with its own real
+# rate_hz (PID_GetLogSampleRateHz(), reported directly in LOG:DATA?'s
+# own reply), so a stale value here only makes the SUGGESTED decim
 # non-optimal, never wrong/misleading data.
+#
+# PID_LOG_MAX_SAMPLES_ASSUMED: *** REAL BUG, FOUND AND FIXED
+# 2026-09-23 *** -- this was hardcoded 1000, but Core/Inc/pid.h's
+# PID_LOG_MAX_SAMPLES is 1750 and always has been (confirmed directly
+# against source, not assumed) -- NOT runtime-configurable at all (a
+# compile-time log-buffer size, no CONFig:* command backs it), so this
+# was unconditionally wrong by 43%, not just a live-sync gap. Corrected
+# to the real value; nothing here needs live syncing since the real
+# constant can't change without a rebuild.
 PID_LOOP_RATE_HZ_ASSUMED = 1000
-PID_LOG_MAX_SAMPLES_ASSUMED = 1000
+PID_LOG_MAX_SAMPLES_ASSUMED = 1750
 
 # Error codes -- see docs/command_reference.md's own table (kept here
 # too so a raw ERR reply can be explained inline without forcing the
@@ -1117,14 +1133,15 @@ def _is_profile_start(command):
 
 
 def _is_calibration_set(command):
-    """True iff `command` is a CONFig:TURNONHz/MAXFREQHz/MAXCURRent SET
-    (the plain form, not its `?` query) -- the three live-configurable
-    values sync_calibration() caches into PFM_TURNON_FREQ_HZ/
-    PFM_MAX_FREQ_HZ/PFM_MAX_CURRENT_A. Used by default() to re-sync
-    right after a raw command that could have just changed one of
-    them, the same way _is_profile_start() triggers auto-plot after a
-    raw SHOT:STARt -- so a plot generated later in the same
-    session never uses a stale Amps-axis calibration just because the
+    """True iff `command` is a CONFig:TURNONHz/MAXFREQHz/MAXCURRent/
+    PIDRate SET (the plain form, not its `?` query) -- the four live-
+    configurable values sync_calibration() caches into
+    PFM_TURNON_FREQ_HZ/PFM_MAX_FREQ_HZ/PFM_MAX_CURRENT_A/
+    PID_LOOP_RATE_HZ_ASSUMED. Used by default() to re-sync right after
+    a raw command that could have just changed one of them, the same
+    way _is_profile_start() triggers auto-plot after a raw SHOT:STARt
+    -- so a plot or a suggested decim value generated later in the
+    same session never uses a stale calibration just because the
     operator typed the SCPI directly instead of through a dedicated
     wrapper command (there isn't one yet)."""
     command = command.strip()
@@ -1137,7 +1154,8 @@ def _is_calibration_set(command):
         return False
     return (segs[1].startswith("TURNONH")
             or segs[1].startswith("MAXFREQH")
-            or segs[1].startswith("MAXCURR"))
+            or segs[1].startswith("MAXCURR")
+            or segs[1].startswith("PIDR"))
 
 
 class WhamConsole(cmd.Cmd):
@@ -1216,13 +1234,22 @@ class WhamConsole(cmd.Cmd):
             print(f"[warn] connected, but couldn't query *IDN?/CONFig:CHANnels?: {exc}")
             return
         if sync_calibration(self.link):
-            print(f"CONFig:TURNONHz?/MAXFREQHz?/MAXCURRent? -> calibration synced "
+            print(f"CONFig:TURNONHz?/MAXFREQHz?/MAXCURRent?/PIDRate? -> calibration synced "
                   f"(turnon={PFM_TURNON_FREQ_HZ:.0f} Hz, max={PFM_MAX_FREQ_HZ:.0f} Hz, "
-                  f"{PFM_MAX_CURRENT_A:.0f} A on ch1)")
+                  f"{PFM_MAX_CURRENT_A:.0f} A on ch1, loop rate={PID_LOOP_RATE_HZ_ASSUMED} Hz)")
+            if HAVE_DSLOGIC_MODULE:
+                # Pass the same already-fetched values through rather than
+                # having dslogic_shot_capture.py re-query the device (or
+                # import wham_console itself, which it deliberately avoids
+                # -- see set_calibration()'s own comment) -- closes the
+                # same staleness gap there too, added 2026-09-23.
+                dslogic_shot_capture.set_calibration(
+                    PFM_TURNON_FREQ_HZ, PFM_MAX_FREQ_HZ, PFM_MAX_CURRENT_A)
         else:
-            print("[warn] couldn't sync Amps<->Hz calibration from the device -- "
+            print("[warn] couldn't sync calibration from the device -- "
                   f"using the last-known values (turnon={PFM_TURNON_FREQ_HZ:.0f} Hz, "
-                  f"max={PFM_MAX_FREQ_HZ:.0f} Hz, {PFM_MAX_CURRENT_A:.0f} A)")
+                  f"max={PFM_MAX_FREQ_HZ:.0f} Hz, {PFM_MAX_CURRENT_A:.0f} A, "
+                  f"loop rate={PID_LOOP_RATE_HZ_ASSUMED} Hz)")
         self._refresh_config()
 
     # -- live device readback for gains/loopmode/profile timing/current --
@@ -1343,7 +1370,9 @@ class WhamConsole(cmd.Cmd):
             self._watch_shot()
             self._auto_plot_after_shot(ts=ts)
         if reply is not None and not is_err(reply) and _is_calibration_set(line):
-            sync_calibration(self.link)
+            if sync_calibration(self.link) and HAVE_DSLOGIC_MODULE:
+                dslogic_shot_capture.set_calibration(
+                    PFM_TURNON_FREQ_HZ, PFM_MAX_FREQ_HZ, PFM_MAX_CURRENT_A)
 
     def emptyline(self):
         pass  # don't repeat the last command on a bare Enter (cmd.Cmd's default)
