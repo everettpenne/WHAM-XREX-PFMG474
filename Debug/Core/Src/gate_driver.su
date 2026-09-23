@@ -1,4 +1,0 @@
-../Core/Src/gate_driver.c:30:10:GateDriver_Read	4	static
-../Core/Src/gate_driver.c:35:6:GateDriver_CheckFault	16	static
-../Core/Src/gate_driver.c:100:9:GateDriver_FaultIsLatched	4	static
-../Core/Src/gate_driver.c:105:6:GateDriver_FaultClear	8	static

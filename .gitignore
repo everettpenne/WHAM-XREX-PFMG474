@@ -14,8 +14,33 @@ __pycache__/
 *.fdb_latexmk
 *.synctex.gz
 
-# NOTE: Debug/ build artifacts are NOT ignored here, matching the
-# sibling project's convention -- if that changes, update this file.
+# Debug/ build BYPRODUCTS -- correction, 2026-09-23: the note that used
+# to be here said "Debug/ build artifacts are NOT ignored here", full
+# stop. That was too broad: it meant every rebuild -- even a one-line
+# source edit -- regenerated a ~69,000-line disassembly listing
+# (WHAM-XREX-PFMG474.list) that then dominated every diff, to the point
+# a cloud code-review tool refused to run on an otherwise-normal commit
+# (85,580 of its ~86k changed lines were .list/.map, not source). These
+# are pure derived text (objdump/ld output), regenerable from a clean
+# build off the tracked .elf, with zero information not already in it.
+# Narrowed to actually ignore them; .bin/.elf/subdir.mk are NOT touched
+# by this and stay tracked -- see the reasoning below.
+Debug/**/*.list
+Debug/**/*.map
+Debug/**/*.o
+Debug/**/*.d
+Debug/**/*.su
+Debug/**/*.cyclo
+Debug/objects.list
+
+# Still deliberately tracked, not ignored: Debug/**/*.bin and *.elf
+# (the actual flashable artifact -- the meaningful "what's currently on
+# the board" record, especially for a dirty-tree build, see
+# Core/Inc/git_version.h's own comment below) and Debug/**/subdir.mk
+# (semi-manually-maintained when a new source file is added to the
+# build -- see AGENTS.md's own "shared-filename"/subdir.mk gotcha note
+# -- not purely regenerable by a clean rebuild without that manual
+# step, unlike everything ignored just above).
 
 # python/wham_console.py's own generated output -- per-shot CSV/PNG/
 # JSON (shots/) and session transcripts (logs/), created on demand via

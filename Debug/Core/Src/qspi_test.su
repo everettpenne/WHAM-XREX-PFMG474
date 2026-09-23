@@ -1,4 +1,0 @@
-../Core/Src/qspi_test.c:69:6:QspiTest_Init	96	static
-../Core/Src/qspi_test.c:111:9:QspiTest_ReadId	72	static
-../Core/Src/qspi_test.c:150:6:HAL_QSPI_MspInit	48	static
-../Core/Src/qspi_test.c:178:6:HAL_QSPI_MspDeInit	16	static
