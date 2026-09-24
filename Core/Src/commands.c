@@ -403,7 +403,7 @@ void cmd_fire(uart_instance_t *inst, char *args)
 {
     (void)args;
 
-    if (AnyFaultLatched() != 0U)
+    if ((AnyFaultLatched() != 0U) && (SM_GetFaultBypassEnabled() == 0U))
     {
         SendErr(inst, 6, "Fault latched -- send FAULT:CLEAR first");
         return;
@@ -994,7 +994,10 @@ void cmd_disarm(uart_instance_t *inst, char *args)
    instant fault the moment a channel is enabled). See
    state_machine.h's own SM_SetFaultBypassEnabled() comment for the
    full reasoning/safety warning -- defaults OFF at every boot, RAM-
-   only, never persisted. */
+   only, never persisted. EXTENDED 2026-09-24: also lets FAULT:CLEAR
+   succeed regardless of the physical cause and stops PF13-low /
+   latched-fault checks from blocking ARM/FIRE -- see that same
+   comment. */
 void cmd_debug_fault_bypass(uart_instance_t *inst, char *args)
 {
     char *tok;

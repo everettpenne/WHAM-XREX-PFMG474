@@ -15,6 +15,7 @@
 #include "pid.h"
 #include "main.h"
 #include "xrex_io.h"
+#include "state_machine.h"
 
 #define GDS_PIN_MASK   (GPIO_PIN_0  | GPIO_PIN_1  | GPIO_PIN_2  | GPIO_PIN_3  | \
                         GPIO_PIN_4  | GPIO_PIN_5  | GPIO_PIN_6  | GPIO_PIN_7  | \
@@ -59,7 +60,14 @@ void GateDriver_CheckFault(void)
        UNCHANGED -- still the same "any real Water/Temp fault among
        these pins" response, just a smarter decision of what counts as
        one. */
-    if (XrexIo_EvaluateGateDriverFault(raw) != 0U)
+    /* DEBUG:FAULT:BYPASS (2026-09-24 extension, direct request): with the
+       bypass on, a Water/Temp fault pin neither force-stops the outputs
+       nor latches -- otherwise this EXTI path would kill a shot the
+       state machine has been told to ignore faults for, and
+       GateDriver_FaultClear()'s own re-check below would immediately
+       re-latch. */
+    if ((XrexIo_EvaluateGateDriverFault(raw) != 0U) &&
+        (SM_GetFaultBypassEnabled() == 0U))
     {
         /* *** REAL BUG, FIXED 2026-09-15, confirmed on real hardware ***
            -- see PFM_ForceStopSoft()'s own extensive doc comment

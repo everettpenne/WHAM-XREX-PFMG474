@@ -1,6 +1,69 @@
 WHAM-XREX-PFMG474 Firmware Changelog
 =====================================
 
+2026-09-24  —  DEBUG:FAULT:BYPASS now also removes fault-derived
+                state-machine restrictions (operate through a fault)
+-----------------------------------------------------------------------
+  Change:  Direct request. Previously the bypass only stopped NEW faults
+        from entering FAULT; an already-latched fault could not be
+        cleared while its physical cause remained, and PF13-low still
+        blocked ARM/fire. With the bypass ON: (1) SM_ClearFault() skips
+        its PC10/GateDriverStatus/PF13 re-validation and always clears;
+        (2) SM_ExternalEnableOk() returns 1 (ARM/SHOT:STARt/SOURce:RUN/
+        FIRE no longer refuse on PF13 LOW); (3) GateDriver_CheckFault()
+        neither latches nor PFM_ForceStop()s on a Water/Temp pin fault;
+        (4) FIRE's ERR 6 latched-fault check is skipped. Deliberately NOT
+        bypassed: the HRTIM PC10/FLT6 silicon-level output gating and
+        the ENA_OUT/CONTACT_OUT ARM precondition. Files: state_machine.c,
+        gate_driver.c, commands.c, docs/command_reference.md. Build-
+        verified only; not yet exercised on hardware.
+
+        Same day, follow-up: SM_SetFaultBypassEnabled(0) now calls
+        GateDriver_CheckFault() once when the bypass goes ON->OFF.
+        Water/Temp/Enerpro are EXTI-edge-driven only, so a pin that sat
+        in its fault state throughout the bypass would otherwise never be
+        re-detected after turning it off (OCP/ENABLE_OUTPUT/PF13 are
+        polled and were already fine).
+
+2026-09-23  —  SOP: new "Controller I/O -- Signals Sent To and
+                Received From the Transrex" reference section
+-----------------------------------------------------------------------
+  Change:  docs/sop/wham_xrex_pfmg474_sop.tex gained a new section
+        (Section 11, between Telemetry and Troubleshooting) documenting
+        every physical signal the controller exchanges with the
+        Transrex: a caution box on XRn_ENA_OUT/XRn_CONTACT_OUT being
+        outputs-only with no confirmation path (quoting
+        Core/Inc/xrex_io.h's own header comment directly), a per-channel
+        table (DRIVE/FEEDBACK/ENA_OUT/CONTACT_OUT/WATER_FLT/TMP_FLT/
+        ENERPRO_FLT/OCP -- 8 signal types x 4 channels), a system-wide
+        table (external enable PF13, external trigger PF15, native
+        HRTIM fault PC10), and a diagnostic-loopback table (the 4
+        DIAGnostic:GPOut* bench commands used to drive PF13/PF15 from
+        software alone). docs/pin_mapping_v4.csv cited as the
+        authoritative pin source throughout.
+
+        Real rendering bug found and fixed along the way: the first
+        draft used 4-column tables (Signal | Dir. | Pins | Purpose).
+        Even after narrowing column widths to fix an initial
+        total-width overfull-hbox warning, visual inspection of the
+        compiled PDF (not just the warning log) showed the ~0.45in
+        "Dir." column was still too narrow for the single unbreakable
+        word "OUTPUT" -- it overflowed solid into the next column with
+        no separating space (rendered literally as "OUTPUTPA8," in one
+        row). Numeric hbox-overflow magnitude alone was not a reliable
+        proxy for "is this actually readable"; fixed by redesigning all
+        three tables to 3 columns, folding the direction into the
+        Signal/Command column itself (e.g. "XRn_DRIVE (OUTPUT)"), which
+        both fixes the overflow and reads a bit better. Re-verified by
+        rendering the affected pages to PNG and inspecting them
+        directly, not just re-checking the warning log.
+
+        Also fixed: the per-channel subsection's intro said "Seven
+        signal types" while the table lists eight rows.
+
+        Rev F added to the SOP's own revision table. PDF rebuilt
+        (2 passes, no errors, no undefined references).
+
 2026-09-23  —  Review of the bundled CONFig:*/telemetry/host-tooling
                 work: 6 real bugs found and fixed
 -----------------------------------------------------------------------

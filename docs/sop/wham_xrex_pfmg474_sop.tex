@@ -83,6 +83,18 @@
     \code{LOG:*}/\code{CHANnel:*} (clean cut, no aliases);
     \code{PID:*} now means only \code{PID:GAINS}/\code{PID:LOOPMODE}.
     All command names in this document updated accordingly. \\
+  F & 2026-09-23 & -- & Added Section~\ref{sec:signals}: a complete
+    reference inventory of every physical signal the controller drives
+    (OUTPUT) and reads (INPUT) at its Transrex- and operator/facility-
+    facing boundary -- per-channel signals (\code{DRIVE}/\code{FEEDBACK}/
+    \code{ENA\_OUT}/\code{CONTACT\_OUT}/the three gate-driver fault
+    inputs/\code{OCP}), the system-wide interlock/trigger/hardware-fault
+    inputs (PF13/PF15/PC10), and the bench-only diagnostic loopback
+    outputs. Includes a direct caution that \code{ENA\_OUT}/
+    \code{CONTACT\_OUT} are commands only, with no physical confirmation
+    signal back from the Transrex -- \code{SM\_FAULT\_ENABLE\_OUTPUT}
+    detects the controller's own commanded GPIO state changing, not
+    whether the Transrex's contactor actually responded. \\
   \hline
 \end{longtable}
 
@@ -620,6 +632,169 @@ unrelated reset). \code{FAULT:CLEAR} then succeeded cleanly, since
 the flight recorder, the only available facts would have been ``it's
 faulted now'' and ``the pins look fine now'' -- not enough, on their
 own, to tell a real-but-resolved event apart from a false latch.
+
+\section{Reference: Controller I/O -- Signals Sent To and Received From
+the Transrex}
+\label{sec:signals}
+
+New in Rev~F. A complete inventory of the physical signals this
+controller drives (\textbf{OUTPUT}) and reads (\textbf{INPUT}) at its
+Transrex-facing and operator/facility-facing boundary -- everything in
+this section is real hardware I/O, not a wire-protocol command.
+Authoritative source: \code{docs/pin\_mapping\_v4.csv}; every entry
+below was cross-checked against it and against the firmware source
+directly, not assumed from memory.
+
+\subsection{One thing to be careful about before reading the tables}
+
+\caution{\textbf{\code{XRn\_ENA\_OUT} and \code{XRn\_CONTACT\_OUT} are
+OUTPUTS ONLY -- the controller has no way to confirm the Transrex
+actually responded.} These two signals (Section~\ref{sec:signals-perch}
+below) are commands this firmware sends outward; there is no
+corresponding status/feedback input anywhere in the pin mapping. The
+firmware's own design comment is direct about this: ``these are OUTPUTS
+this firmware commands, not hardware-driven INPUTS it reads --
+`checking' them is a readback of this firmware's own last-written GPIO
+state..., not an interpretation of external signal polarity''
+(\code{Core/Inc/xrex\_io.h}). Concretely: \code{SM\_FAULT\_ENABLE\_OUTPUT}
+(Section~\ref{sec:profile-fire}) detects ``did this MCU's own GPIO
+register stop reading what we told it to be'' -- it CANNOT detect ``the
+controller is still commanding the contactor, but the Transrex's
+contactor itself failed to close or opened unexpectedly.'' If physical
+contactor confirmation matters for your operation, this is a real,
+currently-uncovered gap, not a case this fault type happens to also
+catch -- treat every ``contactor is closed'' assumption downstream of
+\code{XREX:CHANnel:CONTactOut?}/\code{ENAOut?} as ``the controller
+believes it commanded this,'' not as physical confirmation.}
+
+\subsection{Per-channel signals (XR1--XR4)}
+\label{sec:signals-perch}
+
+Eight signal types, one instance per Transrex channel (4 channels on
+this build -- confirm with \code{CONFig:CHANnels?}). Pin letters below
+follow \code{docs/pin\_mapping\_v4.csv}'s own channel order
+(XR1/XR2/XR3/XR4); wire commands use 1-based channel numbers
+(\code{XR1} = channel~1).
+
+% 3 columns, not 4 -- an earlier 4-column cut (Signal | Dir. | Pins |
+% Purpose) put "OUTPUT"/"INPUT" in their own narrow column, which is a
+% single unbreakable word with no wrap point: at any width narrow
+% enough to fit the other three columns in the page's 5in text width,
+% it overflowed solid into the next column with no separating space
+% (rendered as literally "OUTPUTPA8," -- caught visually, not just
+% from the hbox-overflow point count, which looked deceptively small).
+% Folding direction into the Signal column's own text avoids the
+% narrow-unbreakable-column problem entirely.
+\begin{longtable}{p{1.5in} p{0.95in} p{2.15in}}
+  \hline
+  \textbf{Signal (direction)} & \textbf{Pins (XR1--4)} & \textbf{Purpose / commands} \\
+  \hline
+  \endhead
+  \code{XRn\_DRIVE} (OUTPUT) & PA8, PA10, PB12, PB14 &
+    Real PFM switching waveform to the Transrex (HRTIM1 CHA1--CHD1) --
+    the actual power-stage drive signal. Driven the instant \code{FIRE}
+    (legacy, Section~\ref{sec:table-fire}) or
+    \code{SHOT:STARt}/\code{SOURce:RUN} (modern,
+    Section~\ref{sec:profile-fire}) succeeds. \\
+  \code{XRn\_FEEDBACK} (INPUT) & PA15, PD4, PB2, PC12 &
+    Measured output frequency (TIM2/TIM5 capture), from the Transrex's
+    own real PFM response -- this is what \code{SOURce:STATus?}'s
+    \code{measuredHz} field and closed-loop PID correction
+    (\code{PID:LOOPMODE}) are built on. A genuine hardware input,
+    unlike the two below. \\
+  \code{XRn\_ENA\_OUT} (OUTPUT) & PG0--PG3 &
+    Commands the Transrex's own enable line
+    (\code{XREX:CHANnel:ENAOut <ch> <0\textbar 1>}); both this and
+    \code{CONTACT\_OUT} below must be \code{1} for a channel before
+    \code{ARM} will succeed for it. \textbf{See the caution above --
+    output only, no confirmation.} \\
+  \code{XRn\_CONTACT\_OUT} (OUTPUT) & PG4--PG7 &
+    Commands the Transrex's own contactor
+    (\code{XREX:CHANnel:CONTactOut <ch> <0\textbar 1>}). \textbf{See
+    the caution above -- output only, no confirmation.} \\
+  \code{XRn\_WATER\_FLT} (INPUT) & PE0--PE3 &
+    Water-interlock fault input (one of the 12 \code{GateDriverStatus}
+    pins, \code{GDS?}). Polarity-configurable
+    (\code{CONFig:FaultPolarity:WATER}), routes to
+    \code{SM\_FAULT\_GENERAL} (system-wide full stop) with
+    \code{TMP\_FLT} below. \\
+  \code{XRn\_TMP\_FLT} (INPUT) & PE4--PE7 &
+    Temperature-interlock fault input, same 12-pin
+    \code{GateDriverStatus} group. Polarity-configurable
+    (\code{CONFig:FaultPolarity:TEMP}), also routes to
+    \code{SM\_FAULT\_GENERAL}. \\
+  \code{XRn\_ENERPRO\_FLT} (INPUT) & PE8--PE11 &
+    Enerpro fault input, same 12-pin group. Polarity-configurable
+    (\code{CONFig:FaultPolarity:ENERPRO}) -- unlike Water/Temp,
+    reclassified to its own per-channel \code{SM\_FAULT\_ENERPRO}
+    (individual disable + derate + ramp, survivors keep running), not
+    a full system stop. \\
+  \code{XRn\_OCP} (INPUT) & PF4, PF8, PF12, PF5 &
+    Per-channel overcurrent fault input (note the irregular pin order
+    -- matches the firmware's own \code{kOcpPin[]}). Polled, not
+    interrupt-driven -- these four pins share EXTI line numbers
+    already claimed by the \code{GateDriverStatus} group above, a real
+    hardware conflict, not a preference. Polarity-configurable
+    (\code{CONFig:FaultPolarity:OCP}); routes to per-channel
+    \code{SM\_FAULT\_OVERCURRENT}, same individual-disable-and-derate
+    response as Enerpro. \\
+  \hline
+\end{longtable}
+
+\subsection{System-wide signals (not per-channel)}
+
+\begin{longtable}{p{1.3in} p{0.45in} p{2.85in}}
+  \hline
+  \textbf{Signal (direction)} & \textbf{Pin} & \textbf{Purpose / commands} \\
+  \hline
+  \endhead
+  External enable (INPUT) & PF13 & Operator/facility permissive
+    interlock. \code{EXTernal:ENAble} gates \code{ARM}/a fire attempt
+    on this reading \code{HIGH} -- \textbf{defaults ON at every boot as
+    of Rev~D} (Section~\ref{sec:telemetry}'s own revision-table
+    entry). Raw level: \code{EXTernal:INPut?}. \\
+  External trigger (INPUT) & PF15 & ``Fiber\_Enable'' in
+    \code{docs/pin\_mapping\_v4.csv}. A genuine LOW-to-HIGH transition
+    fires a shot while \code{ARMED} -- \code{EXTernal:TRIGger}, also
+    defaults ON as of Rev~D. Edge-triggered, not level-triggered; see
+    Step~8b, Section~\ref{sec:profile-fire}. Raw level:
+    \code{EXTernal:TRIGger:INPut?}. \\
+  Native HRTIM fault (INPUT) & PC10 & \code{HRTIM1\_FLT6} -- a real
+    hardware fault input wired directly into the HRTIM peripheral,
+    active-low. Forces every fault-enabled channel's output to a safe
+    level \emph{autonomously, in silicon}, no CPU/interrupt/polling
+    latency, and keeps working even if the firmware is completely
+    hung -- the only signal in this whole reference that doesn't
+    depend on the firmware running correctly to protect the hardware. \\
+  \hline
+\end{longtable}
+
+\subsection{Diagnostic loopback outputs (bench-only, not Transrex-facing)}
+
+Four generic, software-driven outputs used to exercise the external
+enable/trigger inputs above from the serial console alone, without a
+hand-operated bench jumper -- referenced by
+Section~\ref{sec:troubleshooting}'s own entries and by
+\code{python/run\_simulator\_validation.py}'s automated campaign. Loop
+the relevant pin directly to PF13 or PF15 with a bench wire to use
+these.
+
+\begin{longtable}{p{1.7in} p{0.4in} p{2.5in}}
+  \hline
+  \textbf{Command (direction)} & \textbf{Pin} & \textbf{Typical use} \\
+  \hline
+  \endhead
+  \code{DIAGnostic:GPOut09} (OUTPUT) & PG8 & Generic diagnostic
+    output, no fixed loopback target -- available for ad-hoc bench
+    use. \\
+  \code{DIAGnostic:GPOut10} (OUTPUT) & PG9 & Same as \code{GPOut09}. \\
+  \code{DIAGnostic:GPOut11} (OUTPUT) & PD0 & Loop to PF13 to drive the
+    external-enable interlock entirely from software -- precise,
+    repeatable timing instead of a hand-operated switch. \\
+  \code{DIAGnostic:GPOut12} (OUTPUT) & PD1 & Loop to PF15 to drive the
+    external-trigger input the same way. \\
+  \hline
+\end{longtable}
 
 \section{Troubleshooting}
 \label{sec:troubleshooting}

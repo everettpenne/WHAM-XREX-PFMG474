@@ -125,7 +125,20 @@ static SM_State_t g_stateBeforeFault = SM_STATE_IDLE;
    call already goes through) returns immediately without transitioning
    state, so NOTHING behaves as faulted regardless of source -- Water/
    Temp/Enerpro/OCP/ENABLE_OUTPUT/GENERAL/EXTERNAL_ENABLE
-   all pass through this same bypass. *** NEVER enable this against a
+   all pass through this same bypass.
+
+   EXTENDED 2026-09-24, direct request: the bypass now ALSO removes the
+   fault-derived restrictions that block state-machine transitions, so
+   the device can be operated even while a fault is being measured:
+   (1) SM_ClearFault() clears unconditionally (no re-validation of
+   PC10/GateDriverStatus/PF13), (2) SM_ExternalEnableOk() reports OK
+   (ARM/SHOT:STARt/SOURce:RUN/FIRE no longer refuse on PF13 LOW),
+   (3) GateDriver_CheckFault() no longer latches/force-stops on a
+   Water/Temp GateDriverStatus fault, (4) FIRE's ERR 6 latched-fault
+   check is skipped. NOT bypassed: the HRTIM's own silicon-level PC10
+   fault gating (autonomous, not firmware), and the ENA_OUT/CONTACT_OUT
+   ARM precondition (an operator-commanded readiness, not a measured
+   fault). *** NEVER enable this against a
    real Transrex or any hardware where a real overcurrent/water/temp
    condition is physically possible -- it exists purely so this bench's
    own two-board test rig can validate signal paths (like DRIVE/
@@ -135,7 +148,19 @@ static uint8_t g_faultBypassEnabled = 0U;
 
 void SM_SetFaultBypassEnabled(uint8_t enabled)
 {
+    uint8_t wasEnabled = g_faultBypassEnabled;
     g_faultBypassEnabled = (enabled != 0U) ? 1U : 0U;
+
+    /* Turning the bypass OFF returns to normal operation: Water/Temp and
+       Enerpro are detected only on a GateDriverStatus pin EDGE (EXTI), so
+       a pin that has sat in its fault state the whole time the bypass was
+       on would otherwise never be noticed again (no new edge). Re-scan
+       once now, the same call main.c makes at boot for the same reason.
+       OCP, ENABLE_OUTPUT and PF13 are polled every tick and need nothing. */
+    if ((wasEnabled != 0U) && (g_faultBypassEnabled == 0U))
+    {
+        GateDriver_CheckFault();
+    }
 }
 
 uint8_t SM_GetFaultBypassEnabled(void)
@@ -801,19 +826,32 @@ uint8_t SM_ClearFault(void)
     HRTIM1_FaultClear();
     GateDriver_FaultClear();
 
-    if ((HRTIM1_FaultIsTripped() != 0U) || (GateDriver_FaultIsLatched() != 0U))
+    /* DEBUG:FAULT:BYPASS extension, 2026-09-24, direct request: with
+       the bypass ON, FAULT:CLEAR no longer refuses because the fault's
+       physical cause is still present -- the whole point of the bypass
+       is to keep operating with a fault measured. The re-validation
+       below is skipped entirely (SM_ExternalEnableOk() also returns 1
+       under bypass, see its own comment). NOTE this cannot override the
+       HRTIM's own PC10/FLT6 silicon-level output gating -- a physically
+       tripped PC10 still holds the outputs safe in hardware regardless
+       of what this state machine believes. */
+    if (g_faultBypassEnabled == 0U)
     {
-        return 0U;   /* still faulted -- stays in SM_STATE_FAULT */
-    }
-    /* External-enable interlock, added 2026-09-16 -- same "only clear if
-       the condition is actually gone" philosophy as the two checks just
-       above. Only actually gates anything when the interlock is turned
-       on -- SM_ExternalEnableOk() itself already returns 1 unconditionally
-       when g_externalEnableRequired is 0, so this is a no-op re-check
-       (never blocks clearing) whenever the feature isn't in use. */
-    if (SM_ExternalEnableOk() == 0U)
-    {
-        return 0U;   /* still faulted -- stays in SM_STATE_FAULT */
+        if ((HRTIM1_FaultIsTripped() != 0U) || (GateDriver_FaultIsLatched() != 0U))
+        {
+            return 0U;   /* still faulted -- stays in SM_STATE_FAULT */
+        }
+        /* External-enable interlock, added 2026-09-16 -- same "only clear
+           if the condition is actually gone" philosophy as the two checks
+           just above. Only actually gates anything when the interlock is
+           turned on -- SM_ExternalEnableOk() itself already returns 1
+           unconditionally when g_externalEnableRequired is 0, so this is a
+           no-op re-check (never blocks clearing) whenever the feature
+           isn't in use. */
+        if (SM_ExternalEnableOk() == 0U)
+        {
+            return 0U;   /* still faulted -- stays in SM_STATE_FAULT */
+        }
     }
 
     g_state        = SM_STATE_IDLE;
@@ -843,6 +881,13 @@ uint8_t SM_ExternalEnableOk(void)
     if (g_externalEnableRequired == 0U)
     {
         return 1U;   /* interlock not in use -- always "ok" */
+    }
+    if (g_faultBypassEnabled != 0U)
+    {
+        return 1U;   /* DEBUG:FAULT:BYPASS (2026-09-24 extension): a low
+                        PF13 is treated like any other fault, so it must
+                        not block ARM/fire either -- this one function is
+                        every ARM/fire/clear gate's shared check. */
     }
     return ExternalEnableInputIsHigh();
 }

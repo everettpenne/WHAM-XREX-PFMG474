@@ -471,6 +471,30 @@ so **nothing** behaves as faulted regardless of source —
 `GENERAL`/`OVERCURRENT`/`EXTERNAL_ENABLE`/`ENABLE_OUTPUT`/`ENERPRO` all
 pass through this same bypass uniformly.
 
+**Extended 2026-09-24, direct request — operate through a measured
+fault.** While ON, the bypass also removes the fault-derived
+restrictions that block state-machine transitions:
+
+- `FAULT:CLEAR` always succeeds (no re-check of PC10, GateDriverStatus
+  or the PF13 interlock), so a fault whose cause is still present can
+  still be cleared.
+- `ARM` / `SHOT:STARt` / `SOURce:RUN` / `FIRE` no longer refuse with
+  `ERR 15` because PF13 reads LOW (the external-enable check reports OK).
+- `FIRE`'s `ERR 6` latched-fault refusal is skipped.
+- A Water/Temp GateDriverStatus fault no longer force-stops the outputs
+  or latches (`GateDriver_CheckFault()`).
+
+Sending `DEBUG:FAULT:BYPASS 0` returns to normal operation and
+immediately re-scans the GateDriverStatus pins, so a Water/Temp/Enerpro
+fault present at that moment is detected at once.
+
+**Not bypassed:** the HRTIM's own PC10/`FLT6` fault input, which forces
+the outputs safe autonomously in silicon — a physically tripped PC10
+still holds the outputs off whatever the firmware believes; and the
+per-channel `ENA_OUT`/`CONTACT_OUT` ARM precondition (an
+operator-commanded readiness, not a measured fault). `FAULT?` still
+reports the true hardware latch state.
+
 **Defaults OFF (`0`) at every boot** — RAM-only, never persisted, so it
 cannot silently stay enabled across a power cycle.
 
