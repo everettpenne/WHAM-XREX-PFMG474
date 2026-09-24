@@ -1,6 +1,29 @@
 WHAM-XREX-PFMG474 Firmware Changelog
 =====================================
 
+2026-09-24  —  Host tooling for the ethernet serial bridge
+-----------------------------------------------------------------------
+  Change:  The controller's USART2 is now reachable over ethernet through
+        a raw TCP serial bridge (<controller-ip>:5000, reached via an SSH
+        tunnel through the jump host). The bridge accepts ONE client at
+        a time and is fixed at 115200 8N1. New tools (python/):
+        - net_terminal.py -- minimal always-listening terminal.
+        - net_broker.py + net_client.py -- holds the single bridge
+          connection and shares it between several local clients (operator
+          and Claude), echoing each client's commands to the others as
+          "[name] > cmd" and logging the whole dialog to
+          logs/net_session.log.
+        - net_flash.py -- AN3155 ROM-bootloader flasher over a pyserial URL.
+          DOES NOT WORK through this bridge, verified on hardware by
+          watching USART2 over SWD during an attempt: the bootloader runs
+          8E1, the lone 0x7F sync survives an 8N1 link and is ACKed, but
+          GET ID is NACKed with PE+FE set. The bridge has no RFC 2217
+          support (telnet negotiation unanswered; no other ports open), so
+          parity can't be switched from the host. A failed attempt leaves
+          the board in the ROM bootloader with nothing erased (recover
+          with an ST-Link reset or a power cycle). Kept for bridges that do
+          support RFC 2217 or can be set to 8E1.
+
 2026-09-24  —  DEBUG:FAULT:BYPASS now also removes fault-derived
                 state-machine restrictions (operate through a fault)
 -----------------------------------------------------------------------
