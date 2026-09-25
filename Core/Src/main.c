@@ -21,6 +21,7 @@
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
+#include <stdio.h>
 #include "uart.h"
 #include "cmd_parser.h"
 #include "boot_jump.h"
@@ -34,6 +35,9 @@
 #include "xrex_io.h"
 #include "telemetry.h"
 #include "sim_transrex.h"
+#include "ctrlr_config.h"
+#include "git_version.h"
+#include "boot_diag.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -55,7 +59,12 @@
 UART_HandleTypeDef huart2;
 
 /* USER CODE BEGIN PV */
-
+/* Reset-surviving boot diagnostics -- see boot_diag.h. .noinit, so the
+   startup code neither copies nor zeroes it: it holds the previous boot's
+   record until this boot snapshots it (below) and starts its own. */
+__attribute__((section(".noinit"))) volatile BootDiag_t g_bootDiag;
+static BootDiag_t s_prevBoot;      /* previous boot's record, for the banner */
+static uint32_t   s_resetCsr;      /* RCC->CSR as found at this boot */
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -91,6 +100,49 @@ int main(void)
      purpose, so this call site never needs its own #if. */
   BootJump_CheckAndEnter();
 
+  /* Boot diagnostics (boot_diag.h): snapshot the previous boot's record,
+     then start this one. Invalid magic = first boot since power-up (RAM
+     content is random) -- start from zero. Reset-cause flags are captured
+     and cleared here, so each boot's banner shows only what reset it. */
+  {
+      uint32_t i;
+      if (g_bootDiag.magic != BOOT_DIAG_MAGIC)
+      {
+          volatile uint32_t *w = (volatile uint32_t *)&g_bootDiag;
+          for (i = 0U; i < (sizeof(BootDiag_t) / sizeof(uint32_t)); i++)
+          {
+              w[i] = 0U;
+          }
+          g_bootDiag.magic = BOOT_DIAG_MAGIC;
+      }
+      s_prevBoot.bootCount  = g_bootDiag.bootCount;
+      s_prevBoot.lastStage  = g_bootDiag.lastStage;
+      s_prevBoot.faultCount = g_bootDiag.faultCount;
+      s_prevBoot.faultStage = g_bootDiag.faultStage;
+      s_prevBoot.faultCfsr  = g_bootDiag.faultCfsr;
+      s_prevBoot.faultHfsr  = g_bootDiag.faultHfsr;
+      s_prevBoot.errCount   = g_bootDiag.errCount;
+      s_prevBoot.errStage   = g_bootDiag.errStage;
+      s_prevBoot.nmiCount   = g_bootDiag.nmiCount;
+      s_prevBoot.nmiStage   = g_bootDiag.nmiStage;
+      s_prevBoot.nmiEccr    = g_bootDiag.nmiEccr;
+
+      g_bootDiag.bootCount++;
+      g_bootDiag.nmiCount   = 0U;
+      g_bootDiag.nmiStage   = 0U;
+      g_bootDiag.nmiEccr    = 0U;
+      g_bootDiag.faultCount = 0U;
+      g_bootDiag.faultStage = 0U;
+      g_bootDiag.faultCfsr  = 0U;
+      g_bootDiag.faultHfsr  = 0U;
+      g_bootDiag.errCount   = 0U;
+      g_bootDiag.errStage   = 0U;
+      BOOT_DIAG_STAGE(BD_STAGE_MAIN);
+
+      s_resetCsr = RCC->CSR;
+      RCC->CSR |= RCC_CSR_RMVF;
+  }
+
   /* USER CODE END 1 */
 
   /* MCU Configuration--------------------------------------------------------*/
@@ -109,13 +161,14 @@ int main(void)
      can be exposed to it, however briefly. Ported from the sibling
      PFM-STM32G474 project's main.c, same placement. */
   FixSysTickPriority();
+  BOOT_DIAG_STAGE(BD_STAGE_HAL_INIT);
   /* USER CODE END Init */
 
   /* Configure the system clock */
   SystemClock_Config();
 
   /* USER CODE BEGIN SysInit */
-
+  BOOT_DIAG_STAGE(BD_STAGE_CLOCK);
   /* USER CODE END SysInit */
 
   /* Initialize all configured peripherals */
@@ -228,6 +281,68 @@ int main(void)
 #if defined(BUILD_TARGET_SIMULATOR)
   SimTransrex_Init();
 #endif
+
+  /* Unsolicited boot banner, added 2026-09-25 for a firmware-update
+     regression test: FWUPdate:SWAP/ROLLback reboot the board, and this
+     line is the exact, unambiguous signal (on the host side, just poll
+     the link for it) that a reboot has completed and USART2 is live
+     again -- cheaper and more precise than polling *IDN? in a loop.
+     Sent exactly once, here, after every other init above has run but
+     before the main loop starts -- so BANK/BFB2/STATE below reflect
+     the true post-init state, not a boot-time snapshot from earlier.
+     "!BOOT" (not "OK"/"ERR"/"!EVT") so host tooling can never confuse
+     it with a command reply or a state_machine.c telemetry event.
+     Plain uart_send(), not telemetry.c -- this must go out even if
+     Telemetry_Init() (just above) or the event ring/gate is ever
+     changed; a boot signal that could be silently gated off is not
+     a signal a host can rely on. */
+  BOOT_DIAG_STAGE(BD_STAGE_APP_INIT);
+  {
+      char banner[200];
+      uint8_t bank    = (READ_BIT(SYSCFG->MEMRMP, SYSCFG_MEMRMP_FB_MODE) != 0U) ? 2U : 1U;
+      uint8_t bfb2    = (READ_BIT(FLASH->OPTR, FLASH_OPTR_BFB2) != 0U) ? 1U : 0U;
+      const char *stateName;
+      switch (SM_GetState())
+      {
+          case SM_STATE_IDLE:   stateName = "IDLE";   break;
+          case SM_STATE_ARMED:  stateName = "ARMED";  break;
+          case SM_STATE_FIRING: stateName = "FIRING"; break;
+          case SM_STATE_FAULT:  stateName = "FAULT";  break;
+          default:              stateName = "UNKNOWN"; break;
+      }
+      snprintf(banner, sizeof(banner),
+               "!BOOT %s %s %s%s BANK=%u BFB2=%u STATE=%s tick=%lu\r\n",
+               HW_BOARD_NAME, FW_VERSION_STRING, FW_GIT_COMMIT,
+               (FW_GIT_DIRTY != 0U) ? "-dirty" : "",
+               (unsigned)bank, (unsigned)bfb2, stateName,
+               (unsigned long)HAL_GetTick());
+      uart_send(&uart2, banner);
+
+      /* Boot diagnostics (boot_diag.h). "prev" is the boot BEFORE this
+         one; rst= is what reset the chip since that boot cleared the
+         flags (OBL option-byte reload, PIN NRST, BOR brown-out/power-on,
+         SFT software, IWDG/WWDG watchdog, LPWR low-power). */
+      snprintf(banner, sizeof(banner),
+               "!BOOT diag boot=%lu prev: stage=%lu fault=%lu@%lu cfsr=%08lX hfsr=%08lX err=%lu@%lu"
+               " nmi=%lu@%lu eccr=%08lX rst=%s%s%s%s%s%s%s\r\n",
+               (unsigned long)g_bootDiag.bootCount,
+               (unsigned long)s_prevBoot.lastStage,
+               (unsigned long)s_prevBoot.faultCount, (unsigned long)s_prevBoot.faultStage,
+               (unsigned long)s_prevBoot.faultCfsr, (unsigned long)s_prevBoot.faultHfsr,
+               (unsigned long)s_prevBoot.errCount, (unsigned long)s_prevBoot.errStage,
+               (unsigned long)s_prevBoot.nmiCount, (unsigned long)s_prevBoot.nmiStage,
+               (unsigned long)s_prevBoot.nmiEccr,
+               ((s_resetCsr & RCC_CSR_OBLRSTF)  != 0U) ? "OBL,"  : "",
+               ((s_resetCsr & RCC_CSR_PINRSTF)  != 0U) ? "PIN,"  : "",
+               ((s_resetCsr & RCC_CSR_BORRSTF)  != 0U) ? "BOR,"  : "",
+               ((s_resetCsr & RCC_CSR_SFTRSTF)  != 0U) ? "SFT,"  : "",
+               ((s_resetCsr & RCC_CSR_IWDGRSTF) != 0U) ? "IWDG," : "",
+               ((s_resetCsr & RCC_CSR_WWDGRSTF) != 0U) ? "WWDG," : "",
+               ((s_resetCsr & RCC_CSR_LPWRRSTF) != 0U) ? "LPWR," : "");
+      uart_send(&uart2, banner);
+      uart_send(&uart2, "!BOOT Rise and shine, controller's awake and ready to work \xF0\x9F\x8C\x9E\r\n");
+  }
+  BOOT_DIAG_STAGE(BD_STAGE_MAIN_LOOP);
   /* USER CODE END 2 */
 
   /* Infinite loop */
@@ -367,6 +482,7 @@ static void MX_HRTIM1_Init(void)
   /* USER CODE END HRTIM1_Init 1 */
   HRTIM1_FullInit();
   /* USER CODE BEGIN HRTIM1_Init 2 */
+  BOOT_DIAG_STAGE(BD_STAGE_HRTIM);
   /* USER CODE END HRTIM1_Init 2 */
 }
 
@@ -444,6 +560,7 @@ static void MX_USART2_UART_Init(void)
      position, just renumbered to make room. */
   HAL_NVIC_SetPriority(USART2_IRQn, 3U, 0U);
   HAL_NVIC_EnableIRQ(USART2_IRQn);
+  BOOT_DIAG_STAGE(BD_STAGE_USART);
   /* USER CODE END USART2_Init 2 */
 
 }
@@ -877,6 +994,7 @@ static void MX_GPIO_Init(void)
       HAL_GPIO_Init(GPIOG, &diagOutInit3);
   }
 
+  BOOT_DIAG_STAGE(BD_STAGE_GPIO);
   /* USER CODE END MX_GPIO_Init_2 */
 }
 
@@ -917,6 +1035,8 @@ void Error_Handler(void)
   /* USER CODE BEGIN Error_Handler_Debug */
   /* User can add his own implementation to report the HAL error return state */
   __disable_irq();
+  g_bootDiag.errCount++;
+  g_bootDiag.errStage = g_bootDiag.lastStage;
   while (1)
   {
   }

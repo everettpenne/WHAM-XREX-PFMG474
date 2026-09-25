@@ -54,7 +54,7 @@
  * (2026-09-09, reseeded from WHAM-PFMG474-V4 at commit de83324 -- see
  * AGENTS.md and docs/changelog.txt) -- not a continuation of that
  * project's v0.6 lineage, a fresh one for this one. */
-#define FW_VERSION_STRING "v0.1"
+#define FW_VERSION_STRING "v0.8f"
 
 /* --------------------------------------------------------------------------
  * GPOut:ENAble (PC13, "GPOut_Enable_Pin") / PWMAlt:ENAble (PC15,

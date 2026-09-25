@@ -732,7 +732,7 @@ its generated per-directory `subdir.mk` and the top-level
 `Debug/objects.list` are **not** automatically refreshed by a plain
 `make`. Every file added this way in this project (`Core/Src`:
 `boot_jump.c`, `cmd_parser.c`, `commands.c`, `uart.c`, `gate_driver.c`,
-`qspi_test.c`, `pfm_input.c`, `xrex_io.c` (2026-09-17 -- re-confirmed
+`qspi_test.c`, `pfm_input.c`, `fw_update.c` (2026-09-24), `xrex_io.c` (2026-09-17 -- re-confirmed
 the gotcha exactly as described here: a first build after adding it
 compiled `xrex_io.c` fine but failed to LINK, `undefined reference to
 XrexIo_*` from every caller, until `Debug/Core/Src/subdir.mk` and

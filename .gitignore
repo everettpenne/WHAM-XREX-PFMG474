@@ -1,5 +1,6 @@
 # OS / editor cruft
 .DS_Store
+.claude/settings.local.json
 __pycache__/
 *.pyc
 

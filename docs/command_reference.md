@@ -32,9 +32,44 @@ Ported from the sibling PFM-STM32G474 project, per project decision:
 | 14 | Invalid `CHANnel:NICKname` -- name must be 1-`PID_CHANNEL_NICKNAME_MAX_LEN` chars, no spaces, and not the reserved value `-` |
 | 15 | `ARM`/`SOURce:RUN`/`SHOT:STARt` refused -- `EXTernal:ENAble` is on and the external-enable pin (`PF13` as of 2026-09-17, was `PF15`) does not currently read `HIGH` (see `EXTernal:ENAble`). `ARM` reporting this distinctly is new 2026-09-22 -- previously collapsed into `ARM`'s own generic `ERR 13` |
 | 16 | **RETIRED 2026-09-17** -- previously `EXTernal:TRIGger 1` refused unless `EXTernal:ENAble` was already on, back when enable and trigger shared one pin (`PF15`). No longer generated: enable moved to `PF13`, trigger stayed on `PF15`, and the two are no longer coupled (see `EXTernal:TRIGger`). Kept here, not reassigned, per this table's own "never renumbered or reused" convention |
+| 17 | Firmware update (`FWUPdate:*`) failed -- flash erase/program error, CRC mismatch, image sanity check (stack pointer, reset vector, or this build's product name missing), not in dual-bank mode, or option-byte programming failed. The running image is never touched by any of these |
 
 Codes are never renumbered or reused once assigned, matching the
 sibling project's convention.
+
+### Unsolicited `!BOOT` banner (every boot)
+
+Added 2026-09-25. Sent once per boot, after all initialization and
+right before the main loop -- the exact signal that a reset (including
+`FWUPdate:SWAP`/`ROLLback`) has completed and the command link is live.
+`!BOOT` never collides with a reply (`OK`/`ERR`) or telemetry (`!EVT`).
+Three lines:
+
+```
+!BOOT WHAM-XREX-PFMG474 v0.7 748dd2c8-dirty BANK=2 BFB2=1 STATE=IDLE tick=0
+!BOOT diag boot=3 prev: stage=9 fault=0@0 cfsr=00000000 hfsr=00000000 err=0@0 nmi=0@0 eccr=00000000 rst=OBL,PIN,
+!BOOT Rise and shine, controller's awake and ready to work 🌞
+```
+
+- Line 1: board, firmware version, git commit, running flash bank, the
+  `BFB2` option bit, state-machine state, `HAL_GetTick()` at that point.
+- Line 2 (`Core/Inc/boot_diag.h`, `.noinit` RAM -- survives every reset
+  but not a power cycle): `boot` counts boots that reached `main()`
+  since power-up. Everything after `prev:` describes the PREVIOUS boot:
+  the last stage it reached (`1` main, `2` HAL init, `3` clock, `4`
+  GPIO, `5` HRTIM, `6` USART2, `7` app init, `8` main loop, `9` about to
+  reload option bytes for a swap), and whether it ended in
+  `HardFault_Handler` (`fault=count@stage`, with `CFSR`/`HFSR`),
+  `Error_Handler` (`err=`) or `NMI_Handler` (`nmi=`, with `FLASH->ECCR`
+  -- a flash ECC double error raises an NMI). `rst=` lists the reset
+  sources since the previous boot (`OBL` option-byte reload, `PIN`
+  NRST, `BOR` brown-out/power-on, `SFT` software, `IWDG`/`WWDG`,
+  `LPWR`); a normal `FWUPdate:SWAP` reports `OBL,PIN,` (on this chip an
+  internal reset also sets `PIN`).
+- Line 3: a friendly greeting. The emoji is sent as raw UTF-8 bytes.
+
+The first line can arrive with a garbage byte in front of it: the reset
+itself glitches the TX line. `python/fw_update.py` allows for this.
 
 ## Mnemonic syntax (SCPI-style)
 
@@ -517,6 +552,59 @@ full, correctly-wired fault loop present.
   missing, `ERR 11` if it's neither `0` nor `1`.
 - **`DEBUG:FAULT:BYPASS?`** — `OK <0|1>`, current state.
 
+### `FWUPdate:*` -- in-application firmware update (dual-bank)
+
+Added 2026-09-24. Updates the firmware over this same serial link at
+115200 8N1, so it works through the ethernet serial bridge, which can't
+carry the ROM bootloader's 8E1 (see `python/net_flash.py`). Host tool:
+`python/fw_update.py` (`--status`, `--no-swap`, `--rollback`).
+
+The STM32G474 runs in dual-bank mode (`OPTR.DBANK=1`, 2 x 256 KB).
+The running bank is always mapped at `0x08000000` and the other
+("inactive") bank at `0x08040000`. A new image -- the same `.bin` that
+would be flashed at `0x08000000`, no relinking -- is written into the
+inactive bank, CRC-checked and sanity-checked, then booted by setting
+`OPTR.BFB2`: the ROM bootloader's dual-bank boot starts that bank with
+the banks swapped (`SYSCFG_MEMRMP.FB_MODE`). The previous image stays in
+the other bank; `FWUPdate:ROLLback` boots it again.
+
+Strict stop-and-wait: `uart.c` holds one line at a time, so wait for
+each reply before sending the next line.
+
+| Command | Reply | Notes |
+|---|---|---|
+| `FWUPdate:BEGin <size> <crc32hex>` | `OK ERASED <n> PAGES BANK <b>` | Needs `STATE IDLE`. `size` = image length padded with `0xFF` to a multiple of 8, at most 262144. CRC = standard CRC-32 (`zlib.crc32`) of the padded image. Erases only the inactive bank, then checks it reads blank |
+| `FWUPdate:DATA <offsethex> <hex>` | `OK` | 8-48 bytes, a multiple of 8, offsets strictly in order from 0 |
+| `FWUPdate:END` | `OK VERIFIED CRC=<crc>` | CRC over the written bank, then checks the initial stack pointer is in SRAM, the reset vector is a Thumb address inside the image, and the image contains this build's NUL-terminated product name (so a simulator image can't be loaded on the controller, or vice versa) |
+| `FWUPdate:SWAP` | `OK SWAPPING -- rebooting into bank <b>` | Needs a verified image and `STATE IDLE`. Programs `BFB2`, then reloads option bytes (a full reset) |
+| `FWUPdate:ROLLback` | same as `SWAP` | Boots the image already in the other bank, after the same sanity checks (no CRC -- there's no reference). Refused mid-transfer |
+| `FWUPdate:ABORt` | `OK` | Forgets a transfer. The inactive bank is left as is |
+| `FWUPdate:STATus?` | `OK BANK=<1\|2> BFB2=<0\|1> DBANK=<0\|1> STATE=<IDLE\|RECEIVING\|VERIFIED> RX=<n>/<size>` | `BANK` = physical bank currently running |
+
+Errors: `ERR 12` bad arguments/offset, `ERR 13` wrong state (not `IDLE`,
+no transfer, nothing verified), `ERR 17` flash/CRC/image/option-byte
+failure. Nothing before the final swap can affect the running image.
+
+**Verified on the controller, 2026-09-24**, through the ethernet
+bridge: bank 1 -> 2 update and swap, bank 2 -> 1 update (erasing
+physical bank 1 while running from bank 2) and swap, and rollback in
+both directions. 105,464-byte image at about 2.5 KB/s, roughly 42 s per
+transfer. After the first swap, SWD showed `MEMRMP=0x100` (`FB_MODE=1`)
+and `OPTR` changed only in `BFB2` (`0xFFEFF8AA` -> `0xFFFFF8AA`), so the
+ROM bootloader's dual-bank boot accepts this image's initial SP
+(`0x20020000`). Controller left on bank 1, `BFB2=0`.
+
+**Before flashing with the ST-Link**, check `FWUPdate:STATus?` shows
+`BANK=1 BFB2=0` (or run `fw_update.py --rollback` until it does). With
+`BFB2=1` the board boots physical bank 2, so a normal ST-Link write to
+`0x08000000` would not be the image that runs.
+
+**Recovery with an ST-Link** if a swapped-to image won't run: clear
+`BFB2` so the board boots physical bank 1 normally, then reflash bank 1
+as usual. With OpenOCD (unverified on this board):
+`openocd -f interface/stlink.cfg -f target/stm32g4x.cfg -c "init" -c "reset halt" -c "stm32l4x option_write 0 0x20 0 0x00100000" -c "stm32l4x option_load 0" -c "shutdown"`,
+or STM32CubeProgrammer: `STM32_Programmer_CLI -c port=SWD -ob BFB2=0`.
+
 ### `DIAGnostic:OPTBytes?`
 
 **TEMPORARY diagnostic**, added while investigating whether `PB8`/`PG10`
@@ -884,6 +972,11 @@ the glitch was a genuine hardware `NRST`-pin assertion (`PIN=1`) and
 not a brown-out (`BOR=0`) or firmware corruption. Not specific to that
 investigation — useful any time a mystery reset needs a real answer
 instead of a guess.
+
+**Changed 2026-09-25:** every boot now captures and clears these flags
+itself (reported as `rst=` in the `!BOOT diag` banner line), so this
+query shows only resets since the *current* boot started -- normally
+all zero. The banner is where the cause of the last reset now appears.
 
 ```
 > DIAGnostic:RSTCause:CLEar

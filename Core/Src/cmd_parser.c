@@ -50,6 +50,7 @@
 #include "boot_jump.h"
 #include "qspi_test.h"
 #include "pfm_input.h"
+#include "fw_update.h"
 #include <string.h>
 #include <strings.h>
 #include <ctype.h>
@@ -155,6 +156,16 @@ static const command_t command_table[] = {
     { "SYS:EVENT",           cmd_sys_event        },
     { "SYS:EVENT?",          cmd_sys_event_query  },
     { "SYS:EVLOG?",          cmd_sys_evlog        },
+
+    /* In-application dual-bank firmware update over this serial link,
+       added 2026-09-24 -- see fw_update.h for the mechanism/protocol. */
+    { "FWUPdate:BEGin",      cmd_fwup_begin       },
+    { "FWUPdate:DATA",       cmd_fwup_data        },
+    { "FWUPdate:END",        cmd_fwup_end         },
+    { "FWUPdate:SWAP",       cmd_fwup_swap        },
+    { "FWUPdate:ROLLback",   cmd_fwup_rollback    },
+    { "FWUPdate:ABORt",      cmd_fwup_abort       },
+    { "FWUPdate:STATus?",    cmd_fwup_status      },
 
     /* Bench-only debug override, added 2026-09-21 -- see commands.c's
        own header comment on cmd_debug_fault_bypass() and

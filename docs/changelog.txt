@@ -1,6 +1,176 @@
 WHAM-XREX-PFMG474 Firmware Changelog
 =====================================
 
+2026-09-25  —  Simulator brought onto the update path; second (parallel) session's
+               reflash tests; test builds v0.8b-v0.8f; bench notes
+-----------------------------------------------------------------------
+  Change:  - Simulator (WHAM-XREX-PFMG474-SIM) flashed by ST-Link with the
+        current build (previous v0.1 / 669923cd image saved as a read-back
+        first). Its option bytes were already DBANK=1, BFB2=0, so FWUPdate:*
+        is available on it. It has its own bridge at <simulator-ip>:5000
+        (the controller's is <controller-ip>:5000). The NRST pull-up from the
+        hang investigation is fitted on the SIMULATOR.
+        - A second, independent assistant session (user ran out of credits
+        here) ran python/reflash_test_driver.py: five build+flash cycles,
+        v0.8b..v0.8f, "--target simulator". FW_VERSION_STRING is left at
+        v0.8f (the version now running on both boards); it is a test
+        marker, not a release number. That session's log shows those
+        cycles actually landed on the CONTROLLER (the banner has no -SIM;
+        it came up in FAULT OVERCURRENT 1, the known floating-OCP-pin state
+        with nothing wired to those pins): it reused the existing
+        net_broker.py on port 5001, which was still bridging the
+        controller. "--target simulator" only picks the local image file
+        and the host-side name check; the board reached is whatever the
+        --url leads to. fw_update.py's product-name guard only protects
+        against a mismatched image, not a mismatched bridge -- check
+        *IDN? before an update, and use one broker per board.
+        - Two unrelated bench notes: macOS's own AirPlay/ControlCenter
+        listens on local port 5000, so "port 5000 open" is NOT proof an SSH
+        tunnel is up (use other local ports, e.g. 5010/5011); and while
+        both boards were being reached at once, another session's
+        connections to the single-client bridges caused refused/no-route
+        flapping that looked like a hardware fault.
+        - docs/rebuild_plan.md (from that session): a PROPOSAL for a clean
+        rebuild (CMake, platform/core/app layering, host tests, IWDG,
+        NRST option bytes). Nothing in it has been executed.
+
+2026-09-25  —  !BOOT banner + reset-surviving boot diagnostics; fw_update.py
+               hardened; post-swap hang characterised: chip HELD IN RESET
+               after an option-byte reload unless the ST-Link is attached
+-----------------------------------------------------------------------
+  Change:  1. !BOOT banner (main.c, end of USER CODE 2, direct request):
+        three unsolicited lines on every boot -- identity/bank/BFB2/state/
+        tick, a diagnostics line, and a greeting with a sun emoji (raw
+        UTF-8, carried fine by the link). Gives an exact "reboot complete"
+        signal after FWUPdate:SWAP. Documented in command_reference.md.
+
+        2. Boot diagnostics (new Core/Inc/boot_diag.h, no new .c file):
+        g_bootDiag in .noinit RAM (48 B) -- boot counter, last stage
+        reached (markers through main.c's init sequence, plus stage 9
+        set by fw_update.c right before HAL_FLASH_OB_Launch()), and
+        counts/stage/registers for HardFault (CFSR/HFSR), Error_Handler
+        and NMI (FLASH->ECCR). RCC->CSR is captured and cleared at the
+        start of every boot and reported as rst=, so DIAGnostic:RSTCause?
+        now only shows resets since the current boot. Cost: controller
+        image 105,912 -> 106,880 bytes; RAM +48 B.
+
+        3. python/fw_update.py: works through net_broker.py
+        (--url socket://localhost:5001 --name fw_update) so others can
+        watch; ignores broker chatter; detects the reboot by the !BOOT
+        banner (prints it, tolerates the garbage byte the reset glitch
+        puts in front of the first line); and RESYNCS instead of aborting
+        when a reply is damaged -- asks FWUPdate:STATus? for the RX count
+        and resumes from there (the final CRC still guards the image). A
+        real lost byte ("OK" arriving as "O", visible in the broker log,
+        so lost between board and bridge) had aborted a whole transfer;
+        roughly one reply in a couple of thousand is hit. Tested against
+        an emulator that clips an OK and rejects a chunk; used once for
+        real in the v0.7 transfer below.
+
+        4. st-flash is NOT bank-swap aware: while BFB2=1 a write to
+        0x08000000 erases/programs physical bank 1 (the INACTIVE bank),
+        not what runs. An attempt today erased part of bank 1 and then
+        failed with a flash error; the running image was untouched.
+        Check FWUPdate:STATus? shows BANK=1 BFB2=0 before using st-flash.
+
+  Investigation (post-FWUPdate:SWAP hang):
+        Firmware versions v0.2..v0.7 were used purely as distinguishable
+        test builds. Swaps with the ST-Link UNPLUGGED hung 3/3 (v0.2 bank
+        1->2, v0.4 bank 2->1, v0.7 bank 1->2); swaps with it plugged in
+        succeeded ~13/13 (banner within 45-90 ms). Every hang cleared the
+        instant the ST-Link was plugged in, booting the new image on the
+        correct bank. Findings for the v0.7 hang, the first with the new
+        diagnostics:
+        - after "OK SWAPPING" the board sent nothing at all;
+        - a single 0x7F through the bridge got no reply (the ROM
+          bootloader ACKs 0x79 through this bridge), so not stuck in the
+          bootloader (BOOT0 on this board has only a capacitor to ground
+          and nSWBOOT0=1, which made that a real candidate);
+        - recovery banner: boot=3 after a v0.6 baseline of boot=2 (+1),
+          prev: stage=9, no fault/err/nmi, rst=OBL,PIN, -- identical flags
+          to a healthy swap. So NO firmware ran during the hang: the chip
+          sat in reset after the option-byte reload.
+        No watchdog is enabled, so nothing on-chip could have released it.
+
+        Leading hypothesis, NOT yet measured: NRST net. On this board NRST
+        has no external pull-up (only the MCU's ~40 kOhm internal one), a
+        100 nF cap, a manual reset switch to ground, and the ESTOP fiber
+        receiver's output (nothing plugged into that fiber). OPTR has
+        NRST_MODE=11 (bidirectional) and IRHEN=1 (an internal reset holds
+        NRST low until the pin reads low). If the net then fails to rise
+        cleanly past the reset threshold, the chip stays in reset; the
+        ST-Link's own reset line pulls it high when connected.
+        Next: measure NRST during a hang; try an external pull-up (e.g.
+        10 kOhm to 3.3 V); a firmware alternative is NRST_MODE=01 (reset
+        input only, internal resets never drive the pin) -- only with the
+        ST-Link attached and after the mechanism is confirmed.
+
+2026-09-24  —  FWUPdate:* -- in-application dual-bank firmware update
+                over the serial link (works through the ethernet bridge)
+-----------------------------------------------------------------------
+  Change:  Direct request, after net_flash.py was shown not to work through
+        the fixed-8N1 ethernet bridge. New Core/Src/fw_update.c +
+        Core/Inc/fw_update.h, commands FWUPdate:BEGin/DATA/END/SWAP/
+        ROLLback/ABORt/STATus? (cmd_parser.c), new ERR 17, host tool
+        python/fw_update.py. The image is streamed as hex (48 bytes/line,
+        stop-and-wait -- uart.c has a single line buffer) into the flash
+        bank that is NOT running, CRC-32 and sanity-checked (SP, reset
+        vector, NUL-terminated product name), then booted by setting
+        OPTR.BFB2 and reloading option bytes; the old image stays in the
+        other bank for FWUPdate:ROLLback.
+
+        Checked before writing it (SWD, controller): OPTR=0xFFEFF8AA ->
+        DBANK=1 (2 x 256 KB), BFB2=0, RDP level 0; MEMRMP.FB_MODE=0; bank 2
+        blank. boot_jump.c's startup remap macros only touch MEM_MODE, so a
+        bank swap (FB_MODE) survives startup, and VTOR=FLASH_BASE follows
+        it. Erase uses the PHYSICAL bank (BKER), derived from FB_MODE the
+        same way HAL's own flash_ex.c does.
+
+        Flash cost: controller image 97,576 -> 105,464 bytes (~2.6 KB this
+        module, ~4.5 KB HAL flash/option-byte driver code newly linked);
+        RAM +48 bytes on both targets. Both images fit one bank (controller
+        105 KB, simulator 115 KB).
+
+        Verified: clean build of both targets, no warnings; fw_update.py
+        against a host-side emulator of the protocol (update + swap in both
+        directions, rollback, wrong-target image refused, wrong board
+        refused, a single flipped bit caught by the CRC).
+
+        VERIFIED ON THE CONTROLLER, same day, through the ethernet bridge
+        (ST-Link attached as a backstop, never needed): flashed this build to
+        bank 1 by ST-Link; fw_update.py then loaded bank 2 (52 pages erased,
+        CRC F9C96420 matched on-chip) and swapped -- came back BANK=2 BFB2=1,
+        and SWD confirmed MEMRMP=0x100 (FB_MODE=1) with OPTR changed only in
+        BFB2 (0xFFEFF8AA -> 0xFFFFF8AA). So the ROM bootloader's dual-bank
+        boot accepts SP=0x20020000 -- the main risk flagged beforehand. Then
+        updated back into bank 1 while running from bank 2 (erase of physical
+        bank 1 correct -- the other flagged risk) and swapped, then rolled
+        back to bank 2 and again to bank 1. ~2.5 KB/s, ~42 s for the
+        105,464-byte image. Left on bank 1, BFB2=0, so ST-Link flashing to
+        0x08000000 behaves as before. The ST-Link recovery command in
+        command_reference.md is still untested (never needed).
+
+        PROOF RUN (the runs above loaded an identical image, so *IDN? alone
+        couldn't show a change): built a test image with FW_VERSION_STRING
+        "v0.1-FWUPTEST" (source reverted right after), loaded it with one
+        `fw_update.py --bin ... --yes`: *IDN? went v0.1 -> v0.1-FWUPTEST,
+        BANK 1 -> 2. Independent of the firmware, SWD dumps of both banks
+        matched the files byte for byte (running bank == test image, other
+        bank == previous image, SHA-1s identical). Rolled back (v0.1
+        returned), then overwrote the other bank with the real image via
+        --no-swap, so no test image is left on the board.
+
+        fw_update.py now also FAILS (nonzero exit) if, after the swap, the
+        board is still on the old bank or its *IDN? version/git hash are not
+        in the loaded image -- previously it only printed *IDN?.
+
+        Also: .claude/settings.local.json (gitignored) allows st-flash,
+        openocd and fw_update.py for Claude sessions in this repo.
+
+        Also: Debug/Core/Src/subdir.mk and Debug/objects.list hand-patched
+        for the new source file (AGENTS.md's documented command-line-build
+        gotcha).
+
 2026-09-24  —  Host tooling for the ethernet serial bridge
 -----------------------------------------------------------------------
   Change:  The controller's USART2 is now reachable over ethernet through
