@@ -102,3 +102,6 @@ build/tests/
 # CONTROLLER (gen_build_target.py's own default), and tracking this
 # file would make every target switch look like a spurious commit.
 # (build/generated/ above covers it)
+
+# matplotlib cache created by the host plotting tools
+.mplcache/
