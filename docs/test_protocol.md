@@ -36,8 +36,8 @@ or fault protection behind it yet.
 
 | # | Step | Expect |
 |---|---|---|
-| T0.1 | Build in CubeIDE (Debug config), or `cd Debug && make all -j4` | No errors, no warnings. |
-| T0.2 | `arm-none-eabi-objcopy -O binary Debug/WHAM-XREX-PFMG474.elf Debug/WHAM-XREX-PFMG474.bin` | Produces a `.bin` — this project's build config does not do this automatically (see `docs/serial_reflash_guide.md`). |
+| T0.1 | `python3 python/wham_build.py` (runs the layout check and off-target tests, then builds) | No errors, no warnings; layout check OK; tests pass. |
+| T0.2 | Check `build/WHAM-XREX-PFMG474.bin` was just written | `wham_build.py` generates and publishes it — the IDE build config does not make a `.bin` (see `docs/serial_reflash_guide.md`). |
 | T0.3 | Check `.map` (or `arm-none-eabi-nm`) for `g_pfmTable` | **Present**, at 40000 B (5000 × 8-byte `PFM_Step_t`), in `.bss` — as of 2026-09-04, `main.c` calls `PFM_Init()` unconditionally at boot, so `pfm.c` is always linked in on a normal build. (Before that date this row read "absent" — if you're comparing against an old build, that's why.) |
 | T0.4 | Flash (ST-Link via CubeIDE, or `python/wham_serial_flash.py` once a `BOOT`-capable build is already on the chip — see `docs/sop/wham_pfmg474_v4_sop.tex`) | Board boots; no spontaneous serial output. |
 
@@ -72,7 +72,7 @@ bootstrap-flash procedure if starting from a board that predates
 path, and doesn't have the zero-initialized-table trap this section
 used to warn about (a real uploaded table has real, non-zero entries).
 Keep this section only as a low-level fallback for bring-up work on
-`hrtim.c` itself, in isolation from `pfm.c`/`cmd_parser.c` — e.g. if
+`hrtim.c` itself, in isolation from `pfm.c`/the command layer — e.g. if
 you suspect the fault is in the table/command layer and want to rule
 out `hrtim.c` independently, or if `pfm.c` won't build for some
 unrelated reason. Requires a temporary firmware change; not something a
@@ -117,5 +117,5 @@ selection.
 3. T3.1–T3.3 only if `hrtim.c` changed in isolation and you need to rule
    it out independently of `pfm.c`/the command layer — otherwise T4
    below already exercises the same waveform through the real path.
-4. T4.1–T4.6 if `hrtim.c`, `pfm.c`, `commands.c`, or `cmd_parser.c`
+4. T4.1–T4.6 if `hrtim.c`, `pfm.c`, a `cmd_*.c` handler file, `command_table.c` or `scpi_parser.c`
    changed — the full upload → FIRE → auto-stop round trip.

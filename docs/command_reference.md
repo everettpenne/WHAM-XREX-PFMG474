@@ -53,7 +53,7 @@ Three lines:
 
 - Line 1: board, firmware version, git commit, running flash bank, the
   `BFB2` option bit, state-machine state, `HAL_GetTick()` at that point.
-- Line 2 (`Core/Inc/boot_diag.h`, `.noinit` RAM -- survives every reset
+- Line 2 (`src/drivers/boot_diag.h`, `.noinit` RAM -- survives every reset
   but not a power cycle): `boot` counts boots that reached `main()`
   since power-up. Everything after `prev:` describes the PREVIOUS boot:
   the last stage it reached (`1` main, `2` HAL init, `3` clock, `4`
@@ -73,7 +73,7 @@ itself glitches the TX line. `python/fw_update.py` allows for this.
 
 ## Mnemonic syntax (SCPI-style)
 
-Commands are matched by `cmd_parser.c`'s `scpi_match()` against a flat
+Commands are matched by `scpi_parser.c`'s `scpi_match()` against a flat
 table of patterns — see that file's header comment for the full
 specification. Summary:
 
@@ -109,11 +109,11 @@ Board and firmware identification.
 ```
 
 Reports, space-separated: `HW_BOARD_NAME`, `HW_BOARD_REV`,
-`FW_VERSION_STRING` (compile-time constants, `Core/Inc/ctrlr_config.h`),
+`FW_VERSION_STRING` (compile-time constants, `src/config/ctrlr_config.h`),
 then `FW_GIT_COMMIT` (added 2026-09-11, per direct request) — the
 short git commit hash this exact firmware build was made from, an
 `-dirty` suffix if the working tree had uncommitted changes at build
-time, or `unknown` if `Core/Inc/git_version.h` was never generated
+time, or `unknown` if `build/generated/git_version.h` was never generated
 (git unavailable, or built some other way entirely). This is how to
 answer "which commit is actually running on this board right now" with
 certainty, independent of what you think you last flashed.
@@ -123,8 +123,8 @@ the actual PCB silkscreen revision.
 
 **Build with `python3 python/wham_build.py`** (not a bare `make`) to
 get an accurate `FW_GIT_COMMIT` — it runs `python/gen_git_version.py`
-(regenerates `Core/Inc/git_version.h` from the current git state) before
-`make`, then regenerates `Debug/WHAM-XREX-PFMG474.bin` (this project's
+(regenerates `build/generated/git_version.h` from the current git state) before
+`make`, then regenerates the `.bin` and publishes `build/WHAM-XREX-PFMG474.{elf,bin}` (this project's
 `.cproject` has no "Convert to binary" post-build step -- `make` alone
 never touches the `.bin` at all, a real gotcha this same script exists
 to close, see `docs/changelog.txt`'s 2026-09-10 entry). One command
@@ -145,7 +145,7 @@ mechanism and usage via `python/wham_serial_flash.py`.
   (link drops — MCU has reset into the ROM bootloader)
 ```
 
-Present only when `BOOT_JUMP_FEATURE_ENABLED` (`Core/Inc/boot_jump.h`)
+Present only when `BOOT_JUMP_FEATURE_ENABLED` (`src/drivers/boot_jump.h`)
 is nonzero (the default). When disabled, `BOOT` is simply unrecognized
 (`ERR 1 Unknown command`), like any other unknown mnemonic — see that
 header for exactly what disabling the module does.
@@ -159,8 +159,8 @@ resetting under load would drop outputs uncontrolled).
 ### `TABLE:BEGIN`, `TABLE:STEP`, `TABLE:END`, `TABLE?`
 
 Uploads a complete PFM shot profile (a sequence of `(per, cmp0, ...,
-cmp(N-1))` steps, N = `HRTIM_NUM_CHANNELS` — see `Core/Inc/pfm.h`'s
-`PFM_Step_t` and `Core/Inc/ctrlr_config.h`), built entirely
+cmp(N-1))` steps, N = `HRTIM_NUM_CHANNELS` — see `src/app/control/pfm.h`'s
+`PFM_Step_t` and `src/config/ctrlr_config.h`), built entirely
 off-controller. This firmware has no on-device table *construction*
 logic (no frequency/duty math, no sweep builder) — see `pfm.h`'s
 "ADDED" header note for why that's a deliberate project decision, not
@@ -242,26 +242,26 @@ period boundary, once the last table entry has completed.
 ### `FAULT?`, `FAULT:CLEAR`
 
 Status/clear for **two independent fault sources**, combined into one
-answer here (`commands.c`'s `AnyFaultLatched()`) — from an operator's
+answer here (`cmd_common.c`'s `AnyFaultLatched()`) — from an operator's
 perspective, "is there a fault, and can I `FIRE`" is one question, not
 two, even though the two mechanisms underneath stay structurally
 separate:
 
 1. **PC10/HRTIM1_FLT6** — a real HRTIM1 hardware fault input
-   (`Core/Inc/hrtim.h`), active-low. The peripheral forces every
+   (`src/bsp/stm32g4/hrtim.h`), active-low. The peripheral forces every
    fault-enabled channel's outputs to a safe (inactive) level
    autonomously, in silicon, the instant the pin trips — no CPU,
    interrupt, or polling latency, and it keeps working even if the CPU
    is hung.
 2. **GateDriverStatus_01..12 EXTI interrupt** (`PE0`-`PE11`,
-   `Core/Inc/gate_driver.h`) — software/interrupt-driven. Re-reads all
+   `src/app/protection/gate_driver.h`) — software/interrupt-driven. Re-reads all
    12 pins on any edge and, as of 2026-09-17, delegates the fault
    decision to `XrexIo_EvaluateGateDriverFault()` (`xrex_io.c` — see
    `XREX:CHANnel:STATus?` below): these 12 pins are
    `docs/pin_mapping_v4.csv`'s `XR1`-`XR4` `_WATER_FLT`/`_TMP_FLT`/
    `_ENERPRO_FLT` signals, each category independently polarity-
    configurable (`XR_WATER_FLT_POLARITY`/`XR_TMP_FLT_POLARITY`/
-   `XR_ENERPRO_FLT_POLARITY`, `Core/Inc/ctrlr_config.h` — replaces the
+   `XR_ENERPRO_FLT_POLARITY`, `src/config/ctrlr_config.h` — replaces the
    old single shared `GDS_FAULT_POLARITY`), and gated so a disabled
    Transrex channel's own pins never count toward a fault. On a fault,
    forces HRTIM output off and latches, exactly as before. Needs the
@@ -330,7 +330,7 @@ Added 2026-09-13, per direct request: a top-level **operating-state
 machine** — `IDLE` → `ARMED` → `FIRING` → back to `IDLE`, with `FAULT`
 reachable from any of the three the instant a fault is detected (both
 sources above, checked continuously — not just while firing). See
-`Core/Inc/state_machine.h` for the full design writeup; this is a
+`src/app/control/state_machine.h` for the full design writeup; this is a
 first pass, explicitly flagged for revisit (see its own "NOTE TO
 REVISIT" comments).
 
@@ -1146,7 +1146,7 @@ writeup.
 
 ### `CONFig:CHANnels?`
 
-Reports `HRTIM_NUM_CHANNELS` (`Core/Inc/ctrlr_config.h`) — the
+Reports `HRTIM_NUM_CHANNELS` (`src/config/ctrlr_config.h`) — the
 compile-time HRTIM channel count this specific firmware build was
 configured for (1-5; see that file for why not 6). Added 2026-09-08
 alongside the channel-count generalization specifically so host
@@ -1281,7 +1281,7 @@ shapes.
 
 ### `XREX:CHANnel:STATus?`
 
-Added 2026-09-17 alongside `Core/Src/xrex_io.c` — a per-Transrex-
+Added 2026-09-17 alongside `src/app/protection/xrex_io.c` — a per-Transrex-
 channel diagnostic readback, reporting one channel's `WATER`/`TMP`/
 `ENERPRO`/`OCP` fault pins together, by name, rather than needing to
 remember which of `GDS?`'s 12 raw pins (or the 4 new OCP pins) maps to
@@ -1484,7 +1484,7 @@ enough to test this gate specifically. See
 QUADSPI connectivity test against the W25Q128JVS NOR flash wired to
 `PE12`-`PE15`/`PB10`/`PB11` (all AF10 — `docs/pin_mapping_v4.csv`),
 added 2026-09-08 as an **easily removable** module
-(`Core/Src/Inc/qspi_test.c/.h`) — see `QSPI_TEST_FEATURE_ENABLED` in
+(`src/bsp/stm32g4/qspi_test.c`, `src/drivers/qspi_test.h`) — see `QSPI_TEST_FEATURE_ENABLED` in
 `qspi_test.h`; when disabled, this command is entirely absent from the
 table (`ERR 1 Unknown command`, like any unrecognized mnemonic), the
 same removability pattern `BOOT` uses. Deliberately narrow: issues the
@@ -1517,7 +1517,7 @@ correct value, not random noise) and fix.
 ### `PFMIN:CAPTURE`, `PFMIN:STATus?`, `PFMIN:DATA?`, `PFMIN:DMASTAT?`
 
 Bounded-count period/duty capture on the 6 `PFM_Input_01`..`_06` pins
-(`Core/Src/pfm_input.c`) -- distinct from the continuous/free-running
+(`src/bsp/stm32g4/pfm_input.c`) -- distinct from the continuous/free-running
 capture mode the closed-loop control path uses internally
 (`PfmInput_StartContinuous()`),
 which has no wire command of its own; these four are for standalone
@@ -1542,7 +1542,7 @@ nonzero (the default).
 
 ### `SOURce:` / `SHOT:` / `LOG:` / `CHANnel:` -- output, shots, logging, channels
 
-This project's whole point (`Core/Inc/pid.h`/`Core/Src/pid.c` --
+This project's whole point (`src/app/control/pid.h`/`src/app/control/pid.c` --
 Possibility 3 + fixed-rate Master heartbeat, see `docs/changelog.txt`'s
 2026-09-09 design-decision entry). Not gated on a feature-enable flag.
 `PID:` now means only the genuine PID-loop parameters `PID:GAINS`/
@@ -1756,7 +1756,7 @@ above) bypasses this clamp for that one write only -- see
 
 Added 2026-09-18, backed by `sim_transrex.c/.h` — see that module's own
 header comment for the full design. **Does not exist on a controller
-build at all** — declarations, definitions, and `cmd_parser.c`
+build at all** — declarations, definitions, and `command_table.c`
 registration all share the same `BUILD_TARGET_SIMULATOR` guard, unlike
 `DIAGnostic:GPOut09-12`/etc., which are generic pins present on both
 targets. Sending any `SIM:` command to a real controller gets
@@ -1923,12 +1923,12 @@ and converges once gated).
 
 ## Adding a command
 
-From `cmd_parser.c`'s own header comment:
+From `command_table.c`'s own header comment:
 
-1. Implement the handler in `commands.c`.
+1. Implement the handler in the matching `src/app/commands/cmd_*.c` file (`commands.h` lists which file holds which subsystem). A brand-new `.c` file also needs `python3 python/sync_build_sources.py` once.
 2. Declare it in `commands.h`.
 3. Add a `{ "PATTern:MNEMonic?", handler }` row to `command_table[]` in
-   `cmd_parser.c`.
+   `src/app/commands/command_table.c`.
 
 Nothing else changes — the table is flat, so a new leaf or a whole new
 subsystem is always just one more row. Update this document when you do.

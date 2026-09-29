@@ -66,9 +66,10 @@
 This document is the curated, organized reference for every pin this
 firmware actually assigns a role to -- derived from, and cross-checked
 against, \code{docs/pin\_mapping\_v4.csv} (the authoritative raw pin
-data) and the current firmware source (\code{Core/Inc/ctrlr\_config.h},
-\code{Core/Src/xrex\_io.c}, \code{Core/Src/state\_machine.c},
-\code{Core/Src/main.c}). Where this document and the firmware source
+data) and the current firmware source under \code{src/} (chiefly
+\code{ctrlr\_config.h}, \code{xrex\_io.c}, \code{state\_machine.c} and
+\code{board\_io.c}, which holds the pin table and GPIO setup). Where
+this document and the firmware source
 ever disagree, the firmware source is correct -- this is a reference
 for humans, not a second source of truth a build depends on.
 
@@ -180,7 +181,7 @@ exclusively reported \code{STATE?} $\to$ \code{OK FAULT OVERCURRENT 3}.
 
 {\small
 \textbf{Polarity} -- every category above is independently
-configurable (\code{Core/Inc/ctrlr\_config.h}), currently all four
+configurable (\code{ctrlr\_config.h}), currently all four
 defaulting to \code{FAULT\_POLARITY\_NORMALLY\_HIGH} (pins read HIGH
 in healthy operation; a LOW reading is a fault):
 }
@@ -355,8 +356,8 @@ enough transmitter budget (4 combined Water+Temp, 4 Enerpro, 4 OCP =
 \end{longtable}
 
 \noindent\textit{OCP assignment matches the channel order already
-built into the controller's own \code{kOcpPin[]} table
-(\code{xrex\_io.c}) -- XR1/XR2/XR3/XR4~$\to$~PF4/PF8/PF12/PF5, an
+built into the controller's own pin table (\code{board\_io.c}) --
+XR1/XR2/XR3/XR4~$\to$~PF4/PF8/PF12/PF5, an
 irregular but pre-existing order.}
 
 \subsection{ENA\_OUT / CONTACT\_OUT Reception}
@@ -386,12 +387,15 @@ drives. They continue to be tested via the existing
 \begin{itemize}
   \item \code{docs/pin\_mapping\_v4.csv} -- the authoritative raw pin
     data this document is derived from.
-  \item \code{Core/Inc/ctrlr\_config.h} -- polarity constants, board
+  \item \code{src/config/ctrlr\_config.h} -- polarity constants, board
     identity, default levels.
-  \item \code{Core/Src/xrex\_io.c} and \code{Core/Inc/xrex\_io.h} --
-    per-channel fault-pin interpretation, the \code{kOcpPin[]} table.
-  \item \code{Core/Src/state\_machine.c} and
-    \code{Core/Inc/state\_machine.h} -- fault-type architecture:
+  \item \code{src/app/protection/xrex\_io.c} and \code{.h} --
+    per-channel fault-pin interpretation.
+  \item \code{src/bsp/stm32g4/board\_io.c} -- the pin table behind
+    every named board signal (including the OCP inputs) and their GPIO
+    configuration.
+  \item \code{src/app/control/state\_machine.c} and \code{.h} --
+    fault-type architecture:
     \code{SM\_FAULT\_GENERAL}, \code{SM\_FAULT\_OVERCURRENT},
     \code{SM\_FAULT\_EXTERNAL\_ENABLE}, \code{SM\_FAULT\_EMERGENCY\_STOP},
     \code{SM\_FAULT\_ENABLE\_OUTPUT}.

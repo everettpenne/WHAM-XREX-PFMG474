@@ -133,7 +133,7 @@ the specific failed precondition in the inline reply).
 **Recommendation if this is pursued: don't replace the inline model,
 add the queue alongside it.** Every command keeps returning `ERR <code>
 <msg>` exactly as today (nothing breaks, no host tooling needs to
-change); `SendErr()` (`commands.c`) additionally pushes the same
+change); `SendErr()` (`cmd_common.c`) additionally pushes the same
 `{code, msg}` onto a small ring buffer (same pattern telemetry.c already
 established for the flight recorder); `SYSTem:ERRor?`/`SYSTem:ERRor:
 COUNt?` become new, purely additive queries for compliance/scripting

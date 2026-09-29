@@ -1,6 +1,434 @@
 WHAM-XREX-PFMG474 Firmware Changelog
 =====================================
 
+2026-09-29  —  NRST pull-up is a required hardware modification (cured the post-swap
+               hang on both boards); SOP Rev G; update-first workflow
+-----------------------------------------------------------------------
+  Summary (the running 2026-09-28 entry below holds the blow-by-blow, including
+        several dead ends and corrections; this entry is the conclusion):
+
+  Problem: network firmware updates (FWUPdate:SWAP), and cold power-ons, sometimes
+        left a board silent -- no !BOOT banner, no reply -- until an ST-Link was
+        connected. Observed since 2026-09-25.
+
+  Cause: the NRST line. The STM32G474 has no pull-down on NRST, only a weak
+        (~40 kOhm) internal pull-up that the reference manual says is disabled during
+        every internal reset (RM0440 7.1.2). On these boards something else holds
+        the net partway down: NRST measured 1.6 V on the controller while it sat
+        silent, between the ~1.0 V (low) and ~2.3 V (high) input thresholds at
+        3.3 V, so the chip stayed in reset. A firm external pull-up lifts the same
+        divider to ~3 V. (Datasheet threshold values are from memory -- verify
+        against DS12288.) The source of the pull-down path is NOT yet identified.
+
+  Fix: a resistor from NRST to +3V3, 5.1 kOhm on the controller (the simulator's
+        value is not yet recorded). Do not hard-tie NRST to 3.3 V (tried once, did
+        not cure it, and it defeats the chip's internal-reset holder).
+
+  Evidence, ST-Link unplugged throughout:
+        CONTROLLER, original option bytes 0xFFFFF8AA, with the 5.1 kOhm: 4 swaps,
+        1 full network reflash, a 20-swap soak, a true cold power-on (banner
+        rst=PIN,BOR, booted by itself) and 5 swaps after it -- 30 operations, 0
+        hangs (logs/soak_controller.log, logs/powercycle_watch.log). Without it:
+        hung after an SWD session and stayed silent through a power cycle.
+        SIMULATOR, with the user's new pull-up: 16 of 16 swaps clean
+        (logs/soak_simulator.log); 8 of 8 hung and then went silent without it.
+
+  Ruled out along the way: the 2026-09-26 reorganization (Friday's firmware hung
+        the same way), the option bytes nSWBOOT0 and IRHEN (the controller works
+        with the originals), and the swap/update code itself. Floating BOOT0 was a
+        real but separate finding (it booted the ROM bootloader on the simulator;
+        fixed there by nSWBOOT0=0 -- see the 09-28 entry).
+
+  Documentation: docs/sop/wham_xrex_pfmg474_sop.tex Rev G adds Section 3.3
+        (Required Hardware Modification: NRST Pull-Up: why, symptoms, evidence,
+        how to check a board, next-revision list), Section 7 (Procedure: Network
+        Firmware Update), and three troubleshooting rows; the date now reads
+        September 2026. Compiled with pdflatex twice and the new pages inspected as
+        images; overfull-box count unchanged at the pre-existing 7.
+
+  Workflow going forward: update boards over the network (python/fw_update.py via
+        the broker); the ST-Link is a bring-up and recovery tool. To reach STATE
+        IDLE on a bench board (required by the update): EXTernal:ENAble 0 then
+        FAULT:CLEAR (the disabled-channels + FAULT:CLEAR route alone is refused
+        while the PF13 interlock is on and unwired). The current bodge resistor
+        prevents ST-Link use; remove it or put a jumper in series before
+        connecting one.
+
+  Recommended for the next board revision (only the first is verified):
+        populate a 4.7-5.1 kOhm NRST pull-up on the PCB away from the debug
+        header; keep the ESTOP fiber receiver off the NRST net and find the path
+        pulling it down; add a ~10 kOhm pull-down on BOOT0 (PB8); consider a reset
+        supervisor.
+
+  Not done / open: identify what pulls NRST down; a fresh SWD session followed by
+        swaps with the resistor in (blocked by the bodge); record the simulator's
+        resistor value; make the modification permanent on both boards; a longer
+        soak. All of the 2026-09-26 reorganization plus the v0.8i version bump are
+        still uncommitted.
+
+2026-09-28  —  BOOT0 booted the ROM bootloader (found, fixed on the simulator with
+               nSWBOOT0=0) -- but that was NOT the cause of the post-swap hang, which persists
+-----------------------------------------------------------------------
+  *** CORRECTION, same day, later (read this first) ***: the paragraph below
+        was written as "root cause of the post-swap hang". It is NOT. Two silent
+        states were observed and only one is the ROM bootloader. The BOOT0 finding
+        is real (SWD proof at 14:47 and 15:21: MEMRMP=1, PC in system memory), but
+        after nSWBOOT0=0 the swap hang STILL happens with the ST-Link unplugged:
+        v0.8f -> v0.8h swap at ~15:37 (initiated by the OLD firmware): no boot ran
+        until the ST-Link was plugged in at 15:38:52, whose banner showed the OBL
+        flag still set (rst=OBL,PIN) -- our firmware clears reset flags at every
+        boot, so no boot happened in between. With nSWBOOT0=0 the pin cannot
+        select the bootloader (RM0440 Table 5), so the chip was held in reset /
+        not executing, as originally suspected (NRST). The swap hang therefore
+        also is NOT caused by Saturday's reorganization (an old-firmware-initiated
+        swap hung the same way). Open, and the leading hypothesis is the NRST net
+        with IRHEN=1 (RM0440: internal resets drive NRST low "until it is seen as
+        low level"). Untested next step: clear IRHEN (OPTR bit 30) or set
+        NRST_MODE=01, then repeat the unplugged swap; and/or measure NRST and
+        BOOT0 with a meter/scope during a hang.
+        Separate, unexplained: at 15:28 v0.8h stopped answering when the ST-Link
+        was unplugged (no swap); the record cannot tell "running but deaf" from
+        "reset held" (no boot in between, PIN flag only). The old v0.8f answered
+        6/6 after an unplug (15:35) -- one trial each, not a verdict.
+
+  IRHEN TEST (15:41-15:46, simulator, ST-Link unplugged for the swaps): cleared
+        IRHEN (OPTR bit 30; 0xFBEFF8AA -> 0xBBEFF8AA, via option_write 0 0x20 0
+        0x40000000 + reload; before/after in logs/optbytes_*_irhen.log). Board
+        booted normally and answered 4/4 after the unplug (the 15:28 silence did
+        not recur). Then swap 1 (bank 1 v0.8h -> bank 2 v0.8f, unplugged) HUNG
+        exactly as before: no banner, no reply, no self-recovery over 2 minutes.
+        So IRHEN is NOT the cause. Still open: the post-swap hang with the
+        ST-Link unplugged. It needs the NRST (and BOOT0) level measured with a
+        meter/scope during a hang; IRHEN is left at 0 for now (the original was 1).
+
+  FRIDAY-ONLY TEST (15:53-15:56, ST-Link confirmed absent by openocd "open
+        failed"): board running Friday's v0.8f (1aab4b9c, clean) flashed Friday's
+        image into bank 1 over the network (CRC EA72F0B7 verified) and swapped.
+        HUNG: no banner, no reply. No reorganized code was involved at any step, so
+        the post-swap hang is independent of the 2026-09-26 reorganization.
+        Swap record with the ST-Link unplugged, all firmware: 0 successes, 8 hangs
+        (3 last week, 5 today, old and new firmware alike); attached: all worked.
+
+  WHERE THIS STOPPED (end of 2026-09-28) -- read before resuming:
+        - 09-25 log re-read (logs/net_session.log): the simulator hung on
+          unplugged swaps at 11:35 and 11:44, was POWER-CYCLED at 11:46
+          (banner rst=PIN,BOR), then did 6 unplugged swaps in a row that all
+          worked (12:11-12:25, logs/reflash_tests.log; user confirms the
+          ST-Link was unplugged). The same build initiated the 11:44 hang and
+          the 12:11 success, so the firmware is not the variable. Today every
+          hang (15:37, 15:43, 15:56) followed ST-Link/SWD sessions with no power
+          cycle since (15:52 recovery banner: rst=OBL,PIN, no BOR).
+        - Leading hypothesis (NOT confirmed): state left in the MCU's debug
+          logic by an SWD session survives every reset except power-on and
+          breaks the option-byte-reload reset. Test: power-cycle, never attach
+          the ST-Link, do several unplugged swaps.
+        - That test did not get run: after the user's power cycle at ~16:05 the
+          board did not answer *IDN? at all (tunnel and bridge fine, 6 tries
+          over a minute, no banner). Unexplained. Not yet checked whether the
+          board is powered/running (no SWD, to keep the test clean).
+        - Board state as far as known: bank 1 = Friday's v0.8f (1aab4b9c,
+          clean), BFB2=0 after the 15:56 swap; bank 2 = Friday's v0.8f too.
+          Option bytes FLASH_OPTR = 0xBBEFF8AA: nSWBOOT0=0 AND IRHEN=0 (both
+          changed today, simulator only; originals: nSWBOOT0=1, IRHEN=1,
+          i.e. 0xFFEFF8AA). Controller untouched: v0.8f 748dd2c8-dirty, bank 1.
+        - Uncommitted: all of the 2026-09-26 reorganization, plus
+          FW_VERSION_STRING v0.8i. A worktree of 1aab4b9 (Friday) was built for
+          the comparison in the session scratchpad.
+
+  CONTROLLER REFLASH (2026-09-29, by request, confirmation prompt skipped with the
+        user's explicit authorization): the controller was running v0.8f
+        748dd2c8-dirty (last week's uncommitted build, not reproducible). Reflashed
+        over the network with the CLEAN Friday build, v0.8f 1aab4b9c (controller
+        target, 106,880 bytes, CRC C68046BE), bank 1 -> bank 2. Transfer ~50 s
+        (2.2 KB/s, faster than the simulator's link), CRC verified, swap OK: banner
+        0.07 s after the acknowledgement (BANK=2 BFB2=1, prev: stage=9,
+        rst=OBL,PIN). The banner says "1aab4b9c-dirty" only because the worktree's
+        tracked Debug/*.elf/.bin were modified by the earlier simulator build in
+        the same worktree; the source is clean. The controller still has
+        FLASH_OPTR=0xFFFFF8AA (nSWBOOT0=1, IRHEN=1, untouched), yet this swap did
+        NOT hang -- one data point for the "SWD session leaves state until a power
+        cycle" hypothesis (no ST-Link sessions on the controller today), not proof.
+        It boots into FAULT OVERCURRENT 1 (floating OCP pins, nothing wired) as on
+        09-25; STATE? was IDLE before the swap because that fault had been
+        cleared at runtime.
+
+  CONTROLLER, NEWEST FIRMWARE (2026-09-29, user-authorized, --yes): reflashed the
+        CONTROLLER over the network with the newest (reorganized) firmware, v0.8i,
+        controller image CRC 1219699C, original option bytes untouched
+        (FLASH_OPTR=0xFFFFF8AA). Bank 2 (Friday's v0.8f) -> bank 1. Swap OK: banner
+        0.06 s after the acknowledgement, prev: stage=9, rst=OBL,PIN. NO HANG. No
+        ST-Link used. To get STATE IDLE first (the update refuses otherwise): disabled
+        channels + FAULT:CLEAR was NOT enough -- EXTernal:ENAble is ON by default and
+        PF13 is unwired (reads LOW), and SM_ClearFault() refuses while that interlock
+        is unsatisfied; EXTernal:ENAble 0 then FAULT:CLEAR reached IDLE (runtime
+        only; the reboot restores the default and FAULT OVERCURRENT 1, as before).
+        This is the narrower alternative to DEBUG:FAULT:BYPASS 1 used on 09-25.
+        Tally, network swaps, ST-Link unplugged: CONTROLLER 2 of 2 worked (Friday's
+        and newest firmware; no SWD session on it today); SIMULATOR 0 of 8 today (both
+        firmwares, several option-byte settings), but 6 of 6 on 09-25 right after a
+        power cycle. The remaining confound is the SWD sessions the simulator has had.
+        Decisive next test: on the CONTROLLER, do a read-only SWD session, unplug, and
+        swap without a power cycle -- if it hangs, the cause is the debugger session,
+        not board differences; then power-cycle and confirm swaps work again.
+
+  *** KEY RESULT (2026-09-29, CONTROLLER): the swap hang is triggered by an SWD
+        session, on the controller too. Baseline: controller did 5 of 5 unplugged
+        swaps with no ST-Link involvement (newest v0.8i and Friday's v0.8f, both
+        directions, banner 0.06-0.07 s each; original option bytes 0xFFFFF8AA).
+        Then: ST-Link plugged into the controller, ONE read-only openocd session
+        (2 s: product string, MEMRMP, OPTR, RCC_CSR, tick, boot record; no writes,
+        no halt, no reset -- and the plug-in itself did NOT reset the controller,
+        unlike the simulator), ST-Link unplugged, controller still answering, no
+        power cycle -> swap (bank 2 -> 1): acknowledged, then SILENT, no banner, no
+        recovery over 1+ minute. Same boards, same firmware, same option bytes; the
+        only new factor was the SWD session. So the hang is NOT specific to the
+        simulator's hardware, NOT the reorganization, NOT nSWBOOT0/IRHEN. Working
+        rule: after ANY ST-Link/SWD use, POWER-CYCLE the board before relying on a
+        network swap. Pending: power-cycle the controller (no ST-Link) and confirm
+        swaps work again; then find the mechanism (debug-domain state surviving
+        resets, e.g. DBGMCU/debug-enable, vs. something else the ST-Link leaves).
+
+  *** MEASUREMENT (2026-09-29, CONTROLLER, first NRST reading of the whole
+        investigation): after the SWD-triggered swap hang and a power cycle, the
+        controller stayed silent (also after a reset-switch press). With the board
+        silent and the ST-Link NOT attached: PB8/BOOT0 = 0 V (so NOT the ROM
+        bootloader by pin; the earlier BOOT0 suspicion does not apply here) and
+        NRST = 1.6 V. At VDD ~3.3 V the NRST input thresholds are ~1.0 V (low) and
+        ~2.3 V (high), with ~0.2 V hysteresis (datasheet DS12288 NRST table, from
+        memory -- verify), so 1.6 V is in the undefined band and a Schmitt input
+        that has seen a reset low stays "in reset" until NRST rises past ~2.3 V.
+        1.6 V = a divider of the internal ~40 kOhm pull-up against a path of
+        roughly 38 kOhm to ground (or a partially-on driver). So the chip is very
+        likely HELD IN RESET by a contested NRST net; an attached ST-Link (its NRST
+        line adds a pull-up/driver) lifts the node past the threshold and releases
+        it. A 10 kOhm external pull-up (as fitted on the simulator on 09-25) would
+        make the same divider ~2.7 V > 2.3 V. Not yet tested on the controller.
+        Candidates for the ground-side path: the ESTOP fiber receiver output on the
+        NRST/PG10 net (open port, ambient light), the reset switch, board leakage.
+
+  CONTROLLER RECOVERY BANNER (2026-09-29 10:12:46): after the power cycle (~10:02)
+        the controller stayed silent (also through a reset-switch press) until the
+        ST-Link was connected; its first banner then read v0.8i BANK=1, boot=1,
+        rst=PIN,BOR -- BOR still set = the FIRST boot since the power-on. So the chip
+        sat held in reset from the cold power-on until the ST-Link released it (NRST
+        measured 1.6 V during that time). A power cycle therefore does NOT cure the
+        state, which retracts the "SWD leaves state that a power cycle clears"
+        wording above: the SWD session is a trigger, but the failure itself is the
+        NRST net not rising past the release threshold. Then, ST-Link attached,
+        swap to Friday's v0.8f (bank 2) worked: banner 0.07 s. The controller is on
+        Friday's v0.8f, ST-Link still attached.
+
+  NRST-FORCED-HIGH TEST (2026-09-29 10:24, CONTROLLER, no ST-Link): the user forced
+        NRST high by a "brute force" method (details not yet recorded). Full network
+        reflash of the newest v0.8i (CRC 1219699C) into bank 1: transfer OK, swap
+        acknowledged, then SILENT (no banner, no *IDN? reply). So a forced-high NRST
+        did NOT prevent the hang -- but the test may be confounded: with IRHEN=1 the
+        chip's reset holder drives NRST low "until it is seen as low level"
+        (RM0440 7.1.2 and OPTR bit 30); a hard tie to 3.3 V would keep the holder
+        from ever seeing VIL.
+        CORRECTION (same day, supersedes a wrong note I wrote a few minutes earlier):
+        the user first said the pull-up was a 5.1 kOhm resistor, then corrected
+        that: THIS test (the hang above) used a HARD TIE of NRST to 3.3 V. So the
+        hard-tie confound stands and that hang is NOT evidence against the NRST
+        theory. The user then replaced the hard tie with a 5.1 kOhm resistor
+        NRST->3.3 V (about 4.5 kOhm with the internal pull-up; with the earlier
+        ~38 kOhm-to-ground estimate NRST would sit near 2.9 V, above the ~2.3 V
+        release threshold) and power-cycled the controller: a !BOOT banner arrived.
+        The tests below are being repeated with the 5.1 kOhm in place.
+
+  *** NRST PULL-UP TEST, RESULT (2026-09-29 10:34-10:38, CONTROLLER, no ST-Link):
+        with a 5.1 kOhm resistor NRST->3.3 V fitted (replacing the hard tie), the
+        same conditions that hung the controller before -- an SWD session at
+        10:12-10:14 and no true power-on reset since (the 10:30 boot showed
+        rst=OBL,PIN, no BOR) -- gave: 4 of 4 bank-swaps clean (banner 0.06-0.07 s,
+        alternating v0.8f bank 2 / v0.8i bank 1) AND a full network reflash of the
+        newest v0.8i (CRC 1219699C, 53 pages, transfer + swap) clean: banner 0.14 s,
+        boot=2, prev: stage=9, rst=OBL,PIN. NO HANG. Compared with the same
+        controller, same firmware and option bytes (0xFFFFF8AA) WITHOUT the pull-up,
+        which hung after the SWD session (09:59) and sat held in reset (NRST 1.6 V)
+        through a power cycle. So a 5.1 kOhm NRST pull-up cures the post-swap hang
+        on the controller; the mechanism is the NRST net not being firmly pulled
+        high after a reset (the chip's ~40 kOhm internal pull-up is disabled during
+        internal resets and is too weak against whatever loads the net). Still to
+        do: a longer soak, a repeat after a fresh SWD session, and fitting the same
+        fix on the simulator if its 09-25 pull-up is no longer effective.
+
+  SOAK (2026-09-29 10:37-10:42, CONTROLLER, 5.1 kOhm NRST pull-up fitted, no
+        ST-Link, original option bytes 0xFFFFF8AA): 20 of 20 bank swaps clean, random
+        3-20 s pauses, alternating bank 1/2, banner 0.00-0.08 s after each
+        acknowledgement (log: logs/soak_controller.log). With the earlier 4 swaps and
+        the full reflash that is 25 clean operations in a row on the state that hung
+        the controller before. Note both banks held the same v0.8i image by then, so
+        this exercises the swap/reset path, not different images. Not yet done:
+        repeat after a fresh SWD session, a cold power-on with the resistor in, and
+        the simulator.
+
+  COLD POWER-ON TEST (2026-09-29 10:45, CONTROLLER, 5.1 kOhm NRST pull-up, no
+        ST-Link): a full power cycle of the controller (off, ~5 s, on), caught by a
+        reconnecting listener on the tunnel (logs/powercycle_watch.log). The board
+        booted BY ITSELF within about half a minute of power-on: v0.8i, BANK=2,
+        boot=1, rst=PIN,BOR (a true power-on reset -- BOR set, unlike the 10:30
+        release which had no BOR). Before the resistor, the same situation (10:02)
+        left it silent for ten minutes until the ST-Link released it. Then 5 of 5
+        swaps clean right after the cold start (banner 0.05-0.07 s). So the pull-up
+        also cures the cold-start hold. Running total on the controller with the
+        resistor: 30 clean operations (4 swaps + 1 full reflash + 20 soak + 5 after
+        cold start), 0 hangs. Still to do: a fresh SWD session then swaps (needs the
+        ST-Link isolated from the forced NRST), and the simulator.
+
+  SIMULATOR (2026-09-29 ~10:55): the simulator had been silent since a power cycle on
+        09-28. The user added a pull-up on its NRST line (value not yet recorded) and
+        it now answers over the network: *IDN? = WHAM-XREX-PFMG474-SIM REVA v0.8f
+        1aab4b9c (Friday's clean build), bank 1 BFB2=0, FWUP idle, STATE IDLE,
+        FAULT 0, OPTR=0xBBEFF8AA (nSWBOOT0=0, IRHEN=0 -- as set on 09-28; the
+        controller keeps the originals). Consistent with the controller result: the
+        silence was the NRST net, and a firm pull-up cures it.
+
+  SIMULATOR SOAK (2026-09-29 11:25-11:28, no ST-Link, with the user's new NRST
+        pull-up fitted): 16 of 16 bank swaps clean (banner 0.09-0.15 s after each
+        acknowledgement; logs/soak_simulator.log), alternating bank 1/2, v0.8f both
+        banks. Before the pull-up the same simulator hung 8 times out of 8. Its
+        option bytes are still the modified 0xBBEFF8AA (nSWBOOT0=0, IRHEN=0), the
+        controller's the originals 0xFFFFF8AA, so both boards being clean says the
+        NRST pull-up is what matters, not those two bits. Both boards now: cured by a
+        firm NRST pull-up.
+
+  Finding: the silence after FWUPdate:SWAP (open since 2026-09-25) was NOT the
+        chip held in reset. With the ST-Link attached, read-only SWD reads of a
+        silent board showed SYSCFG_MEMRMP=1 (system memory), PC=0x1FFF40F8 and
+        VTOR=0x1FFF0000 (the ROM bootloader), RCC_CSR power-on flags still set
+        (our firmware clears them at boot), and uninitialized RAM. FLASH_OPTR was
+        0xFFEFF8AA: nSWBOOT0=1, so the boot source is the BOOT0 pin (PB8), which
+        has only a capacitor to ground on this board. Each reset re-samples it;
+        high selects system memory (RM0440 Table 5). The swap's option-byte
+        reload reset is one of those resets. A later reset (plugging the ST-Link,
+        the reset switch) samples again and can land in flash, which is why the
+        board "came back". The banner logs support it: after a swap the next
+        boot reported prev: stage=9 (the record from just before the reload) with
+        no boot in between.
+
+  Change:  Simulator only: cleared option bit nSWBOOT0 (OPTR 0xFFEFF8AA ->
+        0xFBEFF8AA; nBOOT0 stays 1, which selects main flash whatever BOOT0 does)
+        with: openocd ... stm32l4x option_write 0 0x20 0x00000000 0x04000000, then
+        an option reload. Nothing else changed (RDP, BFB2, DBANK, WRP untouched).
+        Before/after are in logs/optbytes_before_nswboot0.log and
+        logs/optbytes_write_nswboot0.log. The software BOOT command still enters
+        the ROM bootloader (it jumps to it directly, without the pin). To undo:
+        option_write 0 0x20 0x04000000 0x04000000 and reload.
+
+  Verified (simulator, ST-Link attached): after the reload MEMRMP=0, RCC_CSR
+        cleared, tick counting, boot record magic present, banner received over
+        the network, *IDN?/STATE?/DIAG:OPTB? answered (OPTR=FBEFF8AA
+        nSWBOOT0=0).
+
+  NOT yet verified: (1) a swap with the ST-Link UNPLUGGED after the fix (the case
+        that failed) -- v0.8i is loaded for it; (2) the CONTROLLER: it very likely
+        has the same option bytes and floating BOOT0, so it has the same latent
+        problem and needs the same change (not done -- ask first). The 3.7 V vs
+        3.27 V ST-Link supply readings taken earlier the same day are unexplained;
+        the ST-Link's reading may just be imprecise.
+
+  Also: the earlier "no 0x79 from ROM bootloader" check that seemed to rule out
+        the bootloader was not conclusive (the bridge is 8N1; the ROM bootloader
+        wants 8E1).
+
+2026-09-26  —  Firmware reorganization: layered src/ layout (Core = CubeMX only),
+               driver interfaces, off-target tests, enforced layout rules;
+               one error-code enum; commands.c split; main.c slimmed
+-----------------------------------------------------------------------
+  Change:  Direct request, in two steps: first three items of the
+        2026-09-25 reorganization proposal (the bench/debug commands --
+        DEBUG:FAULT:BYPASS, OCP:TEST:FAULT, etc. -- deliberately STAY for
+        hardware integration), then "structure the project along these
+        guidelines" (app / middleware / drivers / bsp / tests / build) with
+        a long-term instruction to keep it that way. Choices confirmed
+        up front: keep STM32CubeIDE + CubeMX regeneration working, and go
+        the full depth (interfaces + tests, not just folders).
+
+        1. Error codes: src/app/commands/cmd_common.h holds the wire codes
+        as one enum (cmd_err_t, ERR_UNKNOWN_COMMAND = 1 .. ERR_FWUPDATE = 17,
+        16 marked retired); every literal code now uses it, and the two
+        private SendErr() copies became one. Numeric values unchanged.
+        Noticed, NOT changed (would change the wire protocol): ERR 11
+        ("invalid channel") is also sent for a few non-channel values.
+
+        2. commands.c (3,417 lines) split along its own section banners into
+        cmd_system/table/config/state/io/pfmin/control/shot/sim.c; the
+        FWUPdate handlers joined them as cmd_fwupdate.c. commands.h stays
+        the one list of declarations and maps subsystem -> file.
+
+        3. Layout (AGENTS.md "Source layout" has the full tree and rules):
+        Core/ now holds only CubeMX-generated files; main.c is generated
+        init plus one call per USER CODE block. Hand-written code moved to
+        src/app (app.c start-up/banner/main loop, task_faults.c,
+        task_scpi.c, telemetry.c, control/, protection/, sim/, commands/),
+        src/middleware/scpi (scpi_parser.c), src/drivers (interfaces),
+        src/bsp/stm32g4 (everything that touches the MCU), src/config
+        (ctrlr_config.h). Generated headers (git_version.h,
+        build_target.h) moved to build/generated/.
+
+        4. Driver interfaces, so app and middleware code never touch the
+        HAL: drivers/mcu.h (tick, delay, interrupt masking, cycle counter,
+        option bytes, reset flags), board_io.h (every discrete board
+        signal by name -- the pin table moved into the BSP), uart.h
+        (opaque serial link; the driver no longer calls the parser --
+        task_scpi.c takes the line and dispatches it), flash_bank.h
+        (dual-bank erase/program/CRC/image check/BFB2 boot, split out of
+        fw_update.c; the protocol half is cmd_fwupdate.c). hrtim.h and
+        pfm_input.h were split: HAL-free API in drivers/, HAL handles and
+        HAL-valued settings in bsp/stm32g4/*_hw.h. The SCPI parser is now
+        generic (scpi_dispatch() over a caller's table); the product's
+        table is src/app/commands/command_table.c.
+
+        5. Enforcement and tests: python/check_layout.py (layer include
+        rules; no HAL/register/pin/IRQ use outside src/bsp; Core/ allowlist;
+        unique header names) and tests/ (host-compiled: test_scpi_parser,
+        and test_command_table, which checks every real command pattern is
+        reachable by its short and long form). Both run in every
+        wham_build.py build, after python/sync_build_sources.py --check,
+        which now manages every src/ folder's Debug/ makefile and the
+        .cproject include paths/source folders.
+
+        6. build/: wham_build.py publishes build/WHAM-XREX-PFMG474{,-SIM}
+        .{elf,bin,map}; the flash/update tools read from there by default.
+        build/*.elf/.bin are now the tracked images; Debug/'s copies are
+        ignored (CubeIDE's debugger still loads Debug/'s .elf).
+        memory_report.py reads build/ and falls back to Debug/ for older
+        commits, and buckets by file name so history stays comparable.
+
+  Found by the new command-table test, NOT fixed (wire protocol): the
+        short forms of DIAGnostic:GPOut09/10/11 are all DIAG:GPO -- same as
+        GPOut12, which comes first in the table -- so "DIAG:GPO 1" always
+        drives GPOut12. Long forms (DIAG:GPOut11 1) work. Listed as known
+        exceptions in tests/test_command_table.c until the patterns change.
+
+  Verification (build-only; no hardware was available): zero warnings on
+        both targets at every step. ELFs compared per function (normalized
+        disassembly) and by .rodata strings at each step:
+        - enum, split, main.c, and the Phase-1 file moves: every function
+          identical except the intended ones (SendErr merged; main() and
+          MX_GPIO_Init() calling the extracted functions, same call
+          sequence); strings identical.
+        - interfaces: every reply string identical on both targets. With
+          the new wrappers expanded inline, all but seven of the 46 changed
+          or renamed functions make exactly the same HAL/library calls and
+          interrupt-mask instructions in the same order. Those seven were reviewed
+          one by one: a register read moved into a function
+          (banner/main), a side-effect-free reorder (BootInactiveBank,
+          rollback), and error branches laid out differently with the same
+          calls and messages on every path (fwup_begin/data). One real
+          difference: FWUPdate:END now flushes the flash data cache twice
+          instead of once (the image check flushes for itself) --
+          harmless.
+        Size vs. the start of the day: controller .bin 106,880 -> 107,864
+        bytes (+984), simulator 115,952 -> 117,064 (+1,112), RAM -8 B.
+        The growth is the new wrapper functions plus duplicated string
+        literals (-O0 does not merge identical strings across files).
+        The IDE build (.cproject edited by the script) and all behavior on
+        hardware are NOT yet checked -- first thing when a board is back:
+        IDE build once, then *IDN?, the !BOOT banner, STATE?, one command
+        per subsystem, an unknown command (ERR 1), and a FWUPdate cycle.
+
 2026-09-25  —  Simulator brought onto the update path; second (parallel) session's
                reflash tests; test builds v0.8b-v0.8f; bench notes
 -----------------------------------------------------------------------

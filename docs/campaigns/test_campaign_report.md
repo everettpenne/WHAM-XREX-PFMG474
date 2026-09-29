@@ -18,9 +18,9 @@ the whole shot stays well resolved:
 
 | change | before | after |
 |---|---|---|
-| `PFM_TABLE_SIZE` (`Core/Inc/pfm.h`) | 5000 (50 000 B) | **1000** (10 000 B) — legacy `TABLE:*`/`FIRE` fallback, still ~10 ms of playback |
-| `PID_LOG_MAX_SAMPLES` (`Core/Inc/pid.h`) | 1000 (48 000 B) | **1750** (84 000 B) |
-| `SIM_LOG_MAX_SAMPLES` (`Core/Inc/sim_transrex.h`) | 1000 | 1000 (unchanged — see §1.2) |
+| `PFM_TABLE_SIZE` (`src/app/control/pfm.h`) | 5000 (50 000 B) | **1000** (10 000 B) — legacy `TABLE:*`/`FIRE` fallback, still ~10 ms of playback |
+| `PID_LOG_MAX_SAMPLES` (`src/app/control/pid.h`) | 1000 (48 000 B) | **1750** (84 000 B) |
+| `SIM_LOG_MAX_SAMPLES` (`src/app/sim/sim_transrex.h`) | 1000 | 1000 (unchanged — see §1.2) |
 
 **Measured RAM (after change, both targets link clean):**
 

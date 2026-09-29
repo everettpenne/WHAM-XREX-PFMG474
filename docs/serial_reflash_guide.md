@@ -43,7 +43,7 @@ risk the wrong one. Pass `--port` explicitly. Prefer the `cu.*` node.)
 That will:
 1. Send `BOOT` at 115200 8N1; the app replies `OK ENTERING BOOTLOADER` and
    resets into the ROM bootloader.
-2. Run `stm32flash` to write + verify `Debug/WHAM-XREX-PFMG474.bin`.
+2. Run `stm32flash` to write + verify `build/WHAM-XREX-PFMG474.bin`.
 3. Issue a Go so the new firmware starts immediately (no reset pin
    needed) — see the bugfix note below for why this is now reliable.
 
@@ -55,23 +55,21 @@ python3 python/wham_serial_flash.py --no-boot --port ...   # board already in bo
 python3 python/wham_serial_flash.py --no-run --port ...    # leave it in the bootloader after flashing
 ```
 
-By default it flashes `Debug/WHAM-XREX-PFMG474.bin`. **This project's
-`.cproject` does not have the "Convert to binary file" post-build step
-enabled**, so that `.bin` doesn't appear automatically from a normal
-build — generate it by hand after building:
-
-```bash
-arm-none-eabi-objcopy -O binary Debug/WHAM-XREX-PFMG474.elf Debug/WHAM-XREX-PFMG474.bin
-```
+By default it flashes `build/WHAM-XREX-PFMG474.bin` (`--target simulator`:
+`build/WHAM-XREX-PFMG474-SIM.bin`). Produce it with `python3
+python/wham_build.py` (add `--target simulator` for the simulator).
+**This project's `.cproject` does not have the "Convert to binary file"
+post-build step enabled**, so an IDE build or a bare `make` never makes
+a `.bin`; `wham_build.py` generates it and publishes it to `build/`.
 
 ## 3. The `BOOT` command (mechanism)
 
 `BOOT` is a normal command in the USART2 protocol, alongside `*IDN?`.
 Sending `BOOT\r\n`:
 
-1. The handler ([`cmd_boot`](../Core/Src/commands.c)) replies
+1. The handler ([`cmd_boot`](../src/app/commands/cmd_system.c)) replies
    `OK ENTERING BOOTLOADER`.
-2. [`BootJump_RequestBootloader`](../Core/Src/boot_jump.c) writes a
+2. [`BootJump_RequestBootloader`](../src/bsp/stm32g4/boot_jump.c) writes a
    sentinel to a reset-surviving RAM word (a `.noinit` linker section
    that the startup code does not zero) and triggers a real chip reset
    (`NVIC_SystemReset()`).
@@ -117,7 +115,7 @@ unconditionally restores both `SCB->VTOR` and `SYSCFG->MEMRMP` before
 falling through to `HAL_Init()`. On a true power-on/NRST reset this is a
 harmless no-op (both are already at their hardware-default values,
 which are the correct ones). On the `Go`-jump path, it's what makes the
-new firmware come up already working. See `Core/Src/boot_jump.c`'s doc
+new firmware come up already working. See `src/bsp/stm32g4/boot_jump.c`'s doc
 comment on that function for the full explanation, and
 `docs/changelog.txt` for the debugging history.
 
@@ -133,7 +131,7 @@ Send `BOOT` (via the script's step above, `scpi.py`, or any terminal),
 wait ~1.5 s, then:
 
 ```bash
-stm32flash -w Debug/WHAM-XREX-PFMG474.bin -v -g 0x08000000 /dev/cu.usbserial-XXXXX
+stm32flash -w build/WHAM-XREX-PFMG474.bin -v -g 0x08000000 /dev/cu.usbserial-XXXXX
 ```
 
 - `-w` write, `-v` verify, `-g 0x08000000` start the app afterward.

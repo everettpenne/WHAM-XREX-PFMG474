@@ -68,7 +68,7 @@ project or before "fixing" something that was a deliberate port.
 ### Closed-loop PID control -- this project's actual point
 
 Implemented 2026-09-09, CONFIRMED converging on real hardware the same
-day. `Core/Inc/pid.h`/`Core/Src/pid.c`: `HRTIM_NUM_CHANNELS` (4)
+day. `src/app/control/pid.h`/`src/app/control/pid.c`: `HRTIM_NUM_CHANNELS` (4)
 independent channels, each `{setpoint, Kp/Ki/Kd, integral, derivative
 history}`, no shared table, no relationship to any other channel.
 `PID_Update()` runs once per Master heartbeat (`PID_LOOP_RATE_HZ`,
@@ -84,7 +84,7 @@ writing the result via `hrtim.c`'s `HRTIM1_SetChannelPeriod()` (each
 channel's own shadow registers, promoted at that channel's own
 roll-over -- Possibility 3, see "What this project is" above).
 Wire interface: `SOURce:RUN`/`STOP`/`SETpoint <ch> <hz>`/
-`STATus? <ch>` and `PID:GAINS <ch> <kp> <ki> <kd>` (`commands.c`, ERR 11/12).
+`STATus? <ch>` and `PID:GAINS <ch> <kp> <ki> <kd>` (`cmd_control.c`, ERR 11/12).
 
 CONFIRMED on real hardware (channel 1, the one channel with a real
 loopback wired on this bench -- see docs/changelog.txt for the full
@@ -119,17 +119,17 @@ IDLE/ARMED/FIRING lifecycle; see `state_machine.h`), so `STATE?` stays
 `ARMED` during playback and a fault mid-playback safes it via
 `EnterFault()` from `ARMED`.
 
-- **Serial command architecture** (`uart.c`, `cmd_parser.c`) -- ported
+- **Serial command architecture** (`uart.c`, `scpi_parser.c`, `command_table.c`) -- ported
   from the sibling project, ported *architecture-only* (no command
   handlers came with it). Interrupt-driven single-byte USART2 RX with
   line-buffer accumulation (`uart.c`), polled from the main loop.
   Dispatch is a **flat, SCPI-style hierarchical command table**
-  (`cmd_parser.c`) -- see `docs/command_reference.md` for the full
+  (`command_table.c`, matched by `scpi_parser.c`) -- see `docs/command_reference.md` for the full
   mnemonic-matching rules (short/long form, `:`-separated levels, `?`
   query suffix). This is a genuine departure from the sibling project's
   case-sensitive exact-match dispatch; see that file's header comment
   for the reasoning.
-- **`*IDN?`** (`commands.c`, constants in `ctrlr_config.h`) -- reports
+- **`*IDN?`** (`cmd_system.c`, constants in `ctrlr_config.h`) -- reports
   board name, hardware revision, and firmware version. `HW_BOARD_REV`
   in `ctrlr_config.h` is a placeholder; keep it in sync with the
   actual PCB silkscreen. (`version.h` no longer exists -- condensed
@@ -157,10 +157,17 @@ IDLE/ARMED/FIRING lifecycle; see `state_machine.h`), so `STATE?` stays
      hardware, over several flash/reset cycles).
 - **Host-side tooling** (`python/`):
   - `wham_build.py` -- **the canonical way to build this project**,
-    added 2026-09-11 (see "Build & verify" above for the full reasoning):
-    `gen_git_version.py` then `make` then the `.bin` regeneration, as
-    one command instead of three separate steps to forget.
-  - `gen_git_version.py` -- regenerates `Core/Inc/git_version.h` from
+    added 2026-09-11 (see "Build & verify" below for the full reasoning):
+    generated headers, build-list and layout checks, unit tests, `make`,
+    the `.bin` regeneration, and publishing to `build/`, as one command
+    instead of several steps to forget.
+  - `sync_build_sources.py` -- regenerates `Debug/`'s makefile lists and
+    `.cproject`'s include paths/source folders from the source tree
+    (added 2026-09-25, generalized to `src/` 2026-09-26). Run it after
+    adding, moving or renaming any source file or folder.
+  - `check_layout.py` -- enforces "Source layout" (added 2026-09-26);
+    run by `wham_build.py`.
+  - `gen_git_version.py` -- regenerates `build/generated/git_version.h` from
     the current git state (commit hash + dirty-tree flag), so `*IDN?`
     reports exactly which commit a running firmware was built from.
     Gitignored output; run automatically by `wham_build.py`, or
@@ -171,7 +178,7 @@ IDLE/ARMED/FIRING lifecycle; see `state_machine.h`), so `STATE?` stays
     build artifact name. **Verified working end-to-end on real hardware**,
     including the VTOR/MEMRMP fix above (confirmed: flash a new version,
     query `*IDN?` immediately, no manual reset, get the new version back
-    -- done twice, back to back). Flashes whatever `Debug/*.bin` already
+    -- done twice, back to back). Flashes whatever `build/*.bin` already
     exists -- doesn't rebuild; run `wham_build.py` first.
   - `wham_console.py` -- **the maintained interactive operator
     console**, added 2026-09-10, the intended day-to-day front end for
@@ -298,7 +305,8 @@ IDLE/ARMED/FIRING lifecycle; see `state_machine.h`), so `STATE?` stays
     `docs/memory_report.html` from that CSV), and commit both files
     alongside the code change. `python3 memory_report.py history
     --backfill` rebuilds the whole CSV from every past commit that has
-    a `Debug/WHAM-XREX-PFMG474.elf` checked in -- only needed once, or if
+    a controller `.elf` checked in (`build/`, or `Debug/` before
+    2026-09-26) -- only needed once, or if
     the CSV is ever lost/corrupted. Per-module attribution is read off
     the **linked ELF's own retained symbol table**
     (`arm-none-eabi-nm --print-size -l`), not summed `.o` files -- with
@@ -328,7 +336,7 @@ IDLE/ARMED/FIRING lifecycle; see `state_machine.h`), so `STATE?` stays
   cross-timer `HRTIM_TIMRESETTRIGGER_OTHERx_CMPy` reset triggers -- but
   needs new phase math with no existing pattern here, deliberately left
   as a follow-up).
-- **`TABLE:BEGIN`/`STEP`/`END`/`?`, `CONFig:CHANnels?`** (`commands.c`,
+- **`TABLE:BEGIN`/`STEP`/`END`/`?`, `CONFig:CHANnels?`** (`cmd_table.c`/`cmd_config.c`,
   primitives in `pfm.c`) -- uploads a complete PFM table (`PFM_Step_t`
   entries, each now `per` + one compare value per channel) built
   entirely off-controller. Firmware does zero construction/validation
@@ -345,9 +353,9 @@ IDLE/ARMED/FIRING lifecycle; see `state_machine.h`), so `STATE?` stays
   above.
 - **`FAULT?`/`FAULT:CLEAR`, two independent fault sources unified at
   the command layer** (`hrtim.c`/`hrtim.h`, `gate_driver.c`/
-  `gate_driver.h`, gated into `pfm.c`/`commands.c`) -- `FAULT?`/
+  `gate_driver.h`, gated into `pfm.c`/`cmd_state.c`) -- `FAULT?`/
   `FAULT:CLEAR`/`FIRE`'s `ERR 6` check ALWAYS mean "either source,"
-  via `commands.c`'s `AnyFaultLatched()`. The two sources themselves
+  via `cmd_common.c`'s `AnyFaultLatched()`. The two sources themselves
   stay structurally separate, two different mechanisms:
   1. **PC10/HRTIM1_FLT6, native HRTIM hardware fault input** --
      PC10 is wired directly to HRTIM1's own FLT6 fault input on this
@@ -384,7 +392,7 @@ IDLE/ARMED/FIRING lifecycle; see `state_machine.h`), so `STATE?` stays
      `XREX:CHANnel:STATus?` section for the full design and real-
      hardware verification. If any pin is in its fault state, this
      still immediately `PFM_ForceStop()`s HRTIM output and latches,
-     unchanged. One boot-time explicit call (`main.c`) also runs this
+     unchanged. One boot-time explicit call (`app.c`) also runs this
      check once, closing a real gap: EXTI is edge-triggered, so a pin
      already in its fault state before the interrupt is even
      configured produces no edge and would otherwise go undetected
@@ -414,14 +422,14 @@ IDLE/ARMED/FIRING lifecycle; see `state_machine.h`), so `STATE?` stays
   verification (immediately above) was thorough enough on its own that
   the writeup no longer waits on the PC10-low bench trip, which stays
   flagged as the one still-open item there instead.
-- **`GDS?`** (`gate_driver.c`/`gate_driver.h`, `commands.c`) -- raw
+- **`GDS?`** (`gate_driver.c`/`gate_driver.h`, `cmd_io.c`) -- raw
   HIGH/LOW snapshot of the same 12 GateDriverStatus_01..12 pins.
   Direct `GPIOE->IDR` read, no debounce, no polarity interpretation,
   no fault-latching of its own -- unaffected by and independent of the
   fault interrupt described above (same pins, separate mechanism). One
   `OK 01=HIGH 02=LOW ...` line, PE0 first. **Verified on hardware**:
   stable, repeatable across back-to-back queries.
-- **`QSPI:ID?`** (`qspi_test.c`/`qspi_test.h`, `commands.c`) -- QUADSPI
+- **`QSPI:ID?`** (`qspi_test.c`/`qspi_test.h`, `cmd_system.c`) -- QUADSPI
   connectivity test against a W25Q128JVS NOR flash on
   PE12-PE15/PB10-PB11 (all AF10, `docs/pin_mapping_v4.csv`), added
   2026-09-08. Deliberately narrow: the chip's standard JEDEC Read ID
@@ -453,7 +461,7 @@ IDLE/ARMED/FIRING lifecycle; see `state_machine.h`), so `STATE?` stays
   W25Q128JVS) is correctly wired and responding, not just that the
   firmware compiles.
 - **`PFMIN:CAPTURE`/`STATus?`/`DATA?`** (`pfm_input.c`/`pfm_input.h`,
-  hooked into `pfm.c`, `commands.c`) -- per-period **period-only**
+  hooked into `pfm.c`, `cmd_pfmin.c`) -- per-period **period-only**
   measurement (rising-edge-to-rising-edge; duty/time-high was dropped,
   see below) on the 6 PFM_Input_01..06 pins
   (PA15/PD4/PB2/PC12/PB4/PD12, TIM2/TIM3/TIM4/TIM5), added 2026-09-08.
@@ -557,14 +565,109 @@ IDLE/ARMED/FIRING lifecycle; see `state_machine.h`), so `STATE?` stays
   history (DSLogic captures, exact failure signatures, dead ends) in
   `docs/changelog.txt`'s 2026-09-09 entries.
 
+## Source layout (standing rule -- keep it this way)
+
+Established 2026-09-26 at the user's direction as a **long-term
+instruction for anyone, human or agent, working in this repo: every
+change must keep this structure.** `python/check_layout.py` enforces the
+mechanical parts and runs in every `python/wham_build.py` build, so a
+violation fails the build just like a compile error.
+
+```
+Core/               CubeMX-generated ONLY: Src/main.c, stm32g4xx_it.c,
+                    stm32g4xx_hal_msp.c, system_stm32g4xx.c, syscalls.c,
+                    sysmem.c; Inc/main.h, stm32g4xx_hal_conf.h,
+                    stm32g4xx_it.h; Startup/. The composition root: main()
+                    and the IRQ handlers wire the layers together.
+Drivers/            ST HAL + CMSIS (vendor code, untouched)
+src/
+  config/           ctrlr_config.h -- compile-time configuration; any layer
+  drivers/          hardware-independent interfaces, headers only:
+                    uart.h, board_io.h, mcu.h, flash_bank.h, hrtim.h,
+                    pfm_input.h, qspi_test.h, boot_jump.h, boot_diag.h
+  bsp/stm32g4/      the only code that touches the MCU (HAL, registers,
+                    interrupts): implements drivers/; *_hw.h = BSP-private
+  middleware/scpi/  scpi_parser.c -- protocol logic, no hardware, no
+                    product knowledge
+  app/              the product: app.c (start-up, banner, main loop),
+                    task_*.c (main-loop tasks, tasks.h), telemetry.c
+    control/        pid, state_machine, pfm (legacy table engine)
+    protection/     gate_driver, xrex_io (fault evaluation)
+    sim/            sim_transrex (simulator build)
+    commands/       command_table.c, commands.h, cmd_common.c/.h,
+                    cmd_<subsystem>.c
+tests/              off-target unit tests, run on the PC (make -C tests)
+build/              wham_build.py output: WHAM-XREX-PFMG474{,-SIM}.{elf,bin}
+                    (tracked), .map, generated/ (git_version.h,
+                    build_target.h) and tests/ (ignored)
+Debug/              CubeIDE's build folder; makefiles kept in step with the
+                    tree by python/sync_build_sources.py
+docs/, python/      documentation, host tools
+```
+
+Rules:
+
+1. **Dependencies point one way.** app -> middleware -> drivers <- bsp;
+   config (and build/generated) from anywhere. `src/app`,
+   `src/middleware` and `src/drivers` never include `main.h`, `stm32*.h`
+   or a BSP header, and never use HAL calls or types, register access,
+   GPIO port/pin names, IRQ numbers or interrupt intrinsics. Need
+   hardware from app code? Add to (or create) a `src/drivers` interface
+   and implement it in `src/bsp/stm32g4`.
+2. **The BSP never includes app or middleware headers.** When a hardware
+   event must reach the application (an interrupt), `Core/`'s handler
+   calls the app function, or the app registers a callback.
+3. **`Core/` stays generated.** Hand-written code there is limited to
+   one-line calls inside USER CODE blocks; no new files in `Core/`.
+   (Invariants 2 and 3 below are the two deliberate exceptions to
+   "one-line": the bootloader jump first in `main()` and USART2's NVIC
+   setup.)
+4. **A module is a `.c` and its `.h` side by side** in the same folder.
+   BSP-private declarations (HAL handles, HAL-valued settings) go in a
+   `<module>_hw.h` next to it. Header names are unique project-wide --
+   includes are by bare name.
+5. **Commands:** the handler goes in the matching
+   `src/app/commands/cmd_<subsystem>.c` (file map in `commands.h`), is
+   declared in `commands.h`, and gets a row in `command_table.c`; errors
+   use `SendErr()` with a `cmd_err_t` code (`cmd_common.h`). A new
+   subsystem gets a new `cmd_<subsystem>.c` and a line in the map.
+6. **Main-loop work is a task:** `TaskX_Poll()` in `src/app/task_x.c`,
+   declared in `tasks.h`, called from `App_Poll()`. Tasks never block.
+7. **Hardware-independent logic gets a host test** in `tests/`
+   (`make -C tests`, also run by `wham_build.py`). `test_command_table`
+   checks every command pattern is reachable by its short and long form
+   -- a new command that collides with an existing one fails the build.
+8. **After adding, moving or renaming a source file or folder**, run
+   `python3 python/sync_build_sources.py` (updates `Debug/`'s makefiles
+   and `.cproject` for the IDE); `wham_build.py` refuses to build while
+   they are stale.
+9. **Images come from `wham_build.py` and live in `build/`**; the
+   flashing and update tools read them from there.
+10. **If a rule genuinely doesn't fit, change it deliberately**: this
+    section and `check_layout.py` together, with a changelog entry.
+    Don't work around the checker.
+
+Known limits, left as they are: interface names still carry this chip's
+vocabulary (`HRTIM1_*`, `PfmInput_*`, the `uart2` instance), and the
+simulator build still links the full controller stack (see
+`sim_transrex.h`).
+
 ## Tech stack & layout
 
 - C11, STM32Cube HAL (G4), bare metal -- no RTOS, no heap.
 - Built with STM32CubeIDE's generated makefile; toolchain
   arm-none-eabi-gcc 13.3.
-- `Core/Src|Inc/` -- all project code. Currently: `main.c`, `uart.c`,
-  `cmd_parser.c`, `commands.c`, `boot_jump.c`, `hrtim.c`, `pfm.c`,
-  `gate_driver.c`, `qspi_test.c`, `pfm_input.c` (a real, once-persistent
+- Where everything lives: "Source layout" above. `main.c` is
+  CubeMX-generated init plus one call per USER CODE block; start-up and
+  the main loop are `src/app/app.c`. Serial commands:
+  `src/middleware/scpi/scpi_parser.c` (matching),
+  `src/app/commands/command_table.c` (the table), `commands.h` (every
+  handler, plus which file holds which subsystem), `cmd_common.c/.h`
+  (`cmd_err_t`, `SendErr()`, shared preconditions), one
+  `cmd_<subsystem>.c` per subsystem (split out of the old 3,400-line
+  `commands.c`, 2026-09-26; older changelog entries still say
+  `commands.c`, `cmd_parser.c`, `fw_update.c` or `Core/Src/...`).
+- Module notes: `pfm_input.c` (a real, once-persistent
   "measuredHz reads 0/wrong channel" symptom for WHAM ch2/3 turned out
   to be a bench fiber-optic PATCHING mix-up, not a `pfm_input.c` bug --
   see `docs/changelog.txt`'s 2026-09-15 entry and the temporary
@@ -681,6 +784,7 @@ IDLE/ARMED/FIRING lifecycle; see `state_machine.h`), so `STATE?` stays
   plus CubeMX-generated `stm32g4xx_hal_msp.c`/`stm32g4xx_it.c`/
   `system_stm32g4xx.c`/`syscalls.c`/`sysmem.c`.
 - `python/` -- host-side tooling (see above).
+- `tests/` -- off-target unit tests (see "Source layout").
 - `docs/` -- this documentation set.
 
 ## Build & verify
@@ -691,24 +795,30 @@ IDLE/ARMED/FIRING lifecycle; see `state_machine.h`), so `STATE?` stays
 python3 python/wham_build.py
 ```
 
-One command instead of three separate steps to remember. It runs, in
-order: (1) `python/gen_git_version.py`, regenerating
-`Core/Inc/git_version.h` from the current git state -- so `*IDN?`'s
-reply always reports exactly which commit this build is from (see
-`docs/command_reference.md`'s own `*IDN?` section); (2) `make -j4 all`
-in `Debug/`; (3) `arm-none-eabi-objcopy -O binary` to regenerate
-`Debug/WHAM-XREX-PFMG474.bin` -- this project's `.cproject` does **not**
-have CubeIDE's "Convert to binary file (.bin)" post-build step enabled
-(confirmed; unlike the sibling project, which does), so a bare `make`
-alone never touches the `.bin` at all. Skipping this step is a REAL,
+One command instead of several steps to remember. It runs, in order:
+(1) `python/gen_build_target.py` and `python/gen_git_version.py`,
+regenerating `build/generated/build_target.h` (`--target controller` or
+`simulator`) and `build/generated/git_version.h` from the current git
+state -- so `*IDN?`'s reply always reports exactly which commit this
+build is from (see `docs/command_reference.md`'s own `*IDN?` section);
+(2) `python/sync_build_sources.py --check` -- fails if `Debug/`'s
+makefiles or `.cproject` no longer match the source tree; (3)
+`python/check_layout.py` -- the "Source layout" rules; (4) `make -C tests`
+-- the off-target unit tests (`--skip-tests` to skip); (5) `make -j4 all`
+in `Debug/`; (6) `arm-none-eabi-objcopy -O binary` to regenerate the
+`.bin` -- this project's `.cproject` does **not** have CubeIDE's
+"Convert to binary file (.bin)" post-build step enabled (confirmed;
+unlike the sibling project, which does), so a bare `make` alone never
+touches the `.bin` at all. Skipping that step is a REAL,
 confirmed-on-hardware gotcha: `wham_serial_flash.py` against a stale
 `.bin` flashes it "successfully" -- verified even -- while silently NOT
 containing your latest changes (see `docs/changelog.txt`'s 2026-09-10
-entry for exactly this happening). `wham_build.py` exists specifically
-so there's no gap in the sequence left to forget.
+entry for exactly this happening); (7) publish the `.elf`/`.bin`/`.map`
+to `build/WHAM-XREX-PFMG474.*` (simulator: `build/WHAM-XREX-PFMG474-SIM.*`)
+-- where the flashing and update tools read them, and what git tracks.
 
-If you need the two lower-level steps directly (debugging the build
-itself, say):
+If you need the lower-level steps directly (debugging the build itself,
+say):
 
 ```bash
 cd Debug && make all -j4
@@ -716,36 +826,28 @@ arm-none-eabi-objcopy -O binary WHAM-XREX-PFMG474.elf WHAM-XREX-PFMG474.bin
 ```
 
 -- but prefer `wham_build.py` for anything you intend to flash, for
-`*IDN?` accuracy. `Core/Inc/git_version.h` is gitignored (see that
-file's own generated header comment, and `.gitignore`'s comment on
-why) -- a fresh checkout has no `git_version.h` until
+`*IDN?` accuracy. `build/generated/` is gitignored (see `.gitignore`'s
+comment on why) -- a fresh checkout has no `git_version.h` until
 `gen_git_version.py` (or `wham_build.py`) runs at least once;
-`commands.c` `#include`s it unconditionally, so a bare `make` with
-neither ever run fails to compile `commands.c` with a plain
+`cmd_system.c` and `app.c` `#include` it unconditionally, so a bare
+`make` with neither ever run fails to compile them with a plain
 missing-header error, not a mysterious one.
 
-**Adding a new source file from outside CubeIDE (e.g. this agent
-writing a `.c`/`.h` pair directly)**: CubeIDE's managed build
-auto-discovers new files in a source directory the *first* time you
-build a fresh project (no `Debug/` yet) -- but once `Debug/` exists,
-its generated per-directory `subdir.mk` and the top-level
-`Debug/objects.list` are **not** automatically refreshed by a plain
-`make`. Every file added this way in this project (`Core/Src`:
-`boot_jump.c`, `cmd_parser.c`, `commands.c`, `uart.c`, `gate_driver.c`,
-`qspi_test.c`, `pfm_input.c`, `fw_update.c` (2026-09-24), `xrex_io.c` (2026-09-17 -- re-confirmed
-the gotcha exactly as described here: a first build after adding it
-compiled `xrex_io.c` fine but failed to LINK, `undefined reference to
-XrexIo_*` from every caller, until `Debug/Core/Src/subdir.mk` and
-`Debug/objects.list` were both hand-patched); `Drivers/STM32G4xx_HAL_Driver/Src`:
-`stm32g4xx_hal_qspi.c`, `stm32g4xx_hal_tim.c`, `stm32g4xx_hal_tim_ex.c`
--- all copied in from an external HAL package rather than hand-written,
-but the exact same gotcha applies) needed its
-directory's own `subdir.mk` plus `Debug/objects.list` hand-patched to
-add the new `.c`/`.o`/`.d` entries before `make` would pick it up. In
-CubeIDE itself, `F5` (Refresh) + a normal Build regenerates these
-correctly, no hand-patching needed -- the manual patching is only
-necessary when
-building from the command line without going through the IDE first.
+**Adding, moving or renaming a source file or folder from outside
+CubeIDE (e.g. an agent writing a `.c`/`.h` pair directly)**: run
+`python3 python/sync_build_sources.py`. CubeIDE's managed build does not
+refresh its generated per-directory `Debug/**/subdir.mk`,
+`Debug/sources.mk`, `Debug/makefile` or `Debug/objects.list` on a plain
+`make`; the script regenerates all of them, plus `.cproject`'s include
+paths and source folders, from the tree (`--check` only reports). Before
+it existed (2026-09-25), every new file needed those lists hand-patched
+-- `xrex_io.c` (2026-09-17) compiled fine but failed to LINK,
+`undefined reference to XrexIo_*` from every caller, until they were.
+In CubeIDE itself, `F5` (Refresh) + a normal Build also regenerates them.
+Files added under `Drivers/` (vendor HAL sources) still need the
+hand-patch. `Debug/objects.list` is not tracked in git, so a fresh clone
+must build once from the IDE or run the script before a command-line
+`make` links.
 
 **`%f`/`%g` in a `snprintf()` reply silently prints nothing** (not a
 crash, not a build warning -- just empty output where the number
@@ -782,8 +884,9 @@ Same conventions as the sibling project (module-prefixed public
 functions, `stdint.h` exact-width types, minimal non-blocking ISRs,
 `volatile` on ISR-shared state, bugfix comments that state root cause +
 symptom + why the fix works) -- there's no separate style doc here yet
-since the codebase is still small; read `boot_jump.c` and `cmd_parser.c`
-for the current standard to match.
+since the codebase is still small; read `boot_jump.c` and
+`scpi_parser.c` for the current standard to match. Where code goes, and
+what each layer may depend on: "Source layout" above.
 
 ## Hard-won invariants
 
@@ -824,6 +927,50 @@ for the current standard to match.
    the interrupt never actually reaches the NVIC, and nothing over
    serial ever gets a reply. Easy to lose track of on a CubeMX regen if
    you're not looking in the right `USER CODE` block.
+4. **Every board needs a firm pull-up on the `NRST` line (a resistor to
+   +3V3; 5.1 kOhm verified on the controller) -- a hardware requirement,
+   not a firmware setting.** Found 2026-09-29 after two days of chasing a
+   ghost. The symptom: after `FWUPdate:SWAP`, or after a cold power-on,
+   the board is silent (no `!BOOT` banner, no `*IDN?` reply) until an
+   ST-Link is connected. The cause: the STM32G474 has NO pull-down on
+   NRST, only a weak (~40 kOhm) internal pull-up that the reference manual
+   says is disabled during every internal reset; something else on these
+   boards holds the net partway down (measured 1.6 V, between the ~1.0 V
+   low and ~2.3 V high thresholds -- datasheet values from memory, verify),
+   so the chip stays in reset. With the resistor fitted: controller 30
+   clean operations (swaps, a full reflash, a 20-swap soak, a true cold
+   start), simulator 16 of 16. **Before investigating a "silent after
+   swap/power-on" report, check NRST with a meter (healthy is near
+   3.3 V).** It is NOT the reorganization, NOT the option bytes
+   `nSWBOOT0`/`IRHEN`, and NOT the update code -- all three were ruled
+   out; don't re-chase them. Do not hard-tie NRST to 3.3 V (it defeats the
+   chip's internal-reset holder); use a resistor. The current bench
+   bodge blocks ST-Link use -- lift it before connecting one. The source
+   of the pull-down path is still unidentified. Full record:
+   `docs/sop/wham_xrex_pfmg474_sop.tex` Section 3.3 (with a next-board-
+   revision list) and `docs/changelog.txt`'s 2026-09-29 entry (the
+   2026-09-28 entry has the dead ends and corrections).
+5. **The two boards' option bytes differ on purpose; know which you have.**
+   The CONTROLLER keeps the originals (`FLASH_OPTR = 0xFFFFF8AA` when
+   running bank 2, `0xFFEFF8AA` bank 1 -- only `BFB2` differs, and the swap
+   flips it). The SIMULATOR was changed 2026-09-28 to `0xBBEFF8AA`
+   (`nSWBOOT0 = 0` and `IRHEN = 0`): its BOOT0 pin floats (only a
+   capacitor to ground) and had booted the ROM bootloader, silent to
+   serial; `nSWBOOT0 = 0` makes the chip ignore the pin. The controller's
+   BOOT0 measured 0 V but is unprotected, so it has the same latent
+   exposure (fix: a ~10 kOhm pull-down on BOOT0, or the same option bit --
+   ask before changing the controller's option bytes). Read them with
+   `DIAGnostic:OPTBytes?`; write them only with an ST-Link
+   (`openocd ... stm32l4x option_write 0 0x20 <value> <mask>`, masked so
+   only the intended bit changes) after recording the current values.
+6. **A firmware update needs `STATE IDLE`.** A bench board with nothing
+   wired to the overcurrent inputs boots in `FAULT OVERCURRENT 1`, and
+   `FAULT:CLEAR` refuses while the external-enable interlock is on and
+   PF13 is unwired. Working sequence: `EXTernal:ENAble 0`, then
+   `FAULT:CLEAR`, then check `STATE?` (runtime only; the reboot after
+   the swap restores the defaults). This turns an interlock off -- do not
+   do it on a system with a Transrex connected without knowing why it is
+   unsatisfied.
 
 ## Known gaps / in-flight work (as of 2026-08-31)
 

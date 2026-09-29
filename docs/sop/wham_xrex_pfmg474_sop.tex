@@ -33,7 +33,7 @@
 
 \title{WHAM-XREX-PFMG474\\ \large Firmware Build, Flash, and Verification \\ Standard Operating Procedure}
 \author{}
-\date{August 2026}
+\date{September 2026}
 
 \begin{document}
 \maketitle
@@ -95,6 +95,13 @@
     signal back from the Transrex -- \code{SM\_FAULT\_ENABLE\_OUTPUT}
     detects the controller's own commanded GPIO state changing, not
     whether the Transrex's contactor actually responded. \\
+  G & 2026-09-29 & -- & Added Section~\ref{sec:nrst} (a required
+    hardware modification: a firm pull-up on the \code{NRST} line, with
+    the evidence and the next-board-revision list) and
+    Section~\ref{sec:network-update} (updating firmware over the
+    ethernet serial bridge with \code{fw\_update.py}). Two new
+    troubleshooting rows. Without the pull-up, bank swaps and cold
+    starts were found to hang with no serial output at all. \\
   \hline
 \end{longtable}
 
@@ -179,6 +186,97 @@ link.)}
 production process. Use standard ESD precautions (grounding strap,
 static-safe surface) when handling the bare board.}
 
+\subsection{Required Hardware Modification: NRST Pull-Up}
+\label{sec:nrst}
+
+\textbf{Every board that will be updated over the network, or expected
+to start reliably from a cold power-on, needs a firm pull-up on the
+\code{NRST} line: a resistor from \code{NRST} to +3V3.} 5.1~k$\Omega$ is
+the value verified on the controller (see Evidence, below); anything from 4.7 to
+5.1~k$\Omega$ is expected to behave the same.
+
+\caution{The current bench modification (a bodge resistor) prevents the
+ST-Link from being used at the same time. Remove the resistor, or lift it
+with a jumper, before connecting an ST-Link, and restore it afterwards.
+Do \textbf{not} tie \code{NRST} directly to +3V3: a hard tie was tried
+once and did not cure the hang, and it stops the chip pulling its own
+reset line low. Use a resistor.}
+
+\subsubsection*{Why it is needed}
+
+The STM32G474 has \emph{no} pull-down on \code{NRST}. It has only a weak
+internal pull-up (about 40~k$\Omega$) that the reference manual says is
+switched off during every internal reset, including the option-byte
+reload that ends a bank swap and the power-on reset. On these boards
+something else on the net holds it partway down: \code{NRST} measured
+\textbf{1.6~V} on the controller while it sat silent, between the chip's
+low (about 1.0~V) and high (about 2.3~V) input thresholds at 3.3~V. A
+reset input that has seen a reset low stays in reset until it rises past
+the high threshold, so the chip never started. A firm external pull-up
+lifts the same divider to about 3~V, above the threshold.
+
+\subsubsection*{Symptoms without it}
+
+\begin{itemize}
+  \item After \code{FWUPdate:SWAP} the board acknowledges the swap and
+    then sends nothing: no \code{!BOOT} banner, no reply to \code{*IDN?}.
+  \item After a power cycle the board stays silent until an ST-Link is
+    connected (which pulls the line up and releases it).
+  \item It may recover on its own reset-pin pulse, or not at all, so the
+    failure looks random.
+\end{itemize}
+
+\subsubsection*{Evidence}
+
+\begin{center}
+\begin{tabular}{p{1.4in} p{1.6in} p{1.6in}}
+  \hline
+  \textbf{Board} & \textbf{Without a firm pull-up} & \textbf{With it} \\
+  \hline
+  Controller (5.1~k$\Omega$) & Hung after an SWD session; silent through
+    a power cycle; \code{NRST} = 1.6~V &
+    30 operations clean: 4 swaps, a full network reflash, a 20-swap
+    soak, 5 swaps after a true cold start (\code{BOR} set) \\
+  Simulator (value to be recorded) & 8 of 8 swaps hung; silent after a
+    power cycle & 16 of 16 swaps clean \\
+  \hline
+\end{tabular}
+\end{center}
+
+\noindent The result held with the original option bytes on the
+controller, so no firmware or option-byte change is required.
+
+\subsubsection*{Checking a board}
+
+With the board powered and running, measure \code{NRST} to ground with a
+meter. A healthy board reads close to 3.3~V. A reading between about 1~V
+and 2.3~V means the net is contested and the board can hang at the next
+reset. With the board unpowered, resistance from \code{NRST} to ground
+should be high; a low value means an external path is dragging the line.
+The source of that path has \emph{not} been identified yet; the pull-up
+masks it.
+
+\subsubsection*{Recommended for the next board revision}
+
+These are recommendations, not yet verified except the first.
+
+\begin{itemize}
+  \item Populate a 4.7--5.1~k$\Omega$ pull-up from \code{NRST} to +3V3 on
+    the PCB itself, away from the debug header, so the ST-Link and the
+    pull-up coexist.
+  \item Do not share the \code{NRST} net with the ESTOP fiber receiver
+    output (\code{PG10} is the reset pin; driving that net resets the
+    MCU), and find and remove the path that pulls the line down.
+  \item Add a pull-down (about 10~k$\Omega$) on \code{BOOT0} (\code{PB8}).
+    The simulator, with \code{BOOT0} floating (only a capacitor to
+    ground), booted the ROM bootloader after resets, silent to serial.
+    It was fixed there by clearing the \code{nSWBOOT0} option bit, so
+    the chip ignores the pin; the controller's \code{BOOT0} measured
+    0~V but is unprotected.
+  \item Consider a reset supervisor device to give \code{NRST} a defined
+    level at power-on.
+\end{itemize}
+
 \section{Procedure: Build the Firmware}
 \label{sec:build}
 
@@ -192,12 +290,14 @@ static-safe surface) when handling the bare board.}
     \code{WHAM-XREX-PFMG474.elf} in \code{Debug/}.
   \item \textbf{Generate the \code{.bin}.} This project's build
     configuration does not have the ``Convert to binary file'' post-build
-    step enabled, so it must be generated by hand:
+    step enabled, so build with the project script instead, which also
+    runs the layout check and the off-target tests, generates the
+    \code{.bin}, and publishes both images to \code{build/}:
 \begin{quote}\ttfamily\small\raggedright
-arm-none-eabi-objcopy -O binary \textbackslash\\
-\hspace*{1em}Debug/WHAM-XREX-PFMG474.elf \textbackslash\\
-\hspace*{1em}Debug/WHAM-XREX-PFMG474.bin
+python3 python/wham\_build.py
 \end{quote}
+    This writes \code{build/WHAM-XREX-PFMG474.bin} (simulator:
+    \code{--target simulator}, \code{build/WHAM-XREX-PFMG474-SIM.bin}).
 \end{enumerate}
 
 \section{Procedure: Bootstrap Flash (SWD)}
@@ -241,7 +341,7 @@ python3 python/wham\_serial\_flash.py \textbackslash\\
     \code{cu.*} node.)
   \item The script will: send \code{BOOT} and wait for the
     acknowledgement; run \code{stm32flash} to write and verify
-    \code{Debug/WHAM-XREX-PFMG474.bin}; then start the new firmware
+    \code{build/WHAM-XREX-PFMG474.bin}; then start the new firmware
     automatically (no manual reset needed -- see
     Section~\ref{sec:reset-note}).
   \item Confirm the script reports \texttt{[done]} with firmware
@@ -262,6 +362,77 @@ has been fixed in firmware (\code{boot\_jump.c}) -- a manual reset should
 not be necessary. If a board flashed under this SOP does not respond to
 the verification step below without a manual reset, that is a
 regression and should be reported, not treated as expected behavior.
+
+\section{Procedure: Network Firmware Update}
+\label{sec:network-update}
+
+Use this for boards reached through the ethernet serial bridge: a raw TCP
+connection to USART2 at 115200~8N1 that accepts \textbf{one client at a
+time}. It needs no USB-serial adapter and no ST-Link, and it does not use
+the ROM bootloader (which needs 8E1, something the bridge cannot carry).
+The firmware writes the new image into the \emph{inactive} flash bank,
+checks it (CRC-32 and a product-name check, so a simulator image cannot be
+loaded onto the controller and the reverse), then swaps banks and
+reboots. The previous image stays in the other bank.
+
+\caution{Requires the \code{NRST} pull-up of Section~\ref{sec:nrst}.
+Without it, the swap can leave the board silent until it is reset or an
+ST-Link is connected.}
+
+\begin{enumerate}[label=\arabic*.]
+  \item \textbf{Connect.} Reach the bridge (on the bench, an SSH tunnel
+    to the bridge address), then start the shared broker so several tools
+    can watch the same session, for example:
+\begin{quote}\ttfamily\small\raggedright
+python3 python/net\_broker.py \textbackslash\\
+\hspace*{1em}--upstream localhost:5010 --listen-port 5001
+\end{quote}
+    Watch it with \code{python3 python/net\_client.py --port 5001}. After
+    a power cycle of the board the bridge session drops; restart the
+    broker.
+  \item \textbf{Identify the board.}
+\begin{quote}\ttfamily\small\raggedright
+python3 python/fw\_update.py --url socket://localhost:5001 \textbackslash\\
+\hspace*{1em}--name fw\_update --target controller --status
+\end{quote}
+    Confirm the product name (\code{WHAM-XREX-PFMG474} or
+    \code{...-SIM}) and the running bank. \code{--target} is only a
+    guard: the board reached is whatever the URL leads to.
+  \item \textbf{Build} with \code{python3 python/wham\_build.py}
+    (\code{--target simulator} for the simulator). The image is
+    published to \code{build/}.
+  \item \textbf{Reach \code{STATE IDLE}.} The update is refused in any
+    other state. A bench board with nothing wired to the overcurrent
+    inputs boots in \code{FAULT OVERCURRENT 1}. Send
+    \code{EXTernal:ENAble 0}, then \code{FAULT:CLEAR}, and confirm
+    \code{STATE?} returns \code{IDLE}. (\code{FAULT:CLEAR} refuses while
+    the external-enable interlock is on and its input, PF13, is
+    unwired.)
+  \item \textbf{Run the update} and type \code{yes} at the prompt:
+\begin{quote}\ttfamily\small\raggedright
+python3 python/fw\_update.py --url socket://localhost:5001 \textbackslash\\
+\hspace*{1em}--name fw\_update --target controller
+\end{quote}
+    The transfer takes one to two minutes (about 2~KB/s on the
+    controller, 0.8~KB/s on the simulator). Do not skip the prompt
+    (\code{--yes}) except in a scripted, supervised run.
+  \item \textbf{Confirm.} The tool prints \code{OK ERASED},
+    \code{OK VERIFIED CRC=...}, \code{OK SWAPPING}, then the
+    \code{!BOOT} banner within about a second, and finally
+    \code{[ok] now running <version> from bank <n>}. Check that the
+    version and bank are what you expect.
+  \item \textbf{Rollback (optional).} \code{--rollback} boots the image in
+    the other bank, with no transfer.
+\end{enumerate}
+
+\caution{Step~4 turns the PF13 external-enable interlock off until the
+board's next reboot (the reboot restores the default). Do not do this on
+a system with a Transrex connected without knowing why the interlock is
+unsatisfied.}
+
+\noindent A bench board reboots into its normal power-up state after the
+swap, which for a board with unwired overcurrent inputs is \code{FAULT
+OVERCURRENT 1}. That is expected.
 
 \section{Procedure: Verification}
 \label{sec:verify}
@@ -656,7 +827,7 @@ firmware's own design comment is direct about this: ``these are OUTPUTS
 this firmware commands, not hardware-driven INPUTS it reads --
 `checking' them is a readback of this firmware's own last-written GPIO
 state..., not an interpretation of external signal polarity''
-(\code{Core/Inc/xrex\_io.h}). Concretely: \code{SM\_FAULT\_ENABLE\_OUTPUT}
+(\code{src/app/protection/xrex\_io.h}). Concretely: \code{SM\_FAULT\_ENABLE\_OUTPUT}
 (Section~\ref{sec:profile-fire}) detects ``did this MCU's own GPIO
 register stop reading what we told it to be'' -- it CANNOT detect ``the
 controller is still commanding the contactor, but the Transrex's
@@ -877,6 +1048,26 @@ these.
     leaves no trace either way, exactly like the command-driven path's
     own re-check silently staying \code{ARMED}, so ruling out (1)-(3)
     first is the faster path. \\
+  Silent after \code{FWUPdate:SWAP} (acknowledged, then no
+    \code{!BOOT} banner and no reply), or silent after a power cycle &
+    New Rev~G. Almost certainly the \code{NRST} line
+    (Section~\ref{sec:nrst}): check the pull-up is fitted and intact and
+    measure \code{NRST} (healthy is near 3.3~V; 1--2.3~V is the fault).
+    A power cycle or a reset-switch press may bring the board back; an
+    attached ST-Link releases it. After recovering, the banner's
+    \code{rst=} flags show what happened: \code{OBL} still set means no
+    boot ran since the swap. \\
+  \code{fw\_update.py} reports the update ``refused'', or the
+    board ``needs STATE IDLE'' &
+    Send \code{EXTernal:ENAble 0} then \code{FAULT:CLEAR} and check
+    \code{STATE?} (Section~\ref{sec:network-update}, Step~4). \\
+  \code{fw\_update.py} reports ``the connected board is the
+    simulator, not the controller'' (or the reverse) &
+    The product-name guard did its job: the URL leads to the other
+    board. Check \code{*IDN?} and the tunnel or broker port. \\
+  Network tools get no reply after a power cycle, or the broker exits &
+    The bridge session dropped (it accepts one client at a time).
+    Restart the broker, and make sure only one tool holds the bridge. \\
   \hline
 \end{longtable}
 
@@ -906,7 +1097,13 @@ these.
     recorder's own design writeup (wire format, buffering, the
     packet-framing invariant); Section~\ref{sec:telemetry} above is
     this SOP's operator-facing companion to it.
-  \item \code{docs/changelog.txt} -- dated development history.
+  \item \code{python/fw\_update.py} -- the network update tool used in
+    Section~\ref{sec:network-update}.
+  \item \code{python/net\_broker.py} and \code{python/net\_client.py}
+    -- the shared-connection broker and viewer for the bridge session.
+  \item \code{docs/changelog.txt} -- dated development history; the
+    2026-09-28 and 2026-09-29 entries hold the full record of the
+    \code{NRST} investigation behind Section~\ref{sec:nrst}.
 \end{itemize}
 
 \end{document}
