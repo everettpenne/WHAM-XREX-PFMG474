@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """
-gen_build_target.py -- generates Core/Inc/build_target.h, which selects
+gen_build_target.py -- generates build/generated/build_target.h, which selects
 CONTROLLER vs SIMULATOR firmware from this SAME repo (added 2026-09-17,
 per direct request -- a Transrex simulator, a second identical board
 that plays the role of the Transrex for full-stack bench testing,
-sharing this project's HAL drivers, uart.c/cmd_parser.c's SCPI
+sharing this project's HAL drivers, uart.c/scpi_parser.c's SCPI
 framework, and pfm_input.c's already-working capture code rather than
 forking into a separate project).
 
@@ -31,11 +31,11 @@ import sys
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 PROJECT_DIR = os.path.dirname(SCRIPT_DIR)  # this script lives in python/
-OUT_PATH = os.path.join(PROJECT_DIR, "Core", "Inc", "build_target.h")
+OUT_PATH = os.path.join(PROJECT_DIR, "build", "generated", "build_target.h")
 
 
 def main():
-    ap = argparse.ArgumentParser(description="Generate Core/Inc/build_target.h")
+    ap = argparse.ArgumentParser(description="Generate build/generated/build_target.h")
     ap.add_argument("--target", choices=["controller", "simulator"], default="controller",
                      help="which firmware to select (default: controller)")
     args = ap.parse_args()

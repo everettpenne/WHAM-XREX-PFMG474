@@ -22,11 +22,11 @@
 #include "stm32g4xx_it.h"
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
-#include "uart.h"
-#include "hrtim.h"
+#include "uart_hw.h"
+#include "hrtim_hw.h"
 #include "pfm.h"
 #include "gate_driver.h"
-#include "pfm_input.h"
+#include "pfm_input_hw.h"
 #include "pid.h"
 #include "boot_diag.h"
 /* USER CODE END Includes */
@@ -223,7 +223,7 @@ void SysTick_Handler(void)
   * @brief  Rx Transfer completed callback.
   *
   * Called by the HAL after each single-byte interrupt-driven UART
-  * receive armed by uart_init()/uart_rx_callback() in uart.c. Routes
+  * receive armed by uart_start()/uart_rx_callback() in uart.c. Routes
   * to uart_rx_callback(), which accumulates the byte into the line
   * buffer and re-arms the next single-byte receive.
   * @param  huart  Pointer to the UART handle that completed reception.
@@ -253,7 +253,7 @@ void USART2_IRQHandler(void)
   *
   * Not a CubeMX-generated handler -- HRTIM1_Master_IRQn is enabled and
   * primed for this one flag by HRTIM1_EnableMasterInterrupt() (hrtim.c),
-  * called once at boot from main.c.
+  * called once at boot from app.c.
   *
   * REWIRED, 2026-09-09, closed-loop PID architecture (see
   * docs/changelog.txt's design-decision entry and pid.h's own header
@@ -284,7 +284,7 @@ void HRTIM1_Master_IRQHandler(void)
   * @brief  GateDriverStatus_01..12 (PE0..PE11) fault interrupt --
   *         EXTI0..EXTI4, EXTI9_5, and EXTI15_10 global interrupts.
   *
-  * Not CubeMX-generated -- PE0..PE11 (main.c's MX_GPIO_Init()) are
+  * Not CubeMX-generated -- PE0..PE11 (board_io.c's BoardIo_Init()) are
   * configured GPIO_MODE_IT_RISING_FALLING, so any edge on any of these
   * 12 pins lands in one of these 7 vectors (EXTI0..EXTI4 are individual
   * lines; EXTI9_5 covers PE5..PE9; EXTI15_10 covers PE10..PE11 here --

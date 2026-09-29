@@ -21,23 +21,13 @@
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
-#include <stdio.h>
-#include "uart.h"
-#include "cmd_parser.h"
+#include "app.h"
 #include "boot_jump.h"
-#include "hrtim.h"
-#include "pfm.h"
-#include "gate_driver.h"
-#include "qspi_test.h"
-#include "pfm_input.h"
-#include "pid.h"
-#include "state_machine.h"
-#include "xrex_io.h"
-#include "telemetry.h"
-#include "sim_transrex.h"
-#include "ctrlr_config.h"
-#include "git_version.h"
 #include "boot_diag.h"
+#include "board_io.h"
+#include "hrtim_hw.h"
+#include "mcu.h"
+#include "uart_hw.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -59,12 +49,6 @@
 UART_HandleTypeDef huart2;
 
 /* USER CODE BEGIN PV */
-/* Reset-surviving boot diagnostics -- see boot_diag.h. .noinit, so the
-   startup code neither copies nor zeroes it: it holds the previous boot's
-   record until this boot snapshots it (below) and starts its own. */
-__attribute__((section(".noinit"))) volatile BootDiag_t g_bootDiag;
-static BootDiag_t s_prevBoot;      /* previous boot's record, for the banner */
-static uint32_t   s_resetCsr;      /* RCC->CSR as found at this boot */
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -73,7 +57,7 @@ static void MX_GPIO_Init(void);
 static void MX_USART2_UART_Init(void);
 static void MX_HRTIM1_Init(void);
 /* USER CODE BEGIN PFP */
-static void FixSysTickPriority(void);
+
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
@@ -100,48 +84,9 @@ int main(void)
      purpose, so this call site never needs its own #if. */
   BootJump_CheckAndEnter();
 
-  /* Boot diagnostics (boot_diag.h): snapshot the previous boot's record,
-     then start this one. Invalid magic = first boot since power-up (RAM
-     content is random) -- start from zero. Reset-cause flags are captured
-     and cleared here, so each boot's banner shows only what reset it. */
-  {
-      uint32_t i;
-      if (g_bootDiag.magic != BOOT_DIAG_MAGIC)
-      {
-          volatile uint32_t *w = (volatile uint32_t *)&g_bootDiag;
-          for (i = 0U; i < (sizeof(BootDiag_t) / sizeof(uint32_t)); i++)
-          {
-              w[i] = 0U;
-          }
-          g_bootDiag.magic = BOOT_DIAG_MAGIC;
-      }
-      s_prevBoot.bootCount  = g_bootDiag.bootCount;
-      s_prevBoot.lastStage  = g_bootDiag.lastStage;
-      s_prevBoot.faultCount = g_bootDiag.faultCount;
-      s_prevBoot.faultStage = g_bootDiag.faultStage;
-      s_prevBoot.faultCfsr  = g_bootDiag.faultCfsr;
-      s_prevBoot.faultHfsr  = g_bootDiag.faultHfsr;
-      s_prevBoot.errCount   = g_bootDiag.errCount;
-      s_prevBoot.errStage   = g_bootDiag.errStage;
-      s_prevBoot.nmiCount   = g_bootDiag.nmiCount;
-      s_prevBoot.nmiStage   = g_bootDiag.nmiStage;
-      s_prevBoot.nmiEccr    = g_bootDiag.nmiEccr;
-
-      g_bootDiag.bootCount++;
-      g_bootDiag.nmiCount   = 0U;
-      g_bootDiag.nmiStage   = 0U;
-      g_bootDiag.nmiEccr    = 0U;
-      g_bootDiag.faultCount = 0U;
-      g_bootDiag.faultStage = 0U;
-      g_bootDiag.faultCfsr  = 0U;
-      g_bootDiag.faultHfsr  = 0U;
-      g_bootDiag.errCount   = 0U;
-      g_bootDiag.errStage   = 0U;
-      BOOT_DIAG_STAGE(BD_STAGE_MAIN);
-
-      s_resetCsr = RCC->CSR;
-      RCC->CSR |= RCC_CSR_RMVF;
-  }
+  /* Boot diagnostics (boot_diag.h): keep the previous boot's record for
+     the !BOOT banner and start this boot's. */
+  BootDiag_Begin();
 
   /* USER CODE END 1 */
 
@@ -154,13 +99,13 @@ int main(void)
   /* Must run immediately after HAL_Init() -- HAL_InitTick() (called
      inside HAL_Init()) sets SysTick to its default TICK_INT_PRIORITY
      (15, the lowest possible), which this overrides. See
-     FixSysTickPriority()'s own doc comment (below) for the full
+     Mcu_SetSysTickHighestPriority()'s own doc comment (mcu.c) for the full
      priority-inversion window this closes -- placed here, as early as
      possible, so nothing between here and HRTIM1_EnableMasterInterrupt()
      (which sets HRTIM1_Master_IRQn's priority, later in USER CODE 2)
      can be exposed to it, however briefly. Ported from the sibling
      PFM-STM32G474 project's main.c, same placement. */
-  FixSysTickPriority();
+  Mcu_SetSysTickHighestPriority();
   BOOT_DIAG_STAGE(BD_STAGE_HAL_INIT);
   /* USER CODE END Init */
 
@@ -176,172 +121,11 @@ int main(void)
   MX_HRTIM1_Init();
   MX_USART2_UART_Init();
   /* USER CODE BEGIN 2 */
-  /* Brings the PFM table module to a known-empty, known-stopped state
-     before anything else can touch it (a TABLE:* command over UART, or
-     a FIRE). Does not start HRTIM outputs -- see PFM_Init()'s own
-     comment in pfm.c. */
-  PFM_Init();
-
-  /* One explicit GateDriver_CheckFault() call, here at boot, before
-     relying on the EXTI interrupt (gate_driver.c, wired up in
-     main.c's MX_GPIO_Init()) for everything from here on. EXTI is
-     edge-triggered: a pin that is ALREADY in its fault state (per
-     GDS_FAULT_POLARITY, ctrlr_config.h) at the moment PE0..PE11 get
-     configured for interrupt mode produces no edge of its own -- the
-     ISR would simply never fire for it, silently, until something
-     eventually toggles that pin. Confirmed relevant on this exact
-     board: a GDS? snapshot taken earlier the same day this was added
-     showed GateDriverStatus_03 (PE2) already HIGH, which is a fault
-     under this build's NORMALLY_LOW polarity. This call catches
-     exactly that case -- any fault already present at boot -- instead
-     of depending on a future transition that might never come. */
-  GateDriver_CheckFault();
-
-  /* QUADSPI bring-up (PE12-PE15/PB10-PB11, W25Q128JVS) -- see
-     qspi_test.h for scope. No-op when QSPI_TEST_FEATURE_ENABLED is 0,
-     matching the same always-call/resolves-to-something-or-nothing
-     pattern already used for BootJump_CheckAndEnter(). */
-  QspiTest_Init();
-
-  /* PFM_Input period/duty capture (PA15/PD4/PB2/PC12/PB4/PD12, TIM2/
-     TIM3/TIM4/TIM5) -- see pfm_input.h. Configures the timers/GPIO
-     only; does not arm or start any capture (that's PfmInput_Arm()
-     via PFMIN:CAPTURE, and PfmInput_OnShotStart(), called from
-     PFM_Restart() in pfm.c). No-op when PFM_INPUT_FEATURE_ENABLED is
-     0. */
-  PfmInput_Init();
-
-  /* Closed-loop PID controller (pid.h) -- brings every channel's PID
-     state to a known, safe-inert default (all gains 0). Does not touch
-     HRTIM or PFM_Input hardware -- that's PID_Start(), via a new
-     serial command (not yet added, see docs/changelog.txt). */
-  PID_Init();
-
-  /* Telemetry event stream (telemetry.h) -- Phase 1 of docs/telemetry.md.
-     Just zeroes the event ring + flight recorder + sets the !EVT gate
-     to ON; the actual state/fault events are pushed by state_machine.c
-     and emitted each main-loop iteration by Telemetry_PollEmit() below.
-
-     *** REAL BUG, FOUND AND FIXED 2026-09-23 ***: this used to run
-     AFTER the SM_Init()/SM_PollFaults()/XrexIo_Poll*Faults() block
-     below -- which, per that block's OWN comment, exists specifically
-     to catch a fault that's already latched at power-on. When that
-     happened, EnterFault() (state_machine.c) correctly pushed a FAULT
-     event into both the live ring AND the flight recorder -- and this
-     call, running right after, unconditionally zeroed both, silently
-     erasing the one event the flight recorder (SYS:EVLOG?) exists
-     specifically to survive for post-mortem review. No later call ever
-     re-pushes it (every fault-report path dedupes on g_state already
-     being SM_STATE_FAULT), so it was gone permanently, not delayed --
-     defeating the flight recorder's own stated purpose for exactly the
-     case it matters most. Moved before the boot-time fault poll below
-     so any pre-existing fault's event survives it. */
-  Telemetry_Init();
-
-  /* Top-level operating-state machine (state_machine.h), added
-     2026-09-13 -- see that header for the full design (IDLE/ARMED/
-     FIRING/FAULT). SM_Init() alone would set IDLE unconditionally,
-     which would be WRONG if the GateDriver_CheckFault() call above
-     (line ~141, deliberately earlier -- boot-time GateDriverStatus
-     check, before this state machine even existed) already found a
-     real pre-existing fault: an immediate SM_PollFaults() right after
-     SM_Init() picks that up, so a board that boots with a fault
-     already present correctly starts in FAULT, not IDLE. XrexIo_PollOcpFaults()
-     (xrex_io.h, added 2026-09-17) is called right alongside it for the
-     same reason -- a board that boots with a real OCP condition already
-     present should also start in FAULT, not IDLE. */
-  SM_Init();
-  SM_PollFaults();
-  XrexIo_PollOcpFaults();
-  XrexIo_PollEnableOutputFaults();   /* no-op here -- SM_Init() just set
-                                         IDLE, and this check only ever
-                                         does anything while ARMED/FIRING
-                                         (see xrex_io.h) -- called anyway
-                                         for the same "same cadence as
-                                         everything else" consistency */
-
-  uart_init(&uart2, &huart2);
-
-  /* The HRTIM master-repetition interrupt must be enabled now, at
-     boot, even though outputs are not yet running: PFM_CycleBoundaryHandler()
-     needs to be wired up and ready before the first FIRE, not armed
-     reactively at fire time. The ISR itself is a no-op with respect to
-     actual switching until HRTIM1_PWM_Start() has been called (by
-     cmd_fire() -> PFM_Restart()). Ported from the sibling
-     PFM-STM32G474 project's main.c, same placement/rationale. */
-  HRTIM1_EnableMasterInterrupt();
-
-  /* Transrex simulator logic (sim_transrex.h) -- SIMULATOR-ONLY, added
-     2026-09-18. Starts this board's own HRTIM output + PFM_Input
-     capture unconditionally (not tied to this board's own ARM/FIRE
-     state -- see sim_transrex.h's own comment for why) and drives
-     every fault-injection transmitter to its healthy default. No
-     controller-target equivalent -- this board plays a genuinely
-     different physical role. */
-#if defined(BUILD_TARGET_SIMULATOR)
-  SimTransrex_Init();
-#endif
-
-  /* Unsolicited boot banner, added 2026-09-25 for a firmware-update
-     regression test: FWUPdate:SWAP/ROLLback reboot the board, and this
-     line is the exact, unambiguous signal (on the host side, just poll
-     the link for it) that a reboot has completed and USART2 is live
-     again -- cheaper and more precise than polling *IDN? in a loop.
-     Sent exactly once, here, after every other init above has run but
-     before the main loop starts -- so BANK/BFB2/STATE below reflect
-     the true post-init state, not a boot-time snapshot from earlier.
-     "!BOOT" (not "OK"/"ERR"/"!EVT") so host tooling can never confuse
-     it with a command reply or a state_machine.c telemetry event.
-     Plain uart_send(), not telemetry.c -- this must go out even if
-     Telemetry_Init() (just above) or the event ring/gate is ever
-     changed; a boot signal that could be silently gated off is not
-     a signal a host can rely on. */
+  /* Module init in dependency order, then the USART2 command link (app.c). */
+  uart_bind(&uart2, &huart2);
+  App_Init();
   BOOT_DIAG_STAGE(BD_STAGE_APP_INIT);
-  {
-      char banner[200];
-      uint8_t bank    = (READ_BIT(SYSCFG->MEMRMP, SYSCFG_MEMRMP_FB_MODE) != 0U) ? 2U : 1U;
-      uint8_t bfb2    = (READ_BIT(FLASH->OPTR, FLASH_OPTR_BFB2) != 0U) ? 1U : 0U;
-      const char *stateName;
-      switch (SM_GetState())
-      {
-          case SM_STATE_IDLE:   stateName = "IDLE";   break;
-          case SM_STATE_ARMED:  stateName = "ARMED";  break;
-          case SM_STATE_FIRING: stateName = "FIRING"; break;
-          case SM_STATE_FAULT:  stateName = "FAULT";  break;
-          default:              stateName = "UNKNOWN"; break;
-      }
-      snprintf(banner, sizeof(banner),
-               "!BOOT %s %s %s%s BANK=%u BFB2=%u STATE=%s tick=%lu\r\n",
-               HW_BOARD_NAME, FW_VERSION_STRING, FW_GIT_COMMIT,
-               (FW_GIT_DIRTY != 0U) ? "-dirty" : "",
-               (unsigned)bank, (unsigned)bfb2, stateName,
-               (unsigned long)HAL_GetTick());
-      uart_send(&uart2, banner);
-
-      /* Boot diagnostics (boot_diag.h). "prev" is the boot BEFORE this
-         one; rst= is what reset the chip since that boot cleared the
-         flags (OBL option-byte reload, PIN NRST, BOR brown-out/power-on,
-         SFT software, IWDG/WWDG watchdog, LPWR low-power). */
-      snprintf(banner, sizeof(banner),
-               "!BOOT diag boot=%lu prev: stage=%lu fault=%lu@%lu cfsr=%08lX hfsr=%08lX err=%lu@%lu"
-               " nmi=%lu@%lu eccr=%08lX rst=%s%s%s%s%s%s%s\r\n",
-               (unsigned long)g_bootDiag.bootCount,
-               (unsigned long)s_prevBoot.lastStage,
-               (unsigned long)s_prevBoot.faultCount, (unsigned long)s_prevBoot.faultStage,
-               (unsigned long)s_prevBoot.faultCfsr, (unsigned long)s_prevBoot.faultHfsr,
-               (unsigned long)s_prevBoot.errCount, (unsigned long)s_prevBoot.errStage,
-               (unsigned long)s_prevBoot.nmiCount, (unsigned long)s_prevBoot.nmiStage,
-               (unsigned long)s_prevBoot.nmiEccr,
-               ((s_resetCsr & RCC_CSR_OBLRSTF)  != 0U) ? "OBL,"  : "",
-               ((s_resetCsr & RCC_CSR_PINRSTF)  != 0U) ? "PIN,"  : "",
-               ((s_resetCsr & RCC_CSR_BORRSTF)  != 0U) ? "BOR,"  : "",
-               ((s_resetCsr & RCC_CSR_SFTRSTF)  != 0U) ? "SFT,"  : "",
-               ((s_resetCsr & RCC_CSR_IWDGRSTF) != 0U) ? "IWDG," : "",
-               ((s_resetCsr & RCC_CSR_WWDGRSTF) != 0U) ? "WWDG," : "",
-               ((s_resetCsr & RCC_CSR_LPWRRSTF) != 0U) ? "LPWR," : "");
-      uart_send(&uart2, banner);
-      uart_send(&uart2, "!BOOT Rise and shine, controller's awake and ready to work \xF0\x9F\x8C\x9E\r\n");
-  }
+  App_SendBootBanner();
   BOOT_DIAG_STAGE(BD_STAGE_MAIN_LOOP);
   /* USER CODE END 2 */
 
@@ -352,39 +136,7 @@ int main(void)
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
-    /* Fault detection that must work regardless of state -- see
-       state_machine.h's own SM_PollFaults() comment for why this needs
-       to run here too, not just from PID_Update() (which only runs
-       while FIRING). Cheap: both underlying reads are simple flag
-       checks, not full re-scans. XrexIo_PollOcpFaults() (xrex_io.h,
-       added 2026-09-17) runs at this same cadence for the same reason
-       -- OCP is polled, not EXTI-driven (see xrex_io.h's own header
-       comment for why), so it needs this same "regardless of state"
-       call site to work at all. */
-    SM_PollFaults();
-    XrexIo_PollOcpFaults();
-    XrexIo_PollEnableOutputFaults();   /* added 2026-09-17 -- same
-                                           "regardless of state" call site
-                                           reasoning, but itself only acts
-                                           while ARMED/FIRING (xrex_io.h) */
-
-    /* Emit any pending telemetry events (telemetry.h) as unsolicited
-       !EVT lines. Bounded (at most a few events per call) and only ever
-       runs at thread priority, so it cannot disturb the 1 kHz loop or any
-       fault ISR. */
-    Telemetry_PollEmit(&uart2);
-
-#if defined(BUILD_TARGET_SIMULATOR)
-    SimTransrex_Update();   /* added 2026-09-18 -- SIMULATOR-ONLY, same
-                                "regardless of state" main-loop cadence;
-                                see sim_transrex.h for why this can't
-                                run from PID_Update() instead (that only
-                                ticks while THIS board's own HRTIM
-                                Master is active, i.e. only during a
-                                FIRE on this board -- irrelevant here) */
-#endif
-    /* Polls for a completed serial command line and dispatches it. */
-    uart_process(&uart2);
+    App_Poll();
   }
   /* USER CODE END 3 */
 }
@@ -580,450 +332,12 @@ static void MX_GPIO_Init(void)
   __HAL_RCC_GPIOA_CLK_ENABLE();
 
   /* USER CODE BEGIN MX_GPIO_Init_2 */
-
-  /* GateDriverStatus_01..12 (PE0..PE11, docs/pin_mapping_v4.csv) --
-     interrupt-capable digital inputs, no pull. Originally added
-     2026-09-08 as plain GPIO_MODE_INPUT alongside the GDS? diagnostic
-     command (commands.c); upgraded the same day to
-     GPIO_MODE_IT_RISING_FALLING to back a real fault interrupt
-     (gate_driver.c's GateDriver_CheckFault()) -- GDS? still works
-     identically either way, a plain IDR read. These pins were never
-     configured at all before the first of those two changes, so a
-     floating/undriven pin would have read an arbitrary level. Pull
-     matches the sibling PFM-STM32G474 project's gpio.c config for
-     these same 12 pins (GPIO_NOPULL -- gate-driver-IC status outputs,
-     actively driven, no internal pull needed).
-
-     Both edges (not just the one GDS_FAULT_POLARITY, ctrlr_config.h,
-     currently cares about) so a fault is caught regardless of which
-     direction a pin moves -- the actual fault/healthy determination
-     happens in GateDriver_CheckFault(), against that compile-time
-     setting, not by picking rising-only or falling-only here; that
-     keeps this config correct even if GDS_FAULT_POLARITY is ever
-     flipped without also revisiting this block.
-
-     __HAL_RCC_SYSCFG_CLK_ENABLE() is required before HAL_GPIO_Init()
-     can actually route these pins' EXTI lines (SYSCFG->EXTICR) -- easy
-     to omit and get a config that silently never fires. */
-  {
-      GPIO_InitTypeDef gdsInit = {0};
-
-      __HAL_RCC_GPIOE_CLK_ENABLE();
-      __HAL_RCC_SYSCFG_CLK_ENABLE();
-
-      gdsInit.Pin   = GPIO_PIN_0 | GPIO_PIN_1 | GPIO_PIN_2  | GPIO_PIN_3  |
-                       GPIO_PIN_4 | GPIO_PIN_5 | GPIO_PIN_6  | GPIO_PIN_7  |
-                       GPIO_PIN_8 | GPIO_PIN_9 | GPIO_PIN_10 | GPIO_PIN_11;
-      gdsInit.Mode  = GPIO_MODE_IT_RISING_FALLING;
-      gdsInit.Pull  = GPIO_NOPULL;
-      HAL_GPIO_Init(GPIOE, &gdsInit);
-
-      /* EXTI0..EXTI4 are individual NVIC vectors; EXTI5..9 share
-         EXTI9_5_IRQn; EXTI10..15 share EXTI15_10_IRQn -- PE0..PE11
-         spans all three groups, 7 vectors total (see stm32g4xx_it.c).
-         Priority tied with HRTIM1_Master_IRQn (1,0) -- both are
-         output-safety-critical paths, and since neither ISR runs long
-         (a register read/compare, occasionally a HRTIM1_PWM_Stop()
-         call), a bounded, occasional deferral between the two at equal
-         priority is an acceptable tradeoff, not a real latency risk.
-         Below USART2 (2,0) -- fault detection preempts serial I/O, not
-         the other way around. Safe to configure NVIC priority/enable
-         here: this runs after FixSysTickPriority() (main(), USER CODE
-         Init) and after HAL_Init()'s own NVIC setup, the same ordering
-         constraint HRTIM1_EnableMasterInterrupt() documents for
-         itself. */
-      HAL_NVIC_SetPriority(EXTI0_IRQn, 1U, 0U);
-      HAL_NVIC_EnableIRQ(EXTI0_IRQn);
-      HAL_NVIC_SetPriority(EXTI1_IRQn, 1U, 0U);
-      HAL_NVIC_EnableIRQ(EXTI1_IRQn);
-      HAL_NVIC_SetPriority(EXTI2_IRQn, 1U, 0U);
-      HAL_NVIC_EnableIRQ(EXTI2_IRQn);
-      HAL_NVIC_SetPriority(EXTI3_IRQn, 1U, 0U);
-      HAL_NVIC_EnableIRQ(EXTI3_IRQn);
-      HAL_NVIC_SetPriority(EXTI4_IRQn, 1U, 0U);
-      HAL_NVIC_EnableIRQ(EXTI4_IRQn);
-      HAL_NVIC_SetPriority(EXTI9_5_IRQn, 1U, 0U);
-      HAL_NVIC_EnableIRQ(EXTI9_5_IRQn);
-      HAL_NVIC_SetPriority(EXTI15_10_IRQn, 1U, 0U);
-      HAL_NVIC_EnableIRQ(EXTI15_10_IRQn);
-  }
-
-  /* PF13 (docs/pin_mapping_v4.csv -- documented "GPInput_12", confirmed
-     GPI, unused elsewhere) -- the external-enable interlock, MOVED here
-     2026-09-17 from PF15 (Fiber_Enable) per direct instruction: enable
-     and trigger are now two independent physical signals, not one
-     shared wire. state_machine.c's own external-enable section has the
-     full design (ARM/SHOT:STARt gating, FIRING-only continuous
-     monitoring, SM_FAULT_EXTERNAL_ENABLE on loss). Plain polled input,
-     no EXTI -- same reasoning as before the move: state_machine.c's
-     SM_PollFaults() already checks this at the same cadence (main loop
-     + every real PID_Update() tick, ~1kHz while FIRING) General Fault's
-     own two hardware sources get.
-
-     GPIO_PULLDOWN, NOT this project's usual GPIO_NOPULL for actively-
-     driven inputs (GateDriverStatus above, PFM_Input, QUADSPI) --
-     deliberate, carried over unchanged from PF15's own original
-     reasoning: an unconnected/floating PF13 must read LOW (no
-     permission granted), never an undefined level that could
-     accidentally read HIGH and silently permit firing. */
-  {
-      GPIO_InitTypeDef extEnableInit = {0};
-
-      __HAL_RCC_GPIOF_CLK_ENABLE();
-
-      extEnableInit.Pin  = GPIO_PIN_13;
-      extEnableInit.Mode = GPIO_MODE_INPUT;
-      extEnableInit.Pull = GPIO_PULLDOWN;
-      HAL_GPIO_Init(GPIOF, &extEnableInit);
-  }
-
-  /* PF15 (Fiber_Enable, docs/pin_mapping_v4.csv -- confirmed GPI there)
-     -- external TRIGGER only, as of 2026-09-17 (previously this pin
-     also carried the external-enable role removed above; a rising
-     edge here while ARMED fires a shot -- state_machine.c's own
-     external-trigger section has the full design). Plain polled input,
-     no EXTI -- same reasoning as PF13 above, and as this pin's own
-     prior enable role: state_machine.c's SM_PollFaults() polls this at
-     the same ~1kHz-while-FIRING cadence.
-
-     GPIO_PULLDOWN carried over unchanged -- an unconnected/floating
-     PF15 reading LOW means no spurious rising edge is ever seen from a
-     disconnected trigger wire (edge detection needs an actual LOW-to-
-     HIGH transition; a pin parked at a stable floating LOW produces
-     none). Unlike PF13 above, there's no "wrong direction" concern
-     here either way -- a floating trigger pin that never fires is the
-     safe failure mode regardless of which level it floats to, but
-     PULLDOWN keeps it deterministic and consistent with every other
-     pin in this file. */
-  {
-      GPIO_InitTypeDef extTriggerInit = {0};
-
-      __HAL_RCC_GPIOF_CLK_ENABLE();
-
-      extTriggerInit.Pin  = GPIO_PIN_15;
-      extTriggerInit.Mode = GPIO_MODE_INPUT;
-      extTriggerInit.Pull = GPIO_PULLDOWN;
-      HAL_GPIO_Init(GPIOF, &extTriggerInit);
-  }
-
-  /* *** PG10 GPIO CONFIG REMOVED 2026-09-17 ***
-     Originally added the same day for the emergency-stop feature
-     (state_machine.c's own emergency-stop section), based on the
-     user's own direct confirmation at the time that pin_mapping_v4.csv's
-     "NRST" label for this net was stale/incorrect and PG10 was a plain
-     fiber-optic GPIO input, unrelated to the MCU's real reset function.
-
-     THAT CONFIRMATION WAS WRONG, corrected the same day via the actual
-     schematic: PG10 IS electrically tied to this MCU's real, dedicated
-     NRST pin -- both land on the same net, which also runs to the
-     ST-Link/Molex debug connector. Discovered by direct real-hardware
-     evidence, not inspection: driving a new fiber transmitter (PD0,
-     DIAGnostic:GPOut11) into an inverting receiver wired to "PG10"
-     caused a genuine MCU reset every time it went HIGH -- confirmed via
-     RCC->CSR (a new temporary DIAGnostic:RSTCause? command,
-     commands.c): PINRSTF set, BORRSTF clear, ruling out a power-rail-
-     droop theory and directly proving a real NRST-pin assertion, not
-     mere GPIO-level signal corruption.
-
-     This means configuring this pin as a GPIO peripheral input AT ALL
-     (regardless of EMERGency:ENAble's state) was unsound the entire
-     time -- GPIO_PULLDOWN was a weak pull-down actively fighting NRST's
-     own internal pull-up on the literal reset/debug net on every boot,
-     independent of whether the emergency-stop feature was ever enabled.
-     Removed entirely, per direct instruction ("shelve E-stop entirely
-     again... pull the GPIO_PULLDOWN config off PG10 specifically") --
-     this pin is not a usable GPIO on this board and must not be
-     reconfigured as one again. The emergency-stop SOFTWARE
-     (SM_FAULT_EMERGENCY_STOP and friends) was then REMOVED 2026-09-21
-     (see docs/changelog.txt) rather than left dormant -- a genuinely
-     free pin from the schematic is needed before any future E-stop
-     feature can be re-pointed at real hardware. See
-     [[pending-hardware-calibration]] (session memory) for the full
-     writeup. */
-
-  /* XR1_OCP/XR2_OCP/XR3_OCP/XR4_OCP (PF4/PF8/PF12/PF5,
-     docs/pin_mapping_v4.csv's new "XREX Pin Name" column), added
-     2026-09-17 -- real per-channel overcurrent-protect fault inputs,
-     the first real hardware trigger for SM_ReportOcpFault()
-     (state_machine.h) to ever exist in this codebase (previously only
-     reachable via the software-injection OCP:TEST:FAULT command). See
-     xrex_io.h's own extensive header comment for the full design --
-     xrex_io.c's XrexIo_PollOcpFaults() reads these.
-
-     POLLED, not EXTI-driven -- a real hardware conflict, not a
-     preference: 3 of these 4 pins' EXTI line numbers (EXTI4, EXTI5,
-     EXTI8) are already claimed by the EXISTING GateDriverStatus EXTI
-     setup on PE4/PE5/PE8 just above (STM32's 16 EXTI lines are shared
-     project-wide, one GPIO port per line number via SYSCFG_EXTICR --
-     PF4 and PE4 genuinely cannot both be interrupt sources
-     simultaneously). Rather than split these 4 pins across two
-     different detection mechanisms, all 4 are polled uniformly,
-     alongside state_machine.c's own SM_PollFaults() calls (main loop +
-     PID_Update()) -- see xrex_io.h for the full reasoning.
-
-     GPIO_PULLDOWN, NOT this project's usual GPIO_NOPULL for the
-     EXISTING GateDriverStatus pins (which ARE the same class of
-     gate-driver-IC-sourced signal) -- deliberate, matching the fail-
-     safe reasoning already applied to PF13/PF15/PG10 above: with
-     XR_OCP_FLT_POLARITY (ctrlr_config.h) defaulting NORMALLY_HIGH, an
-     unconnected/floating OCP pin must read LOW -- fault asserted, the
-     safe default -- rather than an undefined level that could
-     accidentally read HIGH and falsely look healthy. */
-  {
-      GPIO_InitTypeDef ocpInit = {0};
-
-      __HAL_RCC_GPIOF_CLK_ENABLE();
-
-      ocpInit.Pin  = GPIO_PIN_4 | GPIO_PIN_5 | GPIO_PIN_8 | GPIO_PIN_12;
-      ocpInit.Mode = GPIO_MODE_INPUT;
-      ocpInit.Pull = GPIO_PULLDOWN;
-      HAL_GPIO_Init(GPIOF, &ocpInit);
-  }
-
-  /* XR1-4_ENA_OUT (PG0-PG3) + XR1-4_CONTACT_OUT (PG4-PG7,
-     docs/pin_mapping_v4.csv's new "XREX Pin Name" column), added
-     2026-09-17, per direct request: real per-channel fiber outputs
-     this firmware itself drives, set via
-     XREX:CHANnel:ENAOut/CONTactOut (commands.c), owned (pin table,
-     GPIO read/write) by xrex_io.c -- see xrex_io.h and
-     state_machine.h's own SM_FAULT_ENABLE_OUTPUT/enable-output
-     sections for the full design (ARM refuses unless every currently-
-     enabled channel's own pair is HIGH, and this is continuously
-     re-checked once ARMED).
-
-     Push-pull OUTPUTS (not inputs, unlike every other XR-pin block in
-     this function) -- driven LOW BEFORE HAL_GPIO_Init() enables them,
-     matching this project's established "never glitch HIGH on boot"
-     convention for every other software-driven output
-     (DIAGnostic:GPOut11/GPOut12 above) -- a fresh boot must never
-     present an accidental "outputting" state to whatever real hardware
-     these are wired to. GPIO_NOPULL (irrelevant for a push-pull
-     output, same as every other output block in this file). */
-  {
-      GPIO_InitTypeDef enaContactInit = {0};
-
-      __HAL_RCC_GPIOG_CLK_ENABLE();
-
-      HAL_GPIO_WritePin(GPIOG,
-                         GPIO_PIN_0 | GPIO_PIN_1 | GPIO_PIN_2 | GPIO_PIN_3 |
-                         GPIO_PIN_4 | GPIO_PIN_5 | GPIO_PIN_6 | GPIO_PIN_7,
-                         GPIO_PIN_RESET);   /* set level BEFORE enabling the
-                                                output, so it never glitches
-                                                HIGH first */
-
-      enaContactInit.Pin   = GPIO_PIN_0 | GPIO_PIN_1 | GPIO_PIN_2 | GPIO_PIN_3 |
-                              GPIO_PIN_4 | GPIO_PIN_5 | GPIO_PIN_6 | GPIO_PIN_7;
-      enaContactInit.Mode  = GPIO_MODE_OUTPUT_PP;
-      enaContactInit.Pull  = GPIO_NOPULL;
-      enaContactInit.Speed = GPIO_SPEED_FREQ_LOW;   /* level outputs, not
-                                                         fast signals -- no
-                                                         reason for a
-                                                         faster slew */
-      HAL_GPIO_Init(GPIOG, &enaContactInit);
-  }
-
-  /* PC13 ("GPOut_Enable_Pin" in the V4 column, docs/pin_mapping_v4.csv --
-     confirmed GPO there, unused elsewhere), added 2026-09-17 per direct
-     request. Push-pull output, driven to its configured default level
-     BEFORE HAL_GPIO_Init() enables it -- default level is now a named
-     compile-time config, GPOUT_ENABLE_DEFAULT_HIGH (ctrlr_config.h,
-     added 2026-09-18 per direct follow-up instruction, applies to
-     EVERY build of this board -- controller and simulator alike),
-     currently `1` (HIGH) matching the ORIGINAL 2026-09-17 instruction
-     ("By default, keep it HIGH") -- the OPPOSITE default of every
-     other software-driven output in this file (DIAGnostic:GPOut11/12,
-     ENA_OUT/CONTACT_OUT above, all deliberately LOW by default) -- a
-     fresh boot must present this pin's real intended default, not an
-     incidental LOW that happens to match everything else here.
-     GPIO_NOPULL (irrelevant for a push-pull output, same as every
-     other output block in this file). Driven at RUNTIME by
-     GPOut:ENAble (commands.c) -- a separate, coexisting mechanism from
-     this boot-time default, see GPOUT_ENABLE_DEFAULT_HIGH's own
-     comment for why both exist. */
-  {
-      GPIO_InitTypeDef gpOutEnableInit = {0};
-
-      __HAL_RCC_GPIOC_CLK_ENABLE();
-
-      HAL_GPIO_WritePin(GPIOC, GPIO_PIN_13,
-                         (GPOUT_ENABLE_DEFAULT_HIGH != 0U) ? GPIO_PIN_SET : GPIO_PIN_RESET);
-                         /* set level BEFORE enabling the output, so
-                            it's never briefly the opposite level first */
-      gpOutEnableInit.Pin   = GPIO_PIN_13;
-      gpOutEnableInit.Mode  = GPIO_MODE_OUTPUT_PP;
-      gpOutEnableInit.Pull  = GPIO_NOPULL;
-      gpOutEnableInit.Speed = GPIO_SPEED_FREQ_LOW;
-      HAL_GPIO_Init(GPIOC, &gpOutEnableInit);
-  }
-
-  /* PC15 ("PWM_Alt_Enable" in the V4 column, docs/pin_mapping_v4.csv --
-     confirmed GPO there, unused elsewhere), added 2026-09-17 per direct
-     request -- same reasoning as PC13 just above (default level from
-     PWMALT_ENABLE_DEFAULT_HIGH, ctrlr_config.h, currently HIGH; driven
-     before enable; GPIO_NOPULL). Driven at runtime by PWMAlt:ENAble
-     (commands.c). */
-  {
-      GPIO_InitTypeDef pwmAltEnableInit = {0};
-
-      __HAL_RCC_GPIOC_CLK_ENABLE();
-
-      HAL_GPIO_WritePin(GPIOC, GPIO_PIN_15,
-                         (PWMALT_ENABLE_DEFAULT_HIGH != 0U) ? GPIO_PIN_SET : GPIO_PIN_RESET);
-                         /* set level BEFORE enabling the output */
-      pwmAltEnableInit.Pin   = GPIO_PIN_15;
-      pwmAltEnableInit.Mode  = GPIO_MODE_OUTPUT_PP;
-      pwmAltEnableInit.Pull  = GPIO_NOPULL;
-      pwmAltEnableInit.Speed = GPIO_SPEED_FREQ_LOW;
-      HAL_GPIO_Init(GPIOC, &pwmAltEnableInit);
-  }
-
-  /* PD1 ("GPOut_12" in the V4 column, docs/pin_mapping_v4.csv --
-     confirmed GPO there), added 2026-09-16 as a generic, software-
-     driven diagnostic output. Direct request; PF13 was proposed first
-     and corrected -- PF13 is actually documented "GPInput_12" (an
-     INPUT) in the same CSV, a different pin from the one actually
-     named "GPOut_12" (PD1), same class of name/pin mismatch as the
-     earlier PC14-vs-PF15 correction. Immediate use, 2026-09-16: driven
-     by DIAGnostic:GPOut12 (commands.c) and physically looped to PF15
-     (Fiber_Enable) by the operator, letting the external-enable/
-     external-trigger feature above be exercised entirely from the
-     serial console -- precise, repeatable control over PF15's level
-     at exactly the right moments -- rather than needing a hand-
-     operated bench jumper/switch. (2026-09-17 UPDATE: PF15 now backs
-     external-TRIGGER only -- enable moved to its own pin, PF13, not
-     looped to this diagnostic output -- so this loop now exercises
-     trigger specifically.) Not tied to that use case in the pin config
-     itself, just today's reason for wanting it: a generic level output,
-     nothing PF15-specific baked in here.
-
-     Initial state LOW (Pull left at default/NOPULL -- irrelevant for
-     a push-pull output, the pin is actively driven the instant this
-     runs) -- starts deasserted so a fresh boot never presents an
-     accidental HIGH to whatever it's connected to. */
-  {
-      GPIO_InitTypeDef diagOutInit = {0};
-
-      __HAL_RCC_GPIOD_CLK_ENABLE();
-
-      HAL_GPIO_WritePin(GPIOD, GPIO_PIN_1, GPIO_PIN_RESET);   /* set level
-                                                                   BEFORE
-                                                                   enabling
-                                                                   the output,
-                                                                   so it never
-                                                                   glitches
-                                                                   HIGH first */
-      diagOutInit.Pin   = GPIO_PIN_1;
-      diagOutInit.Mode  = GPIO_MODE_OUTPUT_PP;
-      diagOutInit.Pull  = GPIO_NOPULL;
-      diagOutInit.Speed = GPIO_SPEED_FREQ_LOW;   /* a diagnostic level
-                                                      output, not a fast
-                                                      signal -- no reason
-                                                      for a faster slew */
-      HAL_GPIO_Init(GPIOD, &diagOutInit);
-  }
-
-  /* PD0 ("GPOut_11" in the V4 column, docs/pin_mapping_v4.csv --
-     confirmed GPO there, same row-pattern as PD1/"GPOut_12" just
-     above), added 2026-09-17 -- a SECOND, independent diagnostic
-     output. Direct correction: PD1 above was initially reused for
-     testing the PG10 emergency-stop feature too (a second fiber looped
-     from the same PD1 pin), but PD1 is already the pin dedicated to
-     driving PF15 (external-trigger as of later the same day --
-     external-enable at the time this was written) -- the user caught
-     this mix-up and asked for a genuinely separate pin for PG10 testing
-     instead, to
-     remove any ambiguity about which diagnostic signal is driving
-     which real input. Otherwise identical in every respect to PD1's
-     own diagnostic-output config just above -- generic, software-
-     driven level output, nothing PG10-specific baked in here, driven
-     by DIAGnostic:GPOut11 (commands.c). Same initial-state-LOW-before-
-     enable reasoning as PD1 -- never glitches HIGH on boot. */
-  {
-      GPIO_InitTypeDef diagOutInit2 = {0};
-
-      __HAL_RCC_GPIOD_CLK_ENABLE();
-
-      HAL_GPIO_WritePin(GPIOD, GPIO_PIN_0, GPIO_PIN_RESET);   /* set level
-                                                                   BEFORE
-                                                                   enabling
-                                                                   the output,
-                                                                   so it never
-                                                                   glitches
-                                                                   HIGH first */
-      diagOutInit2.Pin   = GPIO_PIN_0;
-      diagOutInit2.Mode  = GPIO_MODE_OUTPUT_PP;
-      diagOutInit2.Pull  = GPIO_NOPULL;
-      diagOutInit2.Speed = GPIO_SPEED_FREQ_LOW;   /* a diagnostic level
-                                                      output, not a fast
-                                                      signal -- no reason
-                                                      for a faster slew */
-      HAL_GPIO_Init(GPIOD, &diagOutInit2);
-  }
-
-  /* PG8/PG9 ("GPOut_09"/"GPOut_10" in the V4 column, docs/pin_mapping_v4.csv
-     -- confirmed GPO there; note the V3 column for these two rows is "No
-     connection" and a DIFFERENT pair of pins, PD8/PD9, carried the
-     "GPOut_09"/"GPOut_10" names in V3 -- verified against the CSV directly
-     before writing this, so as not to repeat the earlier PC14-vs-PF15/
-     PF13-vs-PD1 V3/V4 name-reuse mistakes), added 2026-09-18 -- a THIRD and
-     FOURTH generic, software-driven diagnostic output, same class as
-     PD0/PD1 ("GPOut_11"/"GPOut_12") just above. Immediate use: the Transrex
-     simulator's fiber-transmitter budget assigns these two to XR1_OCP/
-     XR2_OCP (see docs/pin_mapping_reference.tex Section 7) -- until now
-     they had no GPIO config or command on either board, so those two OCP
-     channels were untestable over fiber. Otherwise identical in every
-     respect to PD0/PD1's own diagnostic-output config above -- generic
-     level outputs, nothing OCP-specific baked in here, driven by
-     DIAGnostic:GPOut09/GPOut10 (commands.c). Same initial-state-LOW-
-     before-enable reasoning -- never glitches HIGH on boot. */
-  {
-      GPIO_InitTypeDef diagOutInit3 = {0};
-
-      __HAL_RCC_GPIOG_CLK_ENABLE();
-
-      HAL_GPIO_WritePin(GPIOG, GPIO_PIN_8 | GPIO_PIN_9, GPIO_PIN_RESET);
-                         /* set level BEFORE enabling the output, so it
-                            never glitches HIGH first */
-      diagOutInit3.Pin   = GPIO_PIN_8 | GPIO_PIN_9;
-      diagOutInit3.Mode  = GPIO_MODE_OUTPUT_PP;
-      diagOutInit3.Pull  = GPIO_NOPULL;
-      diagOutInit3.Speed = GPIO_SPEED_FREQ_LOW;   /* diagnostic level
-                                                       outputs, not fast
-                                                       signals -- no reason
-                                                       for a faster slew */
-      HAL_GPIO_Init(GPIOG, &diagOutInit3);
-  }
-
+  BoardIo_Init();
   BOOT_DIAG_STAGE(BD_STAGE_GPIO);
   /* USER CODE END MX_GPIO_Init_2 */
 }
 
 /* USER CODE BEGIN 4 */
-/**
-  * @brief  Raises SysTick's NVIC priority off HAL's default lowest
-  *         value, before anything else can run at an intermediate
-  *         priority.
-  *
-  * Ported verbatim from the sibling PFM-STM32G474 project's main.c.
-  * HAL_InitTick() (called from HAL_Init(), which must run before this)
-  * leaves SysTick_IRQn at TICK_INT_PRIORITY (15, the lowest possible
-  * priority on this Cortex-M4's 4-bit-preempt NVIC grouping). This
-  * project's interrupt priority scheme needs SysTick to be the
-  * *highest*-priority interrupt instead, at 0 -- ahead of both
-  * HRTIM1_Master_IRQn (1, see HRTIM1_EnableMasterInterrupt() in
-  * hrtim.c) and USART2_IRQn (2, see MX_USART2_UART_Init() above) --
-  * so that HAL_Delay()/HAL_GetTick() (both driven by SysTick, and used
-  * by ordinary HAL driver calls such as HAL_UART_Init() during
-  * startup) can never be starved by either of those interrupts firing
-  * back-to-back. Left at the HAL default, a sufficiently busy
-  * HRTIM1_Master_IRQn or USART2_IRQn could indefinitely delay a
-  * HAL_Delay()-based timeout inside some future HAL call, which would
-  * look like an unexplained hang rather than a priority bug.
-  */
-static void FixSysTickPriority(void)
-{
-    HAL_NVIC_SetPriority(SysTick_IRQn, 0U, 0U);
-}
 /* USER CODE END 4 */
 
 /**

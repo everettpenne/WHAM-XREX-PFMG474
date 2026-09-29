@@ -1,10 +1,22 @@
 #!/usr/bin/env python3
 """
 wham_build.py -- one-command build for WHAM-XREX-PFMG474: regenerates
-Core/Inc/git_version.h (gen_git_version.py) so *IDN? reports exactly
-which commit this build is from, regenerates Core/Inc/build_target.h
-(gen_build_target.py) to select CONTROLLER vs SIMULATOR firmware, runs
-`make` in Debug/, then regenerates Debug/WHAM-XREX-PFMG474.bin.
+build/generated/git_version.h (gen_git_version.py) so *IDN? reports exactly
+which commit this build is from, regenerates build/generated/build_target.h
+(gen_build_target.py) to select CONTROLLER vs SIMULATOR firmware, checks
+the Debug/ makefiles still match the source tree (sync_build_sources.py
+--check), checks the layer rules (check_layout.py), runs the off-target
+unit tests (tests/), runs `make` in Debug/, regenerates Debug/WHAM-XREX-PFMG474.bin,
+and publishes the .elf/.bin/.map to build/ under the target's own name:
+
+    build/WHAM-XREX-PFMG474.{elf,bin,map}       controller
+    build/WHAM-XREX-PFMG474-SIM.{elf,bin,map}   simulator
+
+build/ is what the flashing tools read by default and what git tracks;
+Debug/ is CubeIDE's working folder (its .elf is what the IDE debugger
+loads). Since each target publishes under its own names, a simulator
+build can never leave simulator firmware behind under the controller's
+filename in build/.
 
 That .bin step matters on its own: this project's .cproject does NOT
 have CubeIDE's "Convert to binary file (.bin)" post-build step enabled
@@ -65,6 +77,7 @@ import sys
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 PROJECT_DIR = os.path.dirname(SCRIPT_DIR)  # this script lives in python/
 DEBUG_DIR = os.path.join(PROJECT_DIR, "Debug")
+BUILD_DIR = os.path.join(PROJECT_DIR, "build")   # published, tracked images (see header)
 ELF_NAME = "WHAM-XREX-PFMG474.elf"
 BIN_NAME = "WHAM-XREX-PFMG474.bin"
 SIM_ELF_NAME = "WHAM-XREX-PFMG474-SIM.elf"
@@ -84,8 +97,10 @@ def main():
                      help="which firmware to build (default: controller -- every existing "
                           "workflow keeps working unchanged)")
     ap.add_argument("--no-git-version", action="store_true",
-                     help="skip regenerating Core/Inc/git_version.h")
+                     help="skip regenerating build/generated/git_version.h")
     ap.add_argument("--clean", action="store_true", help="`make clean` before building")
+    ap.add_argument("--skip-tests", action="store_true",
+                     help="don't run the off-target unit tests (tests/, needs a host C compiler)")
     ap.add_argument("--jobs", "-j", type=int, default=4, help="make -j parallelism (default 4)")
     ap.add_argument("--objcopy", default="arm-none-eabi-objcopy",
                      help="objcopy binary (default: arm-none-eabi-objcopy, must be on PATH)")
@@ -96,13 +111,29 @@ def main():
                   "(this script lives in python/, one level under the project root)")
 
     run([sys.executable, os.path.join(SCRIPT_DIR, "gen_build_target.py"), "--target", args.target],
-        description=f"regenerating Core/Inc/build_target.h (--target {args.target})")
+        description=f"regenerating build/generated/build_target.h (--target {args.target})")
 
     if not args.no_git_version:
         run([sys.executable, os.path.join(SCRIPT_DIR, "gen_git_version.py")],
-            description="regenerating Core/Inc/git_version.h")
+            description="regenerating build/generated/git_version.h")
     else:
         print("\n--- skipping git_version.h regeneration (--no-git-version) ---")
+
+    # The source tree and the build must agree before make runs: a file
+    # added, moved or renamed without re-syncing would otherwise be silently
+    # left out of the link (or fail with an undefined reference).
+    run([sys.executable, os.path.join(SCRIPT_DIR, "sync_build_sources.py"), "--check"],
+        description="checking Debug/ makefiles and .cproject match the source tree "
+                    "(if this fails: python3 python/sync_build_sources.py)")
+
+    # The source layout rules (AGENTS.md, "Source layout") -- a violation
+    # fails the build, the same as a compile error would.
+    run([sys.executable, os.path.join(SCRIPT_DIR, "check_layout.py")],
+        description="checking the source layout (python/check_layout.py)")
+
+    if not args.skip_tests:
+        run(["make", "-C", os.path.join(PROJECT_DIR, "tests")],
+            description="off-target unit tests (tests/)")
 
     if args.clean:
         run(["make", "clean"], cwd=DEBUG_DIR, description="make clean")
@@ -117,6 +148,15 @@ def main():
         description=f"objcopy -> {BIN_NAME}")
 
     size = os.path.getsize(bin_path)
+
+    # Publish to build/ under the target's own names. build/ is the tracked
+    # record of what was built; Debug/ is CubeIDE's working folder.
+    os.makedirs(BUILD_DIR, exist_ok=True)
+    stem = "WHAM-XREX-PFMG474-SIM" if args.target == "simulator" else "WHAM-XREX-PFMG474"
+    for ext in ("elf", "bin", "map"):
+        shutil.copyfile(os.path.join(DEBUG_DIR, f"WHAM-XREX-PFMG474.{ext}"),
+                        os.path.join(BUILD_DIR, f"{stem}.{ext}"))
+    print(f"\n--- published build/{stem}.elf/.bin/.map ---")
 
     if args.target == "simulator":
         sim_elf_path = os.path.join(DEBUG_DIR, SIM_ELF_NAME)
