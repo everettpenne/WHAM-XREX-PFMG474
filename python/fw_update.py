@@ -6,7 +6,7 @@ Unlike wham_serial_flash.py / net_flash.py this never enters the ROM
 bootloader's AN3155 protocol, so it works through the ethernet serial bridge.
 The new image goes into the flash bank that is NOT running; the running image
 is untouched until the final swap, and stays in the other bank afterwards
-(`--rollback` boots it again). See Core/Inc/fw_update.h.
+(`--rollback` boots it again). See src/app/commands/cmd_fwupdate.c and src/drivers/flash_bank.h.
 
     ssh -N -o ServerAliveInterval=30 -L 5000:<controller-ip>:5000 <jump-host>   # tunnel
     python3 python/fw_update.py --status
@@ -137,7 +137,7 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--url", default="socket://localhost:5000")
     ap.add_argument("--target", choices=list(NAMES), default="controller")
-    ap.add_argument("--bin", help="image to load (default: Debug/ build for --target)")
+    ap.add_argument("--bin", help="image to load (default: build/ image for --target)")
     ap.add_argument("--status", action="store_true", help="just print FWUPdate:STATus? and exit")
     ap.add_argument("--no-swap", action="store_true", help="load and verify, but keep running the old image")
     ap.add_argument("--rollback", action="store_true", help="boot the image already in the other bank")
@@ -170,7 +170,7 @@ def main():
         return
 
     binpath = args.bin or os.path.join(
-        ROOT, "Debug", "WHAM-XREX-PFMG474-SIM.bin" if args.target == "simulator" else "WHAM-XREX-PFMG474.bin")
+        ROOT, "build", "WHAM-XREX-PFMG474-SIM.bin" if args.target == "simulator" else "WHAM-XREX-PFMG474.bin")
     img = open(binpath, "rb").read()
     img += b"\xff" * (-len(img) % 8)
     crc = zlib.crc32(img) & 0xFFFFFFFF

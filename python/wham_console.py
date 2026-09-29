@@ -34,8 +34,8 @@ it survives into the feedback are both visible immediately after every
 shot without a separate analysis pass.
 
 THIS IS A MAINTAINED FRONT END, not a one-off script -- as new SOURce:/SHOT:/LOG:/CHANnel:/
-commands are added to the firmware (commands.c/commands.h/
-cmd_parser.c) and documented in docs/command_reference.md, extend this
+commands are added to the firmware (src/app/commands/cmd_*.c/commands.h/
+command_table.c) and documented in docs/command_reference.md, extend this
 file to match rather than leaving operators to fall back on raw SCPI
 for everything. See "Adding a new console command" near the bottom of
 this file before adding one.
@@ -195,7 +195,7 @@ def sync_calibration(link):
 # non-optimal, never wrong/misleading data.
 #
 # PID_LOG_MAX_SAMPLES_ASSUMED: *** REAL BUG, FOUND AND FIXED
-# 2026-09-23 *** -- this was hardcoded 1000, but Core/Inc/pid.h's
+# 2026-09-23 *** -- this was hardcoded 1000, but src/app/control/pid.h's
 # PID_LOG_MAX_SAMPLES is 1750 and always has been (confirmed directly
 # against source, not assumed) -- NOT runtime-configurable at all (a
 # compile-time log-buffer size, no CONFig:* command backs it), so this
@@ -207,7 +207,7 @@ PID_LOG_MAX_SAMPLES_ASSUMED = 1750
 
 # Error codes -- see docs/command_reference.md's own table (kept here
 # too so a raw ERR reply can be explained inline without forcing the
-# operator to go look it up). Update alongside commands.c/commands.h
+# operator to go look it up). Update alongside src/app/commands/cmd_*.c/commands.h
 # and docs/command_reference.md if a new code is ever assigned --
 # codes are never renumbered/reused per that doc's own convention.
 ERROR_CODES = {
@@ -1048,7 +1048,7 @@ DANGEROUS_EXACT = {"FIRE", "BOOT"}
 
 
 def _is_dangerous(command):
-    """Best-effort heuristic, NOT a clone of cmd_parser.c's scpi_match()
+    """Best-effort heuristic, NOT a clone of scpi_parser.c's scpi_match()
     -- see this function's own limitation note. Takes the FULL command
     line (not just its first token) because one of its checks --
     channel-enable, below -- needs to look at an argument, not just

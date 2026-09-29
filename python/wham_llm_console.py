@@ -20,7 +20,7 @@ How it works
 2. The message, a system prompt, and the recent conversation are sent to a
    local LLM over an OpenAI-compatible HTTP API. The system prompt teaches
    the model (a) what this project IS (the Transrex/WHAM closed-loop
-   controller -- condensed from AGENTS.md, Core/Inc/ctrlr_config.h, pid.h,
+   controller -- condensed from AGENTS.md, src/config/ctrlr_config.h, pid.h,
    and state_machine.h, including which calibration values are unverified
    placeholders and the current bench reality), (b) its ROLE (the operator's
    hands and interpreter; the human stays in charge), (c) the operator's
@@ -572,7 +572,7 @@ class Executor:
 # System prompt -- the whole contract AND the model's education about this
 # project: what WHAM-XREX-PFMG474 is, what its role is, the operator's
 # goals, then the command catalog. Condensed from AGENTS.md,
-# Core/Inc/ctrlr_config.h, Core/Inc/pid.h, Core/Inc/state_machine.h,
+# src/config/ctrlr_config.h, src/app/control/pid.h, src/app/control/state_machine.h,
 # wham_console.py's command set, and docs/command_reference.md; UPDATE THIS
 # when any of those change (same "maintained front end" convention as
 # wham_console.py's own header comment).

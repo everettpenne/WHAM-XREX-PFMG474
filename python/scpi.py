@@ -6,7 +6,7 @@ import time
 import serial
 from serial.tools import list_ports
 
-SERIAL_PORT = "/dev/cu.usbserial-130"
+SERIAL_PORT = "/dev/cu.usbserial-1130"
 BAUD = 115200
 # BAUD = 9600  # pre-2026-09-04 project baud; sibling PFM-STM32G474 still uses this
 TIMEOUT = 0.1  # Short timeout for continuous reading

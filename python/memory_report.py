@@ -2,7 +2,7 @@
 """
 memory_report.py -- flash/RAM footprint snapshot for WHAM-XREX-PFMG474.
 
-Reads a built .elf (default: Debug/WHAM-XREX-PFMG474.elf) with
+Reads a built .elf (default: build/WHAM-XREX-PFMG474.elf) with
 arm-none-eabi-size and arm-none-eabi-nm, and reports:
   - total FLASH used / total (512 KiB, STM32G474QETX_FLASH.ld) and
     RAM used / total (128 KiB)
@@ -14,10 +14,11 @@ Two subcommands:
              given by --elf (or found via --commit, see below).
   history    Append one row to docs/memory_history.csv for the CURRENT
              git commit (HEAD) using --elf, or backfill history for
-             every past commit that has a Debug/WHAM-XREX-PFMG474.elf
-             checked in (--backfill) by extracting each commit's own
-             tracked elf with `git show` -- no rebuilding needed, since
-             this project tracks Debug/ build output in git.
+             every past commit that has a controller .elf checked in
+             (build/WHAM-XREX-PFMG474.elf, or Debug/ before 2026-09-26)
+             (--backfill) by extracting each commit's own tracked elf
+             with `git show` -- no rebuilding needed, since this project
+             tracks its build output in git.
 
 Per-module attribution uses arm-none-eabi-nm --print-size -l (DWARF
 line info from this project's -g3 debug builds) rather than the
@@ -54,7 +55,9 @@ from collections import defaultdict
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-DEFAULT_ELF = REPO_ROOT / "Debug" / "WHAM-XREX-PFMG474.elf"
+DEFAULT_ELF = REPO_ROOT / "build" / "WHAM-XREX-PFMG474.elf"
+# Where the controller .elf is tracked: build/ since 2026-09-26, Debug/ before.
+TRACKED_ELFS = ("build/WHAM-XREX-PFMG474.elf", "Debug/WHAM-XREX-PFMG474.elf")
 HISTORY_CSV = REPO_ROOT / "docs" / "reports" / "memory_history.csv"
 
 # STM32G474QETX_FLASH.ld MEMORY block -- kept as plain constants here
@@ -96,22 +99,34 @@ def tool(name):
 # scan at a glance. Order matters: first matching prefix wins.
 # --------------------------------------------------------------------------
 MODULE_RULES = [
+    # Matched on the file name, not the folder, so ELFs from before the
+    # 2026-09-26 move into src/ (paths under Core/Src/) bucket the same way.
     ("Core/Startup", "Startup/vector table"),
-    ("Core/Src/pfm_input.c", "PFM_Input capture"),
-    ("Core/Src/pfm.c", "PFM table engine"),
-    ("Core/Src/hrtim.c", "HRTIM driver"),
-    ("Core/Src/commands.c", "Serial commands"),
-    ("Core/Src/cmd_parser.c", "Serial commands"),
-    ("Core/Src/uart.c", "Serial commands"),
-    ("Core/Src/gate_driver.c", "Gate driver / faults"),
-    ("Core/Src/qspi_test.c", "QUADSPI test"),
-    ("Core/Src/boot_jump.c", "Bootloader jump"),
-    ("Core/Src/stm32g4xx_it.c", "IRQ vector dispatch"),
-    ("Core/Src/stm32g4xx_hal_msp.c", "HAL MSP config"),
-    ("Core/Src/main.c", "main() / init"),
-    ("Core/Src/system_stm32g4xx.c", "CMSIS system init"),
-    ("Core/Src/syscalls.c", "Newlib syscalls"),
-    ("Core/Src/sysmem.c", "Newlib syscalls"),
+    ("/pfm_input.c", "PFM_Input capture"),
+    ("/pfm.c", "PFM table engine"),
+    ("/hrtim.c", "HRTIM driver"),
+    ("/cmd_fwupdate.c", "Firmware update"),
+    ("/flash_bank.c", "Firmware update"),
+    ("/fw_update.c", "Firmware update"),   # before 2026-09-26
+    ("/cmd_", "Serial commands"),       # cmd_common.c, cmd_<subsystem>.c; cmd_parser.c before 2026-09-26
+    ("/command_table.c", "Serial commands"),
+    ("/scpi_parser.c", "Serial commands"),
+    ("/commands.c", "Serial commands"),  # before the 2026-09-26 split
+    ("/uart.c", "Serial commands"),
+    ("/gate_driver.c", "Gate driver / faults"),
+    ("/qspi_test.c", "QUADSPI test"),
+    ("/boot_jump.c", "Bootloader jump"),
+    ("/stm32g4xx_it.c", "IRQ vector dispatch"),
+    ("/stm32g4xx_hal_msp.c", "HAL MSP config"),
+    ("/main.c", "main() / init"),
+    ("/app.c", "main() / init"),
+    ("/task_", "main() / init"),
+    ("/mcu.c", "main() / init"),
+    ("/board_io.c", "main() / init"),
+    ("/boot_diag.c", "main() / init"),
+    ("/system_stm32g4xx.c", "CMSIS system init"),
+    ("/syscalls.c", "Newlib syscalls"),
+    ("/sysmem.c", "Newlib syscalls"),
     ("Drivers/STM32G4xx_HAL_Driver", "ST HAL library"),
     ("Drivers/CMSIS", "CMSIS"),
 ]
@@ -191,9 +206,11 @@ def read_symbols(elf_path):
         path = None
         if fileinfo:
             path = fileinfo.rsplit(":", 1)[0]
-            # Normalize the "Debug/../Core/Src/x.c" noise from -l's
+            # Normalize the "Debug/../Core/Src/x.c" (or ../src/...) noise from -l's
             # absolute paths down to a repo-relative-looking form.
             idx = path.find("/Core/")
+            if idx == -1:
+                idx = path.find("/src/")
             if idx == -1:
                 idx = path.find("/Drivers/")
             if idx != -1:
@@ -257,7 +274,8 @@ def print_snapshot_human(snap):
 
 # --------------------------------------------------------------------------
 # git plumbing -- current commit, and pulling a past commit's own
-# tracked Debug/WHAM-XREX-PFMG474.elf without touching the working tree.
+# tracked controller .elf (build/, Debug/ before 2026-09-26) without
+# touching the working tree.
 # --------------------------------------------------------------------------
 def git(*args):
     return subprocess.run(
@@ -275,16 +293,17 @@ def commit_subject(rev):
 
 def extract_elf_at(rev, dest_dir):
     dest = Path(dest_dir) / f"{rev}.elf"
-    data = subprocess.run(
-        ["git", "show", f"{rev}:Debug/WHAM-XREX-PFMG474.elf"],
-        cwd=REPO_ROOT, capture_output=True, check=True,
-    ).stdout
-    dest.write_bytes(data)
-    return dest
+    for tracked in TRACKED_ELFS:
+        res = subprocess.run(["git", "show", f"{rev}:{tracked}"],
+                             cwd=REPO_ROOT, capture_output=True)
+        if res.returncode == 0:
+            dest.write_bytes(res.stdout)
+            return dest
+    raise FileNotFoundError(f"{rev} tracks none of {TRACKED_ELFS}")
 
 
 def commits_with_tracked_elf():
-    out = git("log", "--format=%H", "--", "Debug/WHAM-XREX-PFMG474.elf")
+    out = git("log", "--format=%H", "--", *TRACKED_ELFS)
     return [line for line in out.splitlines() if line]
 
 
@@ -335,7 +354,7 @@ def write_history(rows):
 
 def append_history_for_current(elf_path):
     rev = git("rev-parse", "HEAD")
-    dirty = bool(git("status", "--porcelain", "--", "Debug/"))
+    dirty = bool(git("status", "--porcelain", "--", "build/", "Debug/"))
     subject = commit_subject(rev)
     date = commit_date(rev)
     snap = snapshot(elf_path)
@@ -356,7 +375,7 @@ def append_history_for_current(elf_path):
 def backfill_history():
     revs = commits_with_tracked_elf()
     if not revs:
-        sys.exit("error: no commit in history tracks Debug/WHAM-XREX-PFMG474.elf")
+        sys.exit("error: no commit in history tracks a controller .elf")
 
     rows = []
     with tempfile.TemporaryDirectory() as tmp:
@@ -474,7 +493,7 @@ def main():
     sp_hist.add_argument("--elf", default=str(DEFAULT_ELF))
     sp_hist.add_argument("--backfill", action="store_true",
                           help="rebuild history from every commit with a "
-                               "tracked Debug/WHAM-XREX-PFMG474.elf, instead "
+                               "tracked controller .elf (build/, or Debug/ before 2026-09-26), instead "
                                "of appending one row for HEAD")
 
     sub.add_parser("report", help="render docs/memory_report.html from "

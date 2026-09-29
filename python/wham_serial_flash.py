@@ -15,7 +15,7 @@ USART2 link, with no physical BOOT0 / NRST access required:
   1. Opens the serial port at the application baud (115200 8N1) and sends
      the firmware's `BOOT` command. The running application acknowledges,
      sets a reset-surviving flag, and resets into the STM32 ROM
-     bootloader (see Core/Src/boot_jump.c). No-op if that module was
+     bootloader (see src/bsp/stm32g4/boot_jump.c). No-op if that module was
      built with BOOT_JUMP_FEATURE_ENABLED=0 -- BOOT won't be
      acknowledged, and this script will say so and bail out.
   2. Runs `stm32flash` to write and verify the .bin over the same line
@@ -31,9 +31,9 @@ Prerequisites:
 
 Typical use (from anywhere -- paths below default relative to this
 script's own location, in python/, not the current directory):
-  python3 python/wham_serial_flash.py                 # auto-detect port, flash Debug/WHAM-XREX-PFMG474.bin
+  python3 python/wham_serial_flash.py                 # auto-detect port, flash build/WHAM-XREX-PFMG474.bin
   python3 python/wham_serial_flash.py --target simulator --port /dev/cu.usbserial-XXX
-                                                        # flash Debug/WHAM-XREX-PFMG474-SIM.bin instead
+                                                        # flash build/WHAM-XREX-PFMG474-SIM.bin instead
   python3 python/wham_serial_flash.py --bin firmware/WHAM-XREX-PFMG474.bin
   python3 python/wham_serial_flash.py --port /dev/cu.usbserial-130
   python3 python/wham_serial_flash.py --no-boot        # board already in bootloader (BOOT0)
@@ -68,10 +68,10 @@ except ImportError:
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 PROJECT_DIR = os.path.dirname(SCRIPT_DIR)  # this script lives in python/
 
-# Where CubeIDE drops the build artifact. Point --bin elsewhere (e.g. a local
+# Where wham_build.py publishes the build (build/, see wham_build.py). Point --bin elsewhere (e.g. a local
 # 'firmware/' folder you copy releases into) if you prefer.
-DEFAULT_BIN = os.path.join(PROJECT_DIR, "Debug", "WHAM-XREX-PFMG474.bin")
-DEFAULT_SIM_BIN = os.path.join(PROJECT_DIR, "Debug", "WHAM-XREX-PFMG474-SIM.bin")
+DEFAULT_BIN = os.path.join(PROJECT_DIR, "build", "WHAM-XREX-PFMG474.bin")
+DEFAULT_SIM_BIN = os.path.join(PROJECT_DIR, "build", "WHAM-XREX-PFMG474-SIM.bin")
 
 FLASH_BASE_ADDR = "0x08000000"   # application origin (matches the linker script)
 APP_BAUD_DEFAULT = 115200        # firmware command protocol: 115200 8N1

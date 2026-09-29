@@ -95,7 +95,7 @@ def fetch_capture(ser, channel):
         raise RuntimeError(f"PFMIN:DATA? {channel} -> {reply!r}")
 
     parts = reply.split()
-    # "OK <count> OVERCAP=<n> <per1> <per2> ..." -- see commands.c's
+    # "OK <count> OVERCAP=<n> <per1> <per2> ..." -- see cmd_pfmin.c's
     # cmd_pfmin_data() for the exact format this parses.
     try:
         count = int(parts[1])

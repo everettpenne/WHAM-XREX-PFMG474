@@ -90,7 +90,7 @@ REPORT_TEX = os.path.join(DOCS_DIR, "simulator_validation_report.tex")
 
 HRTIM_NUM_CHANNELS = 4
 
-# LOG:ARM/LOG:DATA? -- MUST match Core/Inc/pid.h's PID_LOG_MAX_SAMPLES
+# LOG:ARM/LOG:DATA? -- MUST match src/app/control/pid.h's PID_LOG_MAX_SAMPLES
 # exactly (a compile-time log-buffer size, not runtime-configurable --
 # no CONFig:* backs it, so a plain constant is correct here, unlike
 # the loop rate below).

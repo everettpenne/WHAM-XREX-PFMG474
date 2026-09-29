@@ -121,7 +121,7 @@ class Boot:
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--url", default="socket://localhost:5000", help="pyserial URL (socket:// or rfc2217://)")
-    ap.add_argument("--bin", help="firmware .bin (default: Debug/ build for --target)")
+    ap.add_argument("--bin", help="firmware .bin (default: build/ image for --target)")
     ap.add_argument("--target", choices=["controller", "simulator"], default="controller")
     ap.add_argument("--app-baud", type=int, default=115200)
     ap.add_argument("--boot-baud", type=int, default=57600, help="ROM bootloader baud (8E1)")
@@ -131,7 +131,7 @@ def main():
     args = ap.parse_args()
 
     binpath = args.bin or os.path.join(
-        ROOT, "Debug", "WHAM-XREX-PFMG474-SIM.bin" if args.target == "simulator" else "WHAM-XREX-PFMG474.bin")
+        ROOT, "build", "WHAM-XREX-PFMG474-SIM.bin" if args.target == "simulator" else "WHAM-XREX-PFMG474.bin")
     fw = open(binpath, "rb").read()
     fw += b"\xff" * (-len(fw) % 4)
     npages = -(-len(fw) // PAGE)

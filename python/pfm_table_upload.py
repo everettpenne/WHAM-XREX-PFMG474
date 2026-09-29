@@ -5,7 +5,7 @@ WHAM-XREX-PFMG474 over the TABle:BEGin / TABle:STEP / TABle:END serial
 commands (see docs/command_reference.md).
 
 Table CONSTRUCTION deliberately lives entirely in this script, not in
-firmware -- see pfm.h's "ADDED" header note and Core/Src/commands.c's
+firmware -- see pfm.h's "ADDED" header note and src/app/commands/cmd_table.c's
 cmd_table_step() for why. The firmware side only knows how to accept
 and store whatever (per, cmp0, ..., cmp(N-1)) tuples it's sent; it does
 no frequency/duty math and has no idea what "profile" produced them.
@@ -130,7 +130,7 @@ APP_BAUD = 115200  # raised from 9600 on 2026-09-04 -- see AGENTS.md and
                     # docs/changelog.txt. WHAM-XREX-PFMG474-only; the
                     # sibling PFM-STM32G474 project still uses 9600.
 
-# Must match Core/Inc/ctrlr_config.h's HRTIM_NUM_CHANNELS exactly for
+# Must match src/config/ctrlr_config.h's HRTIM_NUM_CHANNELS exactly for
 # whatever board this is run against -- verified live at startup
 # (main(), via CONFig:CHANnels?), not just trusted. Kept as a plain
 # constant here (not auto-fetched and used for everything) so the
@@ -168,7 +168,7 @@ FREQ_RAMP_START_HZ = 60_000
 FREQ_RAMP_END_HZ = 100_000  # capped 2026-09-09 -- see ctrlr_config.h's
                             # PFM_MAX_CARRIER_FREQ_HZ; anything above
                             # it is now rejected (ERR 10) by
-                            # commands.c's cmd_table_step(), and the
+                            # cmd_table.c's cmd_table_step(), and the
                             # real-hardware investigation that limit
                             # came from is exactly what this profile
                             # was built to explore (was 140_000)
